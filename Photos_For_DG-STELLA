@@ -1,0 +1,32 @@
+<?xml version="1.0" ?>
+<bib>
+  <mms_id>991011687640104641</mms_id>
+  <record_format>dcap01</record_format>
+  <linked_record_id/>
+  <title>Photos_For_DG-Stella_SHLC_20251021_112115.csv</title>
+  <network_numbers>
+    <network_number>http://hdl.handle.net/11084/1761063767</network_number>
+    <network_number>dg_1761063767</network_number>
+  </network_numbers>
+  <holdings link="https://api-na.hosted.exlibrisgroup.com/almaws/v1/bibs/991011687640104641/holdings"/>
+  <created_by>System</created_by>
+  <created_date>2025-10-21Z</created_date>
+  <last_modified_by>System</last_modified_by>
+  <last_modified_date>2025-11-07Z</last_modified_date>
+  <suppress_from_publishing>false</suppress_from_publishing>
+  <suppress_from_external_search>false</suppress_from_external_search>
+  <suppress_from_metadoor>false</suppress_from_metadoor>
+  <sync_with_oclc>NONE</sync_with_oclc>
+  <sync_with_libraries_australia>NONE</sync_with_libraries_australia>
+  <originating_system_id>991011687640104641</originating_system_id>
+  <cataloging_level desc="Default Level">00</cataloging_level>
+  <record xmlns="http://alma.exlibrisgroup.com/dc/01GCL_INST" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <dginfo xml:lang="eng">Photos_For_DG-Stella_SHLC_20251021_112115.csv</dginfo>
+    <dc:identifier xml:lang="eng">dg_1761063767</dc:identifier>
+    <dc:identifier xml:lang="eng">http://hdl.handle.net/11084/1761063767</dc:identifier>
+    <dc:relation xml:lang="eng">alma:01GCL_INST/bibs/collections/81342586470004641</dc:relation>
+    <dc:title xml:lang="eng">Photos_For_DG-Stella_SHLC_20251021_112115.csv</dc:title>
+    <dc:type xml:lang="eng">Dataset</dc:type>
+    <dc:identifier>alma:01GCL_INST/bibs/991011687640104641</dc:identifier>
+  </record>
+</bib>

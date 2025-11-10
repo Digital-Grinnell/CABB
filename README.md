@@ -54,11 +54,18 @@ Alma-D-Bulk-Bib-Records-Editor/
    cp .env.example .env
    ```
    
-   Edit `.env` and add your Alma API key:
+   Edit `.env` and add your Alma API credentials:
    ```
    ALMA_API_KEY=your_actual_api_key_here
-   ALMA_API_URL=https://api-na.hosted.exlibrisgroup.com
+   ALMA_API_REGION=America
    ```
+   
+   **Valid ALMA_API_REGION values:**
+   - `America` (default - North America)
+   - `Europe`
+   - `Asia Pacific`
+   - `Canada`
+   - `China`
 
 3. **Run the application**
    
@@ -191,6 +198,114 @@ See `requirements.txt` for complete list:
 - Use API keys with minimal required permissions
 - Regularly rotate your API keys
 
+## Alma API Namespace Handling
+
+This application uses a direct XML approach for updating Alma bibliographic records. Understanding how to properly handle XML namespaces is critical for successful API interactions.
+
+### The Challenge
+
+Alma's API has very strict requirements for XML structure, particularly around namespaces:
+
+1. **The `<bib>` root element must NOT have a default namespace declaration**
+   - ❌ Rejected: `<bib xmlns="http://alma.exlibrisgroup.com/dc/01GCL_INST">`
+   - ✅ Accepted: `<bib xmlns:dc="..." xmlns:dcterms="...">`
+
+2. **Alma-specific elements (`<record>`, `<dginfo>`, etc.) must be unprefixed**
+   - ❌ Rejected: `<ns0:record>` or `<alma:record>`
+   - ✅ Accepted: `<record>`
+
+3. **Dublin Core elements must use proper namespace prefixes**
+   - ✅ Required: `<dc:identifier>`, `<dc:title>`, `<dcterms:created>`
+
+### The Solution
+
+The application uses a three-step approach to handle namespaces correctly:
+
+#### Step 1: Register Only Non-Default Namespaces
+```python
+namespaces_to_register = {
+    'dc': 'http://purl.org/dc/elements/1.1/',
+    'dcterms': 'http://purl.org/dc/terms/',
+    'xsi': 'http://www.w3.org/2001/XMLSchema-instance'
+}
+for prefix, uri in namespaces_to_register.items():
+    ET.register_namespace(prefix, uri)
+```
+
+**Note:** We do NOT register the Alma default namespace (`http://alma.exlibrisgroup.com/dc/01GCL_INST`) because doing so would add an unwanted `xmlns` attribute to the `<bib>` element.
+
+#### Step 2: Parse and Modify the XML
+```python
+root = ET.fromstring(response.text)
+# Find and modify elements using namespace-aware XPath
+relations = root.findall('.//dc:relation', {'dc': 'http://purl.org/dc/elements/1.1/'})
+```
+
+#### Step 3: Clean Up Generated XML
+```python
+xml_bytes = ET.tostring(root, encoding='utf-8')
+xml_str = xml_bytes.decode('utf-8')
+
+# Remove auto-generated ns0: prefixes from Alma elements
+xml_str = xml_str.replace('ns0:', '').replace(':ns0', '')
+
+# Remove the xmlns declaration that Alma rejects
+xml_str = xml_str.replace(' xmlns="http://alma.exlibrisgroup.com/dc/01GCL_INST"', '')
+
+xml_bytes = xml_str.encode('utf-8')
+```
+
+### Why This Approach Works
+
+When Python's `ElementTree` encounters elements in a namespace that isn't registered, it automatically generates a namespace prefix (like `ns0:`). Our post-processing step:
+
+1. **Removes the `ns0:` prefix** - Converting `<ns0:record>` to `<record>`
+2. **Removes the generated namespace declaration** - Eliminating `xmlns="http://alma.exlibrisgroup.com/dc/01GCL_INST"` from the `<bib>` element
+3. **Preserves registered namespace prefixes** - Keeping `dc:`, `dcterms:`, and `xsi:` intact
+
+### Example XML Structure
+
+**What Alma Expects:**
+```xml
+<bib xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/">
+  <mms_id>991011687640104641</mms_id>
+  <title>Example Title</title>
+  <record>
+    <dginfo>Example dginfo</dginfo>
+    <dc:identifier>dg_123456</dc:identifier>
+    <dc:title>Example Title</dc:title>
+  </record>
+</bib>
+```
+
+**What Would Be Rejected:**
+```xml
+<!-- ❌ Default namespace on <bib> -->
+<bib xmlns="http://alma.exlibrisgroup.com/dc/01GCL_INST">
+  ...
+</bib>
+
+<!-- ❌ Namespace prefix on Alma elements -->
+<bib>
+  <ns0:record xmlns:ns0="http://alma.exlibrisgroup.com/dc/01GCL_INST">
+    <ns0:dginfo>Example</ns0:dginfo>
+  </ns0:record>
+</bib>
+```
+
+### Key Takeaways for Developers
+
+1. **Always use `validate=true`** in PUT requests - Alma will tell you immediately if the XML structure is wrong
+2. **Log the XML being sent** - Essential for debugging namespace issues
+3. **Don't try to register the default Alma namespace** - It causes more problems than it solves
+4. **Post-process the XML string** - Simple string replacement is more reliable than complex namespace handling
+5. **Test with Function 1 first** - Fetch and view the XML to understand the expected structure
+
+### Related Files
+
+- `app.py` - Contains the implementation (see `clear_dc_relation_collections()` method)
+- `ALMA_API_UPDATE_NOTES.md` - Historical documentation of what approaches didn't work
+
 ## Troubleshooting
 
 ### "API Key not configured" error
@@ -199,8 +314,23 @@ See `requirements.txt` for complete list:
 
 ### "Failed to connect to Alma API" error
 - Verify your API key is valid
-- Check that the `ALMA_API_URL` matches your institution's region
+- Check that `ALMA_API_REGION` is set to one of: `America`, `Europe`, `Asia Pacific`, `Canada`, or `China`
 - Ensure your API key has appropriate permissions
+- Confirm the region matches your institution's Alma location
+
+### Namespace-related errors (400 BAD_REQUEST)
+
+**Error: `unexpected element (uri:"...", local:"bib"). Expected elements are <{}bib>`**
+- This means the `<bib>` element has a namespace declaration it shouldn't have
+- Solution is already implemented in the code's string replacement step
+
+**Error: `Field ns0:dginfo is invalid`**
+- This means Alma elements have an unwanted namespace prefix
+- Solution is already implemented in the code's `ns0:` removal step
+
+**Error: `Field dc:identifier is invalid`**
+- Check that Dublin Core namespaces are properly registered
+- Verify the namespace URIs are exactly correct
 
 ### Virtual environment issues
 - Delete the `.venv` folder and run `./run.sh` again
