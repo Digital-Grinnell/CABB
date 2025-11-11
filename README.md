@@ -1,6 +1,8 @@
-# Alma-D Bulk Bib Records Editor
+# 🚕 CABB - Clean Alma Bibs in Bulk
 
 A Flet-based single-page UI application designed to perform various Alma-Digital bibliographic record editing functions using the Alma API.
+
+**🚕 CABB** (Clean Alma Bibs in Bulk) provides a user-friendly interface for cleaning and maintaining Alma bibliographic records, supporting both single-record operations and batch processing via Alma Sets.
 
 ## Features
 
@@ -39,7 +41,7 @@ The application supports both **single record** and **batch processing** (via Al
 ## Project Structure
 
 ```
-Alma-D-Bulk-Bib-Records-Editor/
+CABB/
 ├── app.py              # Main Flet application
 ├── requirements.txt    # Python dependencies
 ├── run.sh             # Quick launch script
@@ -60,8 +62,8 @@ Alma-D-Bulk-Bib-Records-Editor/
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/Digital-Grinnell/Alma-D-Bulk-Bib-Records-Editor.git
-   cd Alma-D-Bulk-Bib-Records-Editor
+   git clone https://github.com/Digital-Grinnell/CABB.git
+   cd CABB
    ```
 
 2. **Configure environment variables**
@@ -160,7 +162,7 @@ python app.py
 ### Viewing Logs
 
 - The **Log Output** window shows real-time operation details
-- Full logs are saved to timestamped files: `alma_bib_editor_YYYYMMDD_HHMMSS.log`
+- Full logs are saved to timestamped files: `cabb_YYYYMMDD_HHMMSS.log`
 - Click the copy icon next to "Status" to copy status messages to clipboard
 
 2. **Connect to Alma API**
@@ -435,5 +437,5 @@ For questions or support, please open an issue on GitHub.
 ## Acknowledgments
 
 - Built with [Flet](https://flet.dev)
-- Uses [almapipy](https://github.com/UCDavisLibrary/almapipy) by UC Davis Library
 - Developed for Digital Grinnell
+- Alma API integration using direct REST calls

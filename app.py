@@ -1,5 +1,5 @@
 """
-Alma-D Bulk Bib Records Editor
+Clean Alma Bibs in Bulk (CABB)
 A Flet UI app designed to perform various Alma-Digital bib record editing functions.
 """
 
@@ -16,7 +16,7 @@ import requests
 load_dotenv()
 
 # Configure logging
-log_filename = f"alma_bib_editor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+log_filename = f"cabb_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -45,6 +45,7 @@ class AlmaBibEditor:
         self.log_callback = log_callback
         self.set_members = []  # Store MMS IDs from loaded set
         self.set_info = None   # Store set metadata
+        self.kill_switch = False  # Emergency stop for batch operations
         logger.debug(f"API Region: {self.api_region}")
         logger.debug(f"API Key configured: {'Yes' if self.api_key else 'No'}")
         
@@ -493,7 +494,7 @@ class AlmaBibEditor:
 def main(page: ft.Page):
     """Main Flet application"""
     logger.info("Starting Flet application")
-    page.title = "Alma-D Bulk Bib Records Editor"
+    page.title = "🚕 CABB - Clean Alma Bibs in Bulk"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 20
     
@@ -548,7 +549,16 @@ def main(page: ft.Page):
     set_id_input = ft.TextField(
         label="Set ID",
         hint_text="Enter Alma Set ID",
-        width=400
+        width=300
+    )
+    
+    limit_input = ft.TextField(
+        label="Limit",
+        hint_text="Max records to process",
+        value="0",
+        width=100,
+        keyboard_type=ft.KeyboardType.NUMBER,
+        tooltip="Enter 0 for no limit, or a number to process only first N records"
     )
     
     # Set members display
@@ -636,6 +646,13 @@ def main(page: ft.Page):
         add_log_message("Set cleared")
         update_status("Set cleared", False)
     
+    def on_kill_switch_click(e):
+        """Handle Kill Switch button click - emergency stop for batch operations"""
+        logger.warning("KILL SWITCH ACTIVATED")
+        editor.kill_switch = True
+        add_log_message("⚠️ KILL SWITCH ACTIVATED - Stopping batch operation")
+        update_status("⚠️ Kill switch activated - stopping after current record", True)
+    
     def on_function_1_click(e):
         """Handle Function 1: Fetch and display XML"""
         logger.info("Function 1 button clicked")
@@ -656,14 +673,39 @@ def main(page: ft.Page):
         if editor.set_members:
             # Batch processing
             member_count = len(editor.set_members)
-            add_log_message(f"Starting batch clear_dc_relation for {member_count} records from set")
+            
+            # Get limit value
+            try:
+                limit = int(limit_input.value) if limit_input.value else 0
+            except ValueError:
+                update_status("Invalid limit value - must be a whole number", True)
+                return
+            
+            # Apply limit if set
+            members_to_process = editor.set_members
+            if limit > 0 and limit < member_count:
+                members_to_process = editor.set_members[:limit]
+                add_log_message(f"Limiting batch to first {limit} of {member_count} records")
+            
+            process_count = len(members_to_process)
+            add_log_message(f"Starting batch clear_dc_relation for {process_count} records from set")
+            
+            # Reset kill switch before starting
+            editor.kill_switch = False
             
             success_count = 0
             error_count = 0
             
-            for idx, mms_id in enumerate(editor.set_members, 1):
-                add_log_message(f"Processing {idx}/{member_count}: {mms_id}")
-                update_status(f"Processing {idx}/{member_count}: {mms_id}", False)
+            for idx, mms_id in enumerate(members_to_process, 1):
+                # Check kill switch
+                if editor.kill_switch:
+                    add_log_message(f"⚠️ Batch operation stopped by kill switch at record {idx}/{process_count}")
+                    update_status(f"⚠️ STOPPED by kill switch: {success_count} succeeded, {error_count} failed, {process_count - idx + 1} skipped", True)
+                    editor.kill_switch = False  # Reset for next operation
+                    return
+                
+                add_log_message(f"Processing {idx}/{process_count}: {mms_id}")
+                update_status(f"Processing {idx}/{process_count}: {mms_id}", False)
                 
                 success, message = editor.clear_dc_relation_collections(mms_id)
                 if success:
@@ -672,7 +714,9 @@ def main(page: ft.Page):
                     error_count += 1
                     add_log_message(f"ERROR on {mms_id}: {message}")
             
-            summary = f"Batch complete: {success_count} succeeded, {error_count} failed out of {member_count} records"
+            summary = f"Batch complete: {success_count} succeeded, {error_count} failed out of {process_count} records"
+            if limit > 0 and limit < member_count:
+                summary += f" (limited from {member_count} total)"
             update_status(summary, error_count > 0)
         else:
             # Single record processing
@@ -720,7 +764,7 @@ def main(page: ft.Page):
     # Build UI
     page.add(
         ft.Column([
-            ft.Text("Alma-D Bulk Bib Records Editor", 
+            ft.Text("🚕 CABB - Clean Alma Bibs in Bulk", 
                    size=24, 
                    weight=ft.FontWeight.BOLD),
             ft.Divider(height=5),
@@ -753,7 +797,10 @@ def main(page: ft.Page):
                     
                     # Set input
                     ft.Text("Batch Processing (Set):", size=14, weight=ft.FontWeight.W_500),
-                    set_id_input,
+                    ft.Row([
+                        set_id_input,
+                        limit_input,
+                    ], spacing=10),
                     ft.Row([
                         ft.ElevatedButton(
                             "Load Set Members",
@@ -764,6 +811,14 @@ def main(page: ft.Page):
                             "Clear Set",
                             on_click=on_clear_set_click,
                             icon=ft.Icons.CLEAR
+                        ),
+                        ft.ElevatedButton(
+                            "🛑 Kill Switch",
+                            on_click=on_kill_switch_click,
+                            icon=ft.Icons.CANCEL,
+                            color=ft.Colors.WHITE,
+                            bgcolor=ft.Colors.RED_700,
+                            tooltip="Emergency stop - halts batch processing immediately"
                         ),
                     ], spacing=10),
                     set_info_text,
