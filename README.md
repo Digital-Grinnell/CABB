@@ -1,21 +1,38 @@
 # Alma-D Bulk Bib Records Editor
 
-A Flet-based single-page UI application designed to perform various Alma-Digital bibliographic record editing functions using the Alma API and the [almapipy](https://github.com/UCDavisLibrary/almapipy) library.
+A Flet-based single-page UI application designed to perform various Alma-Digital bibliographic record editing functions using the Alma API.
 
 ## Features
 
-The application provides five editing functions for Alma-Digital bibliographic records:
+The application supports both **single record** and **batch processing** (via Alma Sets):
 
-1. **Clear dc:relation Collections Fields** - Removes all dc:relation fields having a value that begins with "alma:01GCL_INST/bibs/collections/"
-2. **Placeholder Function 2** - Reserved for future Alma-Digital record editing functionality
+### Processing Modes
+
+1. **Single Record Mode** - Enter an MMS ID to process one bibliographic record at a time
+2. **Batch Processing Mode** - Enter a Set ID to load all members and process them in bulk
+
+### Editing Functions
+
+1. **Fetch and Display XML** - Preview the full XML structure of a bibliographic record
+2. **Clear dc:relation Collections Fields** - Removes all dc:relation fields having a value that begins with "alma:01GCL_INST/bibs/collections/"
+   - Supports batch processing across entire sets
+   - Provides progress tracking (X of Y processed)
 3. **Placeholder Function 3** - Reserved for future Alma-Digital record editing functionality
 4. **Placeholder Function 4** - Reserved for future Alma-Digital record editing functionality
 5. **Placeholder Function 5** - Reserved for future Alma-Digital record editing functionality
 
+### Set Processing
+
+- Load any Alma set by Set ID
+- Preview set members (first 20 displayed)
+- Apply editing functions to all members in the set
+- Real-time progress tracking during batch operations
+- Success/failure summary after batch completion
+
 ## Technology Stack
 
 - **Flet** - Modern Python framework for building user interfaces
-- **almapipy** - Python wrapper for the Ex Libris Alma API
+- **requests** - HTTP library for direct Alma API calls
 - **python-dotenv** - Environment variable management
 - **Python 3.x** - Programming language
 
@@ -67,6 +84,19 @@ Alma-D-Bulk-Bib-Records-Editor/
    - `Canada`
    - `China`
 
+   **Required API Key Permissions:**
+   
+   Your Alma API key must have the following permissions enabled:
+   - **Bibs** - Read/Write (for reading and updating bibliographic records)
+   - **Configuration** - Read-only (for accessing Sets and retrieving set members)
+   
+   To configure your API key in Alma:
+   1. Go to Alma > Admin > General > API Key Management
+   2. Create or edit your API key
+   3. Ensure "Bibs" has Read/Write permissions
+   4. Ensure "Configuration" has Read permissions
+   5. Save the API key
+
 3. **Run the application**
    
    Use the provided quick launch script:
@@ -100,6 +130,38 @@ python app.py
 ## Usage
 
 1. **Launch the application** using `./run.sh`
+
+2. **Connect to Alma API** by clicking the "Connect to Alma API" button
+
+### Single Record Processing
+
+3. **Enter an MMS ID** in the "Single Record" input field
+
+4. **Select an editing function** from the available buttons:
+   - "Fetch and Display XML" to preview the record
+   - "Clear dc:relation Collections Fields" to remove collection references
+   - Additional functions as implemented
+
+### Batch Processing with Sets
+
+3. **Enter a Set ID** in the "Batch Processing (Set)" input field
+   - Example: `7071087320004641`
+
+4. **Click "Load Set Members"** to fetch all bibliographic records in the set
+   - The app will display the set name and member count
+   - First 20 members are shown for preview
+
+5. **Select an editing function** to apply to all records in the set
+   - Progress will be shown as "Processing X/Y: [MMS_ID]"
+   - A summary of successes/failures is displayed upon completion
+
+6. **Click "Clear Set"** when done to reset for single record or a different set
+
+### Viewing Logs
+
+- The **Log Output** window shows real-time operation details
+- Full logs are saved to timestamped files: `alma_bib_editor_YYYYMMDD_HHMMSS.log`
+- Click the copy icon next to "Status" to copy status messages to clipboard
 
 2. **Connect to Alma API**
    - Click the "Connect to Alma API" button
@@ -311,6 +373,24 @@ When Python's `ElementTree` encounters elements in a namespace that isn't regist
 ### "API Key not configured" error
 - Ensure you've created a `.env` file with valid `ALMA_API_KEY`
 - Check that the `.env` file is in the project root directory
+
+### "API Key not authorized for Sets API" error
+**Error message:** `UNAUTHORIZED: API-key not defined or not configured to allow this API`
+
+This error occurs when trying to load a set without proper API key permissions.
+
+**Solution:**
+1. Log into Alma as an administrator
+2. Navigate to: **Admin > General > API Key Management**
+3. Find and edit your API key
+4. Under **API Permissions**, ensure these are enabled:
+   - **Bibs**: Read/Write ✓
+   - **Configuration**: Read ✓ (this is required for Sets API)
+5. Click **Save**
+6. Wait a few minutes for the changes to propagate
+7. Restart the application and try again
+
+**Note:** If you don't have admin access, contact your Alma administrator to add Configuration permissions to your API key.
 
 ### "Failed to connect to Alma API" error
 - Verify your API key is valid

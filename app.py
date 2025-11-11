@@ -43,6 +43,8 @@ class AlmaBibEditor:
         self.api_region = os.getenv('ALMA_API_REGION', 'America')
         self.status_text = None
         self.log_callback = log_callback
+        self.set_members = []  # Store MMS IDs from loaded set
+        self.set_info = None   # Store set metadata
         logger.debug(f"API Region: {self.api_region}")
         logger.debug(f"API Key configured: {'Yes' if self.api_key else 'No'}")
         
@@ -73,6 +75,127 @@ class AlmaBibEditor:
         self.log(f"API Key configured for region: {self.api_region}")
         self.log("Ready to process records", logging.INFO)
         return True, f"Ready to process records (Region: {self.api_region})"
+    
+    def fetch_set_details(self, set_id: str) -> tuple[bool, str, dict]:
+        """
+        Fetch details about a set from Alma
+        
+        Args:
+            set_id: The ID of the set to retrieve
+            
+        Returns:
+            tuple: (success: bool, message: str, set_data: dict)
+        """
+        self.log(f"Fetching set details for Set ID: {set_id}")
+        if not self.api_key:
+            self.log("API Key not configured", logging.ERROR)
+            return False, "API Key not configured", {}
+        
+        try:
+            api_url = self._get_alma_api_url()
+            
+            self.log(f"Requesting set {set_id} from Alma API")
+            response = requests.get(
+                f"{api_url}/almaws/v1/conf/sets/{set_id}?apikey={self.api_key}",
+                headers={'Accept': 'application/json'}
+            )
+            
+            if response.status_code == 401 or response.status_code == 400:
+                # Check if it's an authorization issue
+                if 'UNAUTHORIZED' in response.text or 'API-key not defined' in response.text:
+                    error_msg = "API Key not authorized for Sets API. Please add 'Configuration' permissions in Alma API key settings."
+                    self.log(error_msg, logging.ERROR)
+                    self.log(f"Response: {response.text}", logging.ERROR)
+                    return False, error_msg, {}
+            
+            if response.status_code != 200:
+                self.log(f"Failed to fetch set: {response.status_code}", logging.ERROR)
+                self.log(f"Response: {response.text}", logging.ERROR)
+                return False, f"Failed to fetch set: {response.status_code}", {}
+            
+            set_data = response.json()
+            set_name = set_data.get('name', 'Unknown')
+            set_type = set_data.get('type', {}).get('desc', 'Unknown')
+            member_count = set_data.get('number_of_members', {}).get('value', 0)
+            
+            self.set_info = set_data
+            self.log(f"Successfully fetched set: {set_name}")
+            self.log(f"Set type: {set_type}, Members: {member_count}")
+            
+            return True, f"Set: {set_name} ({member_count} members)", set_data
+            
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            self.log(f"Error fetching set {set_id}: {str(e)}", logging.ERROR)
+            self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
+            return False, f"Error fetching set {set_id}: {str(e)}", {}
+    
+    def fetch_set_members(self, set_id: str) -> tuple[bool, str, list]:
+        """
+        Fetch all member MMS IDs from a set
+        
+        Args:
+            set_id: The ID of the set
+            
+        Returns:
+            tuple: (success: bool, message: str, members: list of MMS IDs)
+        """
+        self.log(f"Fetching members for Set ID: {set_id}")
+        if not self.api_key:
+            self.log("API Key not configured", logging.ERROR)
+            return False, "API Key not configured", []
+        
+        try:
+            api_url = self._get_alma_api_url()
+            all_members = []
+            offset = 0
+            limit = 100  # API default page size
+            
+            while True:
+                self.log(f"Fetching members (offset: {offset}, limit: {limit})")
+                response = requests.get(
+                    f"{api_url}/almaws/v1/conf/sets/{set_id}/members?limit={limit}&offset={offset}&apikey={self.api_key}",
+                    headers={'Accept': 'application/json'}
+                )
+                
+                if response.status_code != 200:
+                    self.log(f"Failed to fetch set members: {response.status_code}", logging.ERROR)
+                    self.log(f"Response: {response.text}", logging.ERROR)
+                    return False, f"Failed to fetch set members: {response.status_code}", []
+                
+                data = response.json()
+                members = data.get('member', [])
+                
+                if not members:
+                    break
+                
+                # Extract MMS IDs from member objects
+                for member in members:
+                    mms_id = member.get('id')
+                    if mms_id:
+                        all_members.append(mms_id)
+                
+                self.log(f"Retrieved {len(members)} members (total so far: {len(all_members)})")
+                
+                # Check if there are more results
+                total_records = data.get('total_record_count', 0)
+                if offset + limit >= total_records:
+                    break
+                
+                offset += limit
+            
+            self.set_members = all_members
+            self.log(f"Successfully fetched {len(all_members)} members from set {set_id}")
+            
+            return True, f"Fetched {len(all_members)} member records", all_members
+            
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            self.log(f"Error fetching set members {set_id}: {str(e)}", logging.ERROR)
+            self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
+            return False, f"Error fetching set members {set_id}: {str(e)}", []
     
     def fetch_and_display_xml(self, mms_id: str, page=None) -> tuple[bool, str]:
         """
@@ -375,7 +498,7 @@ def main(page: ft.Page):
     page.padding = 20
     
     # Set window size - try both properties
-    page.window.height = 900
+    page.window.height = 1000
     page.window.width = 750
     page.window.resizable = True
     
@@ -415,10 +538,26 @@ def main(page: ft.Page):
     add_log_message("Application started")
     add_log_message(f"Log file: {log_filename}")
     
+    # Input fields
     mms_id_input = ft.TextField(
         label="MMS ID",
         hint_text="Enter bibliographic record MMS ID",
         width=400
+    )
+    
+    set_id_input = ft.TextField(
+        label="Set ID",
+        hint_text="Enter Alma Set ID",
+        width=400
+    )
+    
+    # Set members display
+    set_info_text = ft.Text("No set loaded", size=12, color=ft.Colors.GREY_700)
+    set_members_list = ft.ListView(
+        spacing=2,
+        padding=10,
+        auto_scroll=False,
+        height=100,
     )
     
     def update_status(message: str, is_error: bool = False):
@@ -444,6 +583,59 @@ def main(page: ft.Page):
         success, message = editor.initialize_alma_connection()
         update_status(message, not success)
     
+    def on_load_set_click(e):
+        """Handle Load Set button click"""
+        logger.info("Load Set button clicked")
+        if not set_id_input.value:
+            update_status("Please enter a Set ID", True)
+            return
+        
+        add_log_message(f"Loading set: {set_id_input.value}")
+        
+        # Fetch set details
+        success, message, set_data = editor.fetch_set_details(set_id_input.value)
+        if not success:
+            update_status(message, True)
+            return
+        
+        # Fetch set members
+        success, member_msg, members = editor.fetch_set_members(set_id_input.value)
+        if not success:
+            update_status(member_msg, True)
+            return
+        
+        # Update set info display
+        set_name = set_data.get('name', 'Unknown')
+        member_count = len(members)
+        set_info_text.value = f"Set: {set_name} ({member_count} members)"
+        
+        # Update members list (show first 20)
+        set_members_list.controls.clear()
+        display_count = min(20, len(members))
+        for i, mms_id in enumerate(members[:display_count]):
+            set_members_list.controls.append(
+                ft.Text(f"{i+1}. {mms_id}", size=11, color=ft.Colors.GREY_800)
+            )
+        
+        if len(members) > 20:
+            set_members_list.controls.append(
+                ft.Text(f"... and {len(members) - 20} more", size=11, color=ft.Colors.GREY_600, italic=True)
+            )
+        
+        page.update()
+        update_status(f"Loaded set with {member_count} members", False)
+    
+    def on_clear_set_click(e):
+        """Handle Clear Set button click"""
+        logger.info("Clear Set button clicked")
+        editor.set_members = []
+        editor.set_info = None
+        set_info_text.value = "No set loaded"
+        set_members_list.controls.clear()
+        page.update()
+        add_log_message("Set cleared")
+        update_status("Set cleared", False)
+    
     def on_function_1_click(e):
         """Handle Function 1: Fetch and display XML"""
         logger.info("Function 1 button clicked")
@@ -459,13 +651,38 @@ def main(page: ft.Page):
     def on_function_2_click(e):
         """Handle Function 2: Clear dc:relation collections"""
         logger.info("Function 2 button clicked")
-        if not mms_id_input.value:
-            update_status("Please enter an MMS ID", True)
-            return
         
-        add_log_message(f"Starting clear_dc_relation for MMS ID: {mms_id_input.value}")
-        success, message = editor.clear_dc_relation_collections(mms_id_input.value)
-        update_status(message, not success)
+        # Determine if processing single record or batch
+        if editor.set_members:
+            # Batch processing
+            member_count = len(editor.set_members)
+            add_log_message(f"Starting batch clear_dc_relation for {member_count} records from set")
+            
+            success_count = 0
+            error_count = 0
+            
+            for idx, mms_id in enumerate(editor.set_members, 1):
+                add_log_message(f"Processing {idx}/{member_count}: {mms_id}")
+                update_status(f"Processing {idx}/{member_count}: {mms_id}", False)
+                
+                success, message = editor.clear_dc_relation_collections(mms_id)
+                if success:
+                    success_count += 1
+                else:
+                    error_count += 1
+                    add_log_message(f"ERROR on {mms_id}: {message}")
+            
+            summary = f"Batch complete: {success_count} succeeded, {error_count} failed out of {member_count} records"
+            update_status(summary, error_count > 0)
+        else:
+            # Single record processing
+            if not mms_id_input.value:
+                update_status("Please enter an MMS ID or load a set", True)
+                return
+            
+            add_log_message(f"Starting clear_dc_relation for MMS ID: {mms_id_input.value}")
+            success, message = editor.clear_dc_relation_collections(mms_id_input.value)
+            update_status(message, not success)
     
     def on_function_3_click(e):
         """Handle Function 3 click"""
@@ -527,7 +744,35 @@ def main(page: ft.Page):
             ft.Container(
                 content=ft.Column([
                     ft.Text("Record Input", size=18, weight=ft.FontWeight.BOLD),
+                    
+                    # Single record input
+                    ft.Text("Single Record:", size=14, weight=ft.FontWeight.W_500),
                     mms_id_input,
+                    
+                    ft.Divider(height=10),
+                    
+                    # Set input
+                    ft.Text("Batch Processing (Set):", size=14, weight=ft.FontWeight.W_500),
+                    set_id_input,
+                    ft.Row([
+                        ft.ElevatedButton(
+                            "Load Set Members",
+                            on_click=on_load_set_click,
+                            icon=ft.Icons.DOWNLOAD
+                        ),
+                        ft.ElevatedButton(
+                            "Clear Set",
+                            on_click=on_clear_set_click,
+                            icon=ft.Icons.CLEAR
+                        ),
+                    ], spacing=10),
+                    set_info_text,
+                    ft.Container(
+                        content=set_members_list,
+                        border=ft.border.all(1, ft.Colors.GREY_400),
+                        border_radius=5,
+                        bgcolor=ft.Colors.GREY_50,
+                    ),
                 ], spacing=5),
                 padding=5,
             ),
@@ -540,7 +785,7 @@ def main(page: ft.Page):
                     ft.Text("Editing Functions", size=18, weight=ft.FontWeight.BOLD),
                     
                     ft.ElevatedButton(
-                        "1. Fetch and Display XML",
+                        "1. Fetch and Display Single XML",
                         on_click=on_function_1_click,
                         icon=ft.Icons.PREVIEW,
                         width=400
