@@ -132,17 +132,19 @@ class AlmaBibEditor:
             self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
             return False, f"Error fetching set {set_id}: {str(e)}", {}
     
-    def fetch_set_members(self, set_id: str) -> tuple[bool, str, list]:
+    def fetch_set_members(self, set_id: str, progress_callback=None, max_members=0) -> tuple[bool, str, list]:
         """
         Fetch all member MMS IDs from a set
         
         Args:
             set_id: The ID of the set
+            progress_callback: Optional callback function(current, total) for progress updates
+            max_members: Maximum number of members to fetch (0 = no limit)
             
         Returns:
             tuple: (success: bool, message: str, members: list of MMS IDs)
         """
-        self.log(f"Fetching members for Set ID: {set_id}")
+        self.log(f"Fetching members for Set ID: {set_id} (max: {max_members if max_members > 0 else 'unlimited'})")
         if not self.api_key:
             self.log("API Key not configured", logging.ERROR)
             return False, "API Key not configured", []
@@ -152,6 +154,7 @@ class AlmaBibEditor:
             all_members = []
             offset = 0
             limit = 100  # API default page size
+            total_records = 0
             
             while True:
                 self.log(f"Fetching members (offset: {offset}, limit: {limit})")
@@ -168,6 +171,13 @@ class AlmaBibEditor:
                 data = response.json()
                 members = data.get('member', [])
                 
+                # Get total record count from first response
+                if offset == 0:
+                    total_records = data.get('total_record_count', 0)
+                    # Adjust total if max_members is set
+                    if max_members > 0 and max_members < total_records:
+                        total_records = max_members
+                
                 if not members:
                     break
                 
@@ -176,11 +186,21 @@ class AlmaBibEditor:
                     mms_id = member.get('id')
                     if mms_id:
                         all_members.append(mms_id)
+                        # Stop if we've reached the limit
+                        if max_members > 0 and len(all_members) >= max_members:
+                            break
                 
                 self.log(f"Retrieved {len(members)} members (total so far: {len(all_members)})")
                 
+                # Update progress
+                if progress_callback and total_records > 0:
+                    progress_callback(len(all_members), total_records)
+                
+                # Check if we've reached the limit
+                if max_members > 0 and len(all_members) >= max_members:
+                    break
+                
                 # Check if there are more results
-                total_records = data.get('total_record_count', 0)
                 if offset + limit >= total_records:
                     break
                 
@@ -563,11 +583,12 @@ def main(page: ft.Page):
     
     # Set members display
     set_info_text = ft.Text("No set loaded", size=12, color=ft.Colors.GREY_700)
-    set_members_list = ft.ListView(
-        spacing=2,
-        padding=10,
-        auto_scroll=False,
-        height=100,
+    set_progress_text = ft.Text("", size=12, color=ft.Colors.BLUE_700, visible=False)
+    set_progress_bar = ft.ProgressBar(
+        width=400,
+        visible=False,
+        color=ft.Colors.BLUE,
+        bgcolor=ft.Colors.GREY_300,
     )
     
     def update_status(message: str, is_error: bool = False):
@@ -600,37 +621,61 @@ def main(page: ft.Page):
             update_status("Please enter a Set ID", True)
             return
         
-        add_log_message(f"Loading set: {set_id_input.value}")
+        # Get limit value
+        try:
+            limit = int(limit_input.value) if limit_input.value else 0
+            if limit < 0:
+                limit = 0
+        except ValueError:
+            update_status("Invalid limit value - using 0 (no limit)", True)
+            limit = 0
+        
+        add_log_message(f"Loading set: {set_id_input.value} (limit: {limit if limit > 0 else 'none'})")
+        
+        # Show indeterminate progress bar while fetching set details
+        set_progress_bar.visible = True
+        set_progress_text.visible = True
+        set_progress_bar.value = None  # Indeterminate progress
+        set_progress_text.value = "Fetching set details..."
+        page.update()
         
         # Fetch set details
         success, message, set_data = editor.fetch_set_details(set_id_input.value)
         if not success:
+            set_progress_bar.visible = False
+            set_progress_text.visible = False
             update_status(message, True)
             return
         
-        # Fetch set members
-        success, member_msg, members = editor.fetch_set_members(set_id_input.value)
+        # Define progress callback to update the progress bar and text
+        def update_progress(current, total):
+            set_progress_bar.value = current / total
+            set_progress_text.value = f"Loading members: {current} of {total}"
+            page.update()
+        
+        # Fetch set members with progress updates
+        success, member_msg, members = editor.fetch_set_members(
+            set_id_input.value, 
+            progress_callback=update_progress,
+            max_members=limit
+        )
         if not success:
+            set_progress_bar.visible = False
+            set_progress_text.visible = False
             update_status(member_msg, True)
             return
         
         # Update set info display
         set_name = set_data.get('name', 'Unknown')
         member_count = len(members)
-        set_info_text.value = f"Set: {set_name} ({member_count} members)"
+        if limit > 0 and member_count >= limit:
+            set_info_text.value = f"Set: {set_name} ({member_count} of {limit} members loaded - limited)"
+        else:
+            set_info_text.value = f"Set: {set_name} ({member_count} members)"
         
-        # Update members list (show first 20)
-        set_members_list.controls.clear()
-        display_count = min(20, len(members))
-        for i, mms_id in enumerate(members[:display_count]):
-            set_members_list.controls.append(
-                ft.Text(f"{i+1}. {mms_id}", size=11, color=ft.Colors.GREY_800)
-            )
-        
-        if len(members) > 20:
-            set_members_list.controls.append(
-                ft.Text(f"... and {len(members) - 20} more", size=11, color=ft.Colors.GREY_600, italic=True)
-            )
+        # Hide progress bar after loading
+        set_progress_bar.visible = False
+        set_progress_text.visible = False
         
         page.update()
         update_status(f"Loaded set with {member_count} members", False)
@@ -641,7 +686,8 @@ def main(page: ft.Page):
         editor.set_members = []
         editor.set_info = None
         set_info_text.value = "No set loaded"
-        set_members_list.controls.clear()
+        set_progress_bar.visible = False
+        set_progress_text.visible = False
         page.update()
         add_log_message("Set cleared")
         update_status("Set cleared", False)
@@ -690,6 +736,13 @@ def main(page: ft.Page):
             process_count = len(members_to_process)
             add_log_message(f"Starting batch clear_dc_relation for {process_count} records from set")
             
+            # Show progress bar
+            set_progress_bar.visible = True
+            set_progress_text.visible = True
+            set_progress_bar.value = 0
+            set_progress_text.value = f"Processing: 0 of {process_count}"
+            page.update()
+            
             # Reset kill switch before starting
             editor.kill_switch = False
             
@@ -700,11 +753,17 @@ def main(page: ft.Page):
                 # Check kill switch
                 if editor.kill_switch:
                     add_log_message(f"⚠️ Batch operation stopped by kill switch at record {idx}/{process_count}")
+                    set_progress_bar.visible = False
+                    set_progress_text.visible = False
                     update_status(f"⚠️ STOPPED by kill switch: {success_count} succeeded, {error_count} failed, {process_count - idx + 1} skipped", True)
                     editor.kill_switch = False  # Reset for next operation
                     return
                 
                 add_log_message(f"Processing {idx}/{process_count}: {mms_id}")
+                
+                # Update progress bar and text
+                set_progress_bar.value = idx / process_count
+                set_progress_text.value = f"Processing: {idx} of {process_count}"
                 update_status(f"Processing {idx}/{process_count}: {mms_id}", False)
                 
                 success, message = editor.clear_dc_relation_collections(mms_id)
@@ -713,6 +772,10 @@ def main(page: ft.Page):
                 else:
                     error_count += 1
                     add_log_message(f"ERROR on {mms_id}: {message}")
+            
+            # Hide progress bar
+            set_progress_bar.visible = False
+            set_progress_text.visible = False
             
             summary = f"Batch complete: {success_count} succeeded, {error_count} failed out of {process_count} records"
             if limit > 0 and limit < member_count:
@@ -822,12 +885,6 @@ def main(page: ft.Page):
                         ),
                     ], spacing=10),
                     set_info_text,
-                    ft.Container(
-                        content=set_members_list,
-                        border=ft.border.all(1, ft.Colors.GREY_400),
-                        border_radius=5,
-                        bgcolor=ft.Colors.GREY_50,
-                    ),
                 ], spacing=5),
                 padding=5,
             ),
@@ -892,6 +949,8 @@ def main(page: ft.Page):
                         ),
                     ]),
                     status_text,
+                    set_progress_text,
+                    set_progress_bar,
                 ], spacing=5),
                 padding=5,
             ),

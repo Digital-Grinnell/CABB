@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Alma-D Bulk Bib Records Editor - Quick Launch Script
+# Clean Alma Bibs in Bulk (CABB) - Quick Launch Script
 # This script sets up the virtual environment and launches the Flet app
 
 set -e  # Exit on error
@@ -8,7 +8,7 @@ set -e  # Exit on error
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "=== Alma-D Bulk Bib Records Editor ==="
+echo "=== Clean Alma Bibs in Bulk (CABB) ==="
 echo
 
 # Check if .venv exists, create if not
@@ -27,8 +27,8 @@ echo
 
 # Install/upgrade dependencies
 echo "Installing dependencies..."
-pip install --upgrade pip > /dev/null 2>&1
-pip install -r requirements.txt
+.venv/bin/python -m pip install --upgrade pip --quiet
+.venv/bin/python -m pip install -r requirements.txt --quiet
 echo "✓ Dependencies installed"
 echo
 
@@ -47,6 +47,6 @@ EOF
 fi
 
 # Launch the app
-echo "Launching Alma-D Bulk Bib Records Editor..."
+echo "Launching CABB..."
 echo
-python app.py
+.venv/bin/python app.py
