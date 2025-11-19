@@ -1282,51 +1282,6 @@ def main(page: ft.Page):
         success, message = editor.initialize_alma_connection()
         update_status(message, not success)
     
-    def on_browse_csv_click(e):
-        """Handle browse button click - show dialog for CSV path"""
-        logger.info("Browse CSV button clicked")
-        
-        csv_path_input = ft.TextField(
-            label="CSV File Path",
-            hint_text="Enter full path to CSV file (e.g., /Users/yourname/file.csv)",
-            autofocus=True,
-            width=500
-        )
-        
-        def load_csv_path(dialog_e):
-            if csv_path_input.value:
-                set_id_input.value = csv_path_input.value
-                browse_dialog.open = False
-                page.update()
-                add_log_message(f"CSV path entered: {csv_path_input.value}")
-            else:
-                add_log_message("No path entered")
-        
-        def cancel_browse(dialog_e):
-            browse_dialog.open = False
-            page.update()
-        
-        browse_dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Enter CSV File Path"),
-            content=ft.Container(
-                content=ft.Column([
-                    ft.Text("Enter the full path to your CSV file:"),
-                    csv_path_input,
-                    ft.Text("Tip: You can drag and drop the file into your terminal to get its path", 
-                           size=11, color=ft.Colors.GREY_600),
-                ], tight=True),
-                width=500,
-            ),
-            actions=[
-                ft.TextButton("Cancel", on_click=cancel_browse),
-                ft.ElevatedButton("Load", on_click=load_csv_path),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        
-        page.open(browse_dialog)
-    
     def on_load_set_click(e):
         """Handle Load Set button click - supports both Set ID and CSV file"""
         logger.info("Load Set button clicked")
@@ -1711,11 +1666,6 @@ def main(page: ft.Page):
                     ft.Text("Batch Processing (Set or CSV):", size=14, weight=ft.FontWeight.W_500),
                     ft.Row([
                         set_id_input,
-                        ft.IconButton(
-                            icon=ft.Icons.FOLDER_OPEN,
-                            tooltip="Browse for CSV file",
-                            on_click=on_browse_csv_click
-                        ),
                         limit_input,
                     ], spacing=10),
                     ft.Row([
