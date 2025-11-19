@@ -912,18 +912,107 @@ class AlmaBibEditor:
         
         return row
     
-    def placeholder_function_4(self, mms_id: str) -> tuple[bool, str]:
+    def filter_csv_by_pre1931_dates(self, input_file: str = None, output_file: str = None) -> tuple[bool, str]:
         """
-        Function 4: Placeholder for future Alma-Digital record editing function
+        Function 4: Filter CSV export to only records with dates before 1931
+        
+        Reads the most recent alma_export_*.csv file and filters records that have
+        non-empty date values before 1931 in any of these fields:
+        - dc:date
+        - dcterms:created
+        - dcterms:issued
+        - dcterms:dateSubmitted
+        - dcterms:dateAccepted
         
         Args:
-            mms_id: The MMS ID of the bibliographic record
+            input_file: Optional path to input CSV (if None, uses most recent alma_export_*.csv)
+            output_file: Optional path to output CSV (if None, generates timestamped filename)
             
         Returns:
             tuple: (success: bool, message: str)
         """
-        self.log(f"Executing placeholder_function_4 for MMS ID: {mms_id}")
-        return True, f"Placeholder Function 4 executed for record {mms_id}"
+        import csv
+        import glob
+        import re
+        from datetime import datetime
+        
+        self.log("Starting CSV filter for pre-1931 dates")
+        
+        try:
+            # Find most recent alma_export_*.csv if not specified
+            if input_file is None:
+                csv_files = glob.glob("alma_export_*.csv")
+                if not csv_files:
+                    return False, "No alma_export_*.csv files found"
+                input_file = max(csv_files, key=lambda f: f)
+                self.log(f"Using input file: {input_file}")
+            
+            # Generate output filename if not specified
+            if output_file is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_file = f"pre1931_export_{timestamp}.csv"
+            
+            # Date fields to check
+            date_fields = [
+                "dc:date",
+                "dcterms:created",
+                "dcterms:issued",
+                "dcterms:dateSubmitted",
+                "dcterms:dateAccepted"
+            ]
+            
+            def extract_year(date_str: str) -> int | None:
+                """Extract 4-digit year from date string"""
+                if not date_str or not date_str.strip():
+                    return None
+                
+                # Look for 4-digit year
+                match = re.search(r'\b(1[0-9]{3}|20[0-9]{2})\b', date_str)
+                if match:
+                    try:
+                        return int(match.group(1))
+                    except ValueError:
+                        return None
+                return None
+            
+            def has_pre1931_date(row: dict) -> bool:
+                """Check if any date field contains a year before 1931"""
+                for field in date_fields:
+                    date_value = row.get(field, "")
+                    year = extract_year(date_value)
+                    if year is not None and year < 1931:
+                        return True
+                return False
+            
+            # Read input CSV and filter
+            filtered_rows = []
+            total_rows = 0
+            
+            with open(input_file, 'r', encoding='utf-8') as infile:
+                reader = csv.DictReader(infile)
+                fieldnames = reader.fieldnames
+                
+                for row in reader:
+                    total_rows += 1
+                    if has_pre1931_date(row):
+                        filtered_rows.append(row)
+            
+            # Write filtered results
+            with open(output_file, 'w', newline='', encoding='utf-8') as outfile:
+                writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(filtered_rows)
+            
+            message = f"Filtered {len(filtered_rows)} of {total_rows} records (pre-1931 dates) → {output_file}"
+            self.log(message)
+            return True, message
+            
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            self.log(f"Error filtering CSV: {str(e)}", logging.ERROR)
+            self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
+            return False, f"Error filtering CSV: {str(e)}"
     
     def placeholder_function_5(self, mms_id: str) -> tuple[bool, str]:
         """
@@ -1265,15 +1354,14 @@ def main(page: ft.Page):
             add_log_message(f"CSV export complete: {output_file}")
     
     def on_function_4_click(e):
-        """Handle Function 4 click"""
-        logger.info("Function 4 button clicked")
-        if not mms_id_input.value:
-            update_status("Please enter an MMS ID", True)
-            return
+        """Handle Function 4 click - Filter CSV by pre-1931 dates"""
+        logger.info("Function 4 button clicked - Filter CSV")
         
-        add_log_message(f"Executing Function 4 for MMS ID: {mms_id_input.value}")
-        success, message = editor.placeholder_function_4(mms_id_input.value)
+        add_log_message("Filtering latest CSV export for pre-1931 dates")
+        success, message = editor.filter_csv_by_pre1931_dates()
         update_status(message, not success)
+        if success:
+            add_log_message("CSV filtering complete")
     
     def on_function_5_click(e):
         """Handle Function 5 click"""
@@ -1380,9 +1468,9 @@ def main(page: ft.Page):
                     ),
                     
                     ft.ElevatedButton(
-                        "4. Placeholder Function 4",
+                        "4. Filter CSV for Pre-1931 Dates",
                         on_click=on_function_4_click,
-                        icon=ft.Icons.EDIT,
+                        icon=ft.Icons.FILTER_ALT,
                         width=400
                     ),
                     
