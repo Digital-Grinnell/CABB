@@ -219,6 +219,60 @@ class AlmaBibEditor:
             self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
             return False, f"Error fetching set members {set_id}: {str(e)}", []
     
+    def load_mms_ids_from_csv(self, csv_file_path: str) -> tuple[bool, str, list]:
+        """
+        Load MMS IDs from a CSV file.
+        
+        The CSV file should have a column named 'mms_id' (case-insensitive).
+        If no such column is found, assumes the first column contains MMS IDs.
+        
+        Args:
+            csv_file_path: Path to the CSV file
+            
+        Returns:
+            tuple: (success: bool, message: str, mms_ids: list)
+        """
+        import csv
+        
+        self.log(f"Loading MMS IDs from CSV: {csv_file_path}")
+        
+        try:
+            mms_ids = []
+            
+            with open(csv_file_path, 'r', encoding='utf-8') as csvfile:
+                reader = csv.DictReader(csvfile)
+                
+                # Find the mms_id column (case-insensitive)
+                mms_id_column = None
+                for fieldname in reader.fieldnames:
+                    if fieldname.lower() == 'mms_id':
+                        mms_id_column = fieldname
+                        break
+                
+                if mms_id_column is None:
+                    # Use first column if no mms_id column found
+                    mms_id_column = reader.fieldnames[0]
+                    self.log(f"No 'mms_id' column found, using first column: {mms_id_column}", logging.WARNING)
+                
+                # Read MMS IDs
+                for row in reader:
+                    mms_id = row.get(mms_id_column, '').strip()
+                    if mms_id:
+                        mms_ids.append(mms_id)
+            
+            self.set_members = mms_ids
+            self.set_info = {'name': csv_file_path.split('/')[-1], 'source': 'CSV'}
+            
+            self.log(f"Loaded {len(mms_ids)} MMS IDs from CSV")
+            return True, f"Loaded {len(mms_ids)} MMS IDs from CSV", mms_ids
+            
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            self.log(f"Error loading CSV {csv_file_path}: {str(e)}", logging.ERROR)
+            self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
+            return False, f"Error loading CSV: {str(e)}", []
+    
     def fetch_bib_records_batch(self, mms_ids: list) -> dict:
         """
         Fetch multiple bibliographic records in a single batch API call (up to 100 IDs).
@@ -1014,18 +1068,115 @@ class AlmaBibEditor:
             self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
             return False, f"Error filtering CSV: {str(e)}"
     
-    def placeholder_function_5(self, mms_id: str) -> tuple[bool, str]:
+    def create_set_from_members(self, set_name: str, set_description: str = "") -> tuple[bool, str]:
         """
-        Function 5: Placeholder for future Alma-Digital record editing function
+        Function 5: Create a new itemized set in Alma from loaded set members
         
         Args:
-            mms_id: The MMS ID of the bibliographic record
+            set_name: Name for the new set
+            set_description: Optional description for the set
             
         Returns:
             tuple: (success: bool, message: str)
         """
-        self.log(f"Executing placeholder_function_5 for MMS ID: {mms_id}")
-        return True, f"Placeholder Function 5 executed for record {mms_id}"
+        self.log(f"Creating new set: {set_name}")
+        
+        if not self.api_key:
+            self.log("API Key not configured", logging.ERROR)
+            return False, "API Key not configured"
+        
+        if not self.set_members:
+            return False, "No set members loaded. Please load a set first."
+        
+        try:
+            api_url = self._get_alma_api_url()
+            
+            # Construct XML for new set creation
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y-%m-%dZ")
+            
+            # Build set XML
+            set_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<set link="https://api-na.hosted.exlibrisgroup.com/almaws/v1/conf/sets">
+    <name>{set_name}</name>
+    <description>{set_description if set_description else f'Created by CABB on {timestamp}'}</description>
+    <type desc="Itemized">ITEMIZED</type>
+    <content desc="Bibliographic Records - MMS IDs">BIB_MMS</content>
+    <private desc="Private">false</private>
+    <status desc="Active - New items cannot be added">ACTIVE_CANNOT_CHANGE</status>
+    <created_by>API</created_by>
+    <created_date>{timestamp}</created_date>
+</set>"""
+            
+            self.log("Creating set in Alma")
+            headers = {
+                'Accept': 'application/json',
+                'Content-Type': 'application/xml'
+            }
+            
+            # Step 1: Create the set
+            response = requests.post(
+                f"{api_url}/almaws/v1/conf/sets?apikey={self.api_key}",
+                headers=headers,
+                data=set_xml.encode('utf-8')
+            )
+            
+            if response.status_code != 200:
+                self.log(f"Failed to create set: {response.status_code}", logging.ERROR)
+                self.log(f"Response: {response.text}", logging.ERROR)
+                return False, f"Failed to create set: {response.status_code}"
+            
+            # Get the new set ID
+            set_data = response.json()
+            new_set_id = set_data.get('id')
+            self.log(f"Set created with ID: {new_set_id}")
+            
+            # Step 2: Add members to the set
+            self.log(f"Adding {len(self.set_members)} members to set")
+            
+            added_count = 0
+            failed_count = 0
+            
+            # Add members in batches (API accepts one member at a time for itemized sets)
+            for i, mms_id in enumerate(self.set_members, 1):
+                member_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<member link="https://api-na.hosted.exlibrisgroup.com/almaws/v1/conf/sets/{new_set_id}/members/{mms_id}">
+    <id>{mms_id}</id>
+</member>"""
+                
+                try:
+                    response = requests.post(
+                        f"{api_url}/almaws/v1/conf/sets/{new_set_id}/members?apikey={self.api_key}",
+                        headers={'Content-Type': 'application/xml', 'Accept': 'application/json'},
+                        data=member_xml.encode('utf-8')
+                    )
+                    
+                    if response.status_code == 200:
+                        added_count += 1
+                    else:
+                        failed_count += 1
+                        self.log(f"Failed to add member {mms_id}: {response.status_code}", logging.WARNING)
+                    
+                    if i % 50 == 0:
+                        self.log(f"Added {i}/{len(self.set_members)} members")
+                        
+                except Exception as e:
+                    failed_count += 1
+                    self.log(f"Error adding member {mms_id}: {str(e)}", logging.WARNING)
+            
+            message = f"Created set '{set_name}' (ID: {new_set_id}) with {added_count} members"
+            if failed_count > 0:
+                message += f" ({failed_count} failed)"
+            
+            self.log(message)
+            return True, message
+            
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            self.log(f"Error creating set: {str(e)}", logging.ERROR)
+            self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
+            return False, f"Error creating set: {str(e)}"
 
 
 def main(page: ft.Page):
@@ -1084,8 +1235,8 @@ def main(page: ft.Page):
     )
     
     set_id_input = ft.TextField(
-        label="Set ID",
-        hint_text="Enter Alma Set ID",
+        label="Set ID or CSV Path",
+        hint_text="Enter Alma Set ID or path to CSV file",
         width=300
     )
     
@@ -1131,71 +1282,163 @@ def main(page: ft.Page):
         success, message = editor.initialize_alma_connection()
         update_status(message, not success)
     
-    def on_load_set_click(e):
-        """Handle Load Set button click"""
-        logger.info("Load Set button clicked")
-        if not set_id_input.value:
-            update_status("Please enter a Set ID", True)
-            return
+    def on_browse_csv_click(e):
+        """Handle browse button click - show dialog for CSV path"""
+        logger.info("Browse CSV button clicked")
         
-        # Get limit value
-        try:
-            limit = int(limit_input.value) if limit_input.value else 0
-            if limit < 0:
-                limit = 0
-        except ValueError:
-            update_status("Invalid limit value - using 0 (no limit)", True)
-            limit = 0
+        csv_path_input = ft.TextField(
+            label="CSV File Path",
+            hint_text="Enter full path to CSV file (e.g., /Users/yourname/file.csv)",
+            autofocus=True,
+            width=500
+        )
         
-        add_log_message(f"Loading set: {set_id_input.value} (limit: {limit if limit > 0 else 'none'})")
+        def load_csv_path(dialog_e):
+            if csv_path_input.value:
+                set_id_input.value = csv_path_input.value
+                browse_dialog.open = False
+                page.update()
+                add_log_message(f"CSV path entered: {csv_path_input.value}")
+            else:
+                add_log_message("No path entered")
         
-        # Show indeterminate progress bar while fetching set details
-        set_progress_bar.visible = True
-        set_progress_text.visible = True
-        set_progress_bar.value = None  # Indeterminate progress
-        set_progress_text.value = "Fetching set details..."
-        page.update()
-        
-        # Fetch set details
-        success, message, set_data = editor.fetch_set_details(set_id_input.value)
-        if not success:
-            set_progress_bar.visible = False
-            set_progress_text.visible = False
-            update_status(message, True)
-            return
-        
-        # Define progress callback to update the progress bar and text
-        def update_progress(current, total):
-            set_progress_bar.value = current / total
-            set_progress_text.value = f"Loading members: {current} of {total}"
+        def cancel_browse(dialog_e):
+            browse_dialog.open = False
             page.update()
         
-        # Fetch set members with progress updates
-        success, member_msg, members = editor.fetch_set_members(
-            set_id_input.value, 
-            progress_callback=update_progress,
-            max_members=limit
+        browse_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Enter CSV File Path"),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text("Enter the full path to your CSV file:"),
+                    csv_path_input,
+                    ft.Text("Tip: You can drag and drop the file into your terminal to get its path", 
+                           size=11, color=ft.Colors.GREY_600),
+                ], tight=True),
+                width=500,
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel_browse),
+                ft.ElevatedButton("Load", on_click=load_csv_path),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
         )
-        if not success:
-            set_progress_bar.visible = False
-            set_progress_text.visible = False
-            update_status(member_msg, True)
+        
+        page.open(browse_dialog)
+    
+    def on_load_set_click(e):
+        """Handle Load Set button click - supports both Set ID and CSV file"""
+        logger.info("Load Set button clicked")
+        if not set_id_input.value:
+            update_status("Please enter a Set ID or select a CSV file", True)
             return
         
-        # Update set info display
-        set_name = set_data.get('name', 'Unknown')
-        member_count = len(members)
-        if limit > 0 and member_count >= limit:
-            set_info_text.value = f"Set: {set_name} ({member_count} of {limit} members loaded - limited)"
+        input_value = set_id_input.value.strip()
+        
+        # Determine if input is a CSV file path or Set ID
+        is_csv = input_value.endswith('.csv') or '/' in input_value or '\\' in input_value
+        
+        if is_csv:
+            # Load from CSV file
+            add_log_message(f"Loading MMS IDs from CSV: {input_value}")
+            
+            # Show progress
+            set_progress_bar.visible = True
+            set_progress_text.visible = True
+            set_progress_bar.value = None
+            set_progress_text.value = "Loading CSV..."
+            page.update()
+            
+            success, message, members = editor.load_mms_ids_from_csv(input_value)
+            
+            # Hide progress
+            set_progress_bar.visible = False
+            set_progress_text.visible = False
+            
+            if not success:
+                update_status(message, True)
+                return
+            
+            # Get limit value
+            try:
+                limit = int(limit_input.value) if limit_input.value else 0
+                if limit < 0:
+                    limit = 0
+            except ValueError:
+                update_status("Invalid limit value - using 0 (no limit)", True)
+                limit = 0
+            
+            # Apply limit if set
+            if limit > 0 and len(members) > limit:
+                editor.set_members = members[:limit]
+                set_info_text.value = f"CSV: {input_value.split('/')[-1]} ({limit} of {len(members)} IDs loaded - limited)"
+            else:
+                set_info_text.value = f"CSV: {input_value.split('/')[-1]} ({len(members)} IDs)"
+            
+            page.update()
+            update_status(f"Loaded {len(editor.set_members)} MMS IDs from CSV", False)
+            
         else:
-            set_info_text.value = f"Set: {set_name} ({member_count} members)"
-        
-        # Hide progress bar after loading
-        set_progress_bar.visible = False
-        set_progress_text.visible = False
-        
-        page.update()
-        update_status(f"Loaded set with {member_count} members", False)
+            # Load from Alma Set
+            # Get limit value
+            try:
+                limit = int(limit_input.value) if limit_input.value else 0
+                if limit < 0:
+                    limit = 0
+            except ValueError:
+                update_status("Invalid limit value - using 0 (no limit)", True)
+                limit = 0
+            
+            add_log_message(f"Loading set: {input_value} (limit: {limit if limit > 0 else 'none'})")
+            
+            # Show indeterminate progress bar while fetching set details
+            set_progress_bar.visible = True
+            set_progress_text.visible = True
+            set_progress_bar.value = None  # Indeterminate progress
+            set_progress_text.value = "Fetching set details..."
+            page.update()
+            
+            # Fetch set details
+            success, message, set_data = editor.fetch_set_details(input_value)
+            if not success:
+                set_progress_bar.visible = False
+                set_progress_text.visible = False
+                update_status(message, True)
+                return
+            
+            # Define progress callback to update the progress bar and text
+            def update_progress(current, total):
+                set_progress_bar.value = current / total
+                set_progress_text.value = f"Loading members: {current} of {total}"
+                page.update()
+            
+            # Fetch set members with progress updates
+            success, member_msg, members = editor.fetch_set_members(
+                input_value, 
+                progress_callback=update_progress,
+                max_members=limit
+            )
+            if not success:
+                set_progress_bar.visible = False
+                set_progress_text.visible = False
+                update_status(member_msg, True)
+                return
+            
+            # Update set info display
+            set_name = set_data.get('name', 'Unknown')
+            member_count = len(members)
+            if limit > 0 and member_count >= limit:
+                set_info_text.value = f"Set: {set_name} ({member_count} of {limit} members loaded - limited)"
+            else:
+                set_info_text.value = f"Set: {set_name} ({member_count} members)"
+            
+            # Hide progress bar after loading
+            set_progress_bar.visible = False
+            set_progress_text.visible = False
+            
+            page.update()
+            update_status(f"Loaded set with {member_count} members", False)
     
     def on_clear_set_click(e):
         """Handle Clear Set button click"""
@@ -1364,15 +1607,71 @@ def main(page: ft.Page):
             add_log_message("CSV filtering complete")
     
     def on_function_5_click(e):
-        """Handle Function 5 click"""
-        logger.info("Function 5 button clicked")
-        if not mms_id_input.value:
-            update_status("Please enter an MMS ID", True)
+        """Handle Function 5 click - Create new set from loaded members"""
+        logger.info("Function 5 button clicked - Create Set")
+        
+        # Check if members are loaded
+        if not editor.set_members:
+            update_status("Please load a set first", True)
             return
         
-        add_log_message(f"Executing Function 5 for MMS ID: {mms_id_input.value}")
-        success, message = editor.placeholder_function_5(mms_id_input.value)
-        update_status(message, not success)
+        # Create dialog for set name input
+        set_name_input = ft.TextField(
+            label="Set Name",
+            hint_text="Enter name for new set",
+            autofocus=True,
+            width=400
+        )
+        
+        set_description_input = ft.TextField(
+            label="Description (optional)",
+            hint_text="Enter description",
+            multiline=True,
+            min_lines=2,
+            max_lines=4,
+            width=400
+        )
+        
+        def create_set(dialog_e):
+            if not set_name_input.value:
+                update_status("Please enter a set name", True)
+                return
+            
+            # Close dialog
+            create_set_dialog.open = False
+            page.update()
+            
+            add_log_message(f"Creating new set: {set_name_input.value} with {len(editor.set_members)} members")
+            success, message = editor.create_set_from_members(
+                set_name_input.value,
+                set_description_input.value
+            )
+            update_status(message, not success)
+            if success:
+                add_log_message("Set creation complete")
+        
+        def cancel_create(dialog_e):
+            create_set_dialog.open = False
+            page.update()
+        
+        create_set_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(f"Create New Set from {len(editor.set_members)} Members"),
+            content=ft.Container(
+                content=ft.Column([
+                    set_name_input,
+                    set_description_input,
+                ], tight=True),
+                width=400,
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel_create),
+                ft.ElevatedButton("Create Set", on_click=create_set),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        page.open(create_set_dialog)
     
     # Build UI
     page.add(
@@ -1409,9 +1708,14 @@ def main(page: ft.Page):
                     ft.Divider(height=10),
                     
                     # Set input
-                    ft.Text("Batch Processing (Set):", size=14, weight=ft.FontWeight.W_500),
+                    ft.Text("Batch Processing (Set or CSV):", size=14, weight=ft.FontWeight.W_500),
                     ft.Row([
                         set_id_input,
+                        ft.IconButton(
+                            icon=ft.Icons.FOLDER_OPEN,
+                            tooltip="Browse for CSV file",
+                            on_click=on_browse_csv_click
+                        ),
                         limit_input,
                     ], spacing=10),
                     ft.Row([
@@ -1475,9 +1779,9 @@ def main(page: ft.Page):
                     ),
                     
                     ft.ElevatedButton(
-                        "5. Placeholder Function 5",
+                        "5. Create New Set from Loaded Members",
                         on_click=on_function_5_click,
-                        icon=ft.Icons.EDIT,
+                        icon=ft.Icons.CREATE_NEW_FOLDER,
                         width=400
                     ),
                 ], spacing=5),
