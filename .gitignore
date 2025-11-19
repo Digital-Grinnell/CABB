@@ -44,3 +44,5 @@ Thumbs.db
 
 # Logs
 *.log
+
+alma_export*.csv

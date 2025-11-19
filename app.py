@@ -45,6 +45,7 @@ class AlmaBibEditor:
         self.log_callback = log_callback
         self.set_members = []  # Store MMS IDs from loaded set
         self.set_info = None   # Store set metadata
+        self.current_record = None  # Store currently fetched bib record
         self.kill_switch = False  # Emergency stop for batch operations
         logger.debug(f"API Region: {self.api_region}")
         logger.debug(f"API Key configured: {'Yes' if self.api_key else 'No'}")
@@ -217,6 +218,148 @@ class AlmaBibEditor:
             self.log(f"Error fetching set members {set_id}: {str(e)}", logging.ERROR)
             self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
             return False, f"Error fetching set members {set_id}: {str(e)}", []
+    
+    def fetch_bib_records_batch(self, mms_ids: list) -> dict:
+        """
+        Fetch multiple bibliographic records in a single batch API call (up to 100 IDs).
+        
+        Args:
+            mms_ids: List of MMS IDs to retrieve (max 100)
+            
+        Returns:
+            dict: Dictionary mapping mms_id -> record dict, only contains successfully fetched records
+        """
+        if not self.api_key:
+            self.log("API Key not configured", logging.ERROR)
+            return {}
+        
+        if not mms_ids:
+            return {}
+        
+        # Limit to 100 IDs per Alma API restrictions
+        if len(mms_ids) > 100:
+            self.log(f"Warning: Batch size {len(mms_ids)} exceeds limit, truncating to 100", logging.WARNING)
+            mms_ids = mms_ids[:100]
+        
+        try:
+            api_url = self._get_alma_api_url()
+            
+            # Join MMS IDs with comma for batch request
+            mms_ids_param = ','.join([str(mms_id).strip() for mms_id in mms_ids])
+            
+            self.log(f"Batch API call: Fetching {len(mms_ids)} records")
+            headers = {'Accept': 'application/json'}
+            response = requests.get(
+                f"{api_url}/almaws/v1/bibs?mms_id={mms_ids_param}&view=full&expand=None&apikey={self.api_key}",
+                headers=headers
+            )
+            
+            if response.status_code != 200:
+                self.log(f"Batch API call failed: {response.status_code}", logging.ERROR)
+                self.log(f"Response: {response.text}", logging.ERROR)
+                return {}
+            
+            # Parse JSON response
+            data = response.json()
+            records = {}
+            
+            # Extract bibs from response
+            bibs = data.get('bib', [])
+            if not isinstance(bibs, list):
+                bibs = [bibs] if bibs else []
+            
+            self.log(f"Batch API returned {len(bibs)} records")
+            
+            # Process each bib record
+            for bib in bibs:
+                mms_id = bib.get('mms_id')
+                if not mms_id:
+                    continue
+                
+                # Extract anies field (contains Dublin Core XML)
+                anies = bib.get('anies', [])
+                if not isinstance(anies, list):
+                    anies = [anies] if anies else []
+                
+                # Store record in same format as fetch_bib_record
+                records[mms_id] = {
+                    'mms_id': mms_id,
+                    'originating_system_id': bib.get('originating_system_id', ''),
+                    'title': bib.get('title', ''),
+                    'date_of_publication': '',
+                    'author': '',
+                    'originating_system': bib.get('originating_system_id', '')[:9] if bib.get('originating_system_id') else '01GCL_INST',
+                    'anies': anies
+                }
+            
+            return records
+            
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            self.log(f"Error in batch fetch: {str(e)}", logging.ERROR)
+            self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
+            return {}
+    
+    def fetch_bib_record(self, mms_id: str) -> tuple[bool, str]:
+        """
+        Fetch a bibliographic record and store it in current_record
+        
+        Args:
+            mms_id: The MMS ID of the bibliographic record
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        self.log(f"Fetching bib record: {mms_id}")
+        if not self.api_key:
+            self.log("API Key not configured", logging.ERROR)
+            return False, "API Key not configured"
+        
+        try:
+            api_url = self._get_alma_api_url()
+            
+            # GET the bib record as JSON (easier to parse than XML for this use case)
+            self.log(f"Requesting bibliographic record {mms_id} from Alma API")
+            headers = {'Accept': 'application/json'}
+            response = requests.get(
+                f"{api_url}/almaws/v1/bibs/{mms_id}?view=full&expand=None&apikey={self.api_key}",
+                headers=headers
+            )
+            
+            if response.status_code != 200:
+                self.log(f"Failed to fetch record: {response.status_code}", logging.ERROR)
+                self.log(f"Response: {response.text}", logging.ERROR)
+                return False, f"Failed to fetch record: {response.status_code}"
+            
+            # Parse JSON response
+            bib = response.json()
+            
+            # Extract anies field (contains Dublin Core XML)
+            anies = bib.get('anies', [])
+            if not isinstance(anies, list):
+                anies = [anies] if anies else []
+            
+            # Store record
+            self.current_record = {
+                'mms_id': mms_id,
+                'originating_system_id': bib.get('originating_system_id', ''),
+                'title': bib.get('title', ''),
+                'date_of_publication': '',
+                'author': '',
+                'originating_system': bib.get('originating_system_id', '')[:9] if bib.get('originating_system_id') else '01GCL_INST',
+                'anies': anies
+            }
+            
+            self.log(f"Successfully fetched record {mms_id}")
+            return True, f"Successfully fetched record {mms_id}"
+            
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            self.log(f"Error fetching record {mms_id}: {str(e)}", logging.ERROR)
+            self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
+            return False, f"Error fetching record {mms_id}: {str(e)}"
     
     def fetch_and_display_xml(self, mms_id: str, page=None) -> tuple[bool, str]:
         """
@@ -471,18 +614,303 @@ class AlmaBibEditor:
             self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
             return False, f"Error processing record {mms_id}: {str(e)}"
     
-    def placeholder_function_3(self, mms_id: str) -> tuple[bool, str]:
+    def export_to_csv(self, mms_ids: list, output_file: str, progress_callback=None) -> tuple[bool, str]:
         """
-        Function 3: Placeholder for future Alma-Digital record editing function
+        Function 3: Export bibliographic records to CSV with Dublin Core fields
+        Uses batch API calls (100 records per call) for efficiency.
         
         Args:
-            mms_id: The MMS ID of the bibliographic record
+            mms_ids: List of MMS IDs to export
+            output_file: Path to output CSV file
+            progress_callback: Optional callback function(current, total) for progress updates
             
         Returns:
             tuple: (success: bool, message: str)
         """
-        self.log(f"Executing placeholder_function_3 for MMS ID: {mms_id}")
-        return True, f"Placeholder Function 3 executed for record {mms_id}"
+        import csv
+        
+        self.log(f"Starting CSV export for {len(mms_ids)} records to {output_file}")
+        
+        # Define CSV column headings
+        column_headings = [
+            "group_id", "collection_id", "mms_id", "originating_system_id", "compoundrelationship",
+            "dc:title", "dcterms:alternative", "oldalttitle", "dc:identifier",
+            "dcterms:identifier.dcterms:URI", "dcterms:tableOfContents", "dc:creator",
+            "dc:contributor", "dc:subject", "dcterms:subject.dcterms:LCSH",
+            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
+            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
+            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
+            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
+            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
+            "dcterms:subject.dcterms:LCSH", "dc:description", "dcterms:provenance",
+            "dcterms:bibliographicCitation", "dcterms:abstract", "dcterms:publisher",
+            "dcterms:publisher", "dc:date", "dcterms:created", "dcterms:issued",
+            "dcterms:dateSubmitted", "dcterms:dateAccepted", "dc:type", "dc:format",
+            "dcterms:extent", "dcterms:extent", "dcterms:medium",
+            "dcterms:format.dcterms:IMT", "dcterms:type.dcterms:DCMIType", "dc:language",
+            "dc:relation", "dcterms:isPartOf", "dcterms:isPartOf", "dcterms:isPartOf",
+            "dc:coverage", "dcterms:spatial", "dcterms:spatial.dcterms:Point",
+            "dcterms:temporal", "dc:rights", "dc:source", "bib custom field",
+            "rep_label", "rep_public_note", "rep_access_rights", "rep_usage_type",
+            "rep_library", "rep_note", "rep_custom field", "file_name_1", "file_label_1",
+            "file_name_2", "file_label_2", "googlesheetsource", "dginfo"
+        ]
+        
+        try:
+            with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=column_headings)
+                writer.writeheader()
+                
+                success_count = 0
+                failed_count = 0
+                total = len(mms_ids)
+                batch_size = 100  # Alma API supports up to 100 MMS IDs per batch call
+                
+                # Calculate total number of API calls
+                total_batches = (total + batch_size - 1) // batch_size
+                self.log(f"Using batch API calls: {total_batches} calls for {total} records (vs {total} individual calls)")
+                
+                # Process in batches
+                for batch_start in range(0, total, batch_size):
+                    batch_end = min(batch_start + batch_size, total)
+                    batch_ids = mms_ids[batch_start:batch_end]
+                    batch_num = (batch_start // batch_size) + 1
+                    
+                    self.log(f"Processing batch {batch_num}/{total_batches}: records {batch_start+1}-{batch_end}")
+                    
+                    # Fetch batch of records
+                    batch_records = self.fetch_bib_records_batch(batch_ids)
+                    
+                    # Process each record in the batch
+                    for i in range(len(batch_ids)):
+                        record_index = batch_start + i + 1
+                        mms_id = batch_ids[i]
+                        
+                        try:
+                            # Check if record was successfully fetched
+                            if mms_id in batch_records:
+                                # Set as current record for field extraction
+                                self.current_record = batch_records[mms_id]
+                                
+                                # Map record to CSV row
+                                row = self._map_bib_to_csv_row(self.current_record)
+                                writer.writerow(row)
+                                success_count += 1
+                            else:
+                                self.log(f"Record not returned in batch: {mms_id}", logging.WARNING)
+                                failed_count += 1
+                            
+                            # Update progress
+                            if progress_callback:
+                                progress_callback(record_index, total)
+                            
+                            if record_index % 50 == 0:
+                                self.log(f"Exported {record_index}/{total} records")
+                                
+                        except Exception as e:
+                            self.log(f"Error exporting {mms_id}: {str(e)}", logging.ERROR)
+                            failed_count += 1
+                
+                message = f"CSV export complete: {success_count} succeeded, {failed_count} failed. File: {output_file}"
+                self.log(message)
+                self.log(f"API efficiency: {total_batches} batch calls vs {total} individual calls (saved {total - total_batches} calls)")
+                return True, message
+                
+        except Exception as e:
+            error_msg = f"Error creating CSV file: {str(e)}"
+            self.log(error_msg, logging.ERROR)
+            return False, error_msg
+    
+    def _extract_dc_field(self, element: str, namespace: str = "dc") -> list:
+        """Extract data from Dublin Core XML in the anies field"""
+        try:
+            anies = self.current_record.get("anies", [])
+            if not anies:
+                return []
+            
+            dc_xml = anies[0] if isinstance(anies, list) else anies
+            root = ET.fromstring(dc_xml)
+            
+            namespaces = {
+                'dc': 'http://purl.org/dc/elements/1.1/',
+                'dcterms': 'http://purl.org/dc/terms/'
+            }
+            
+            values = []
+            tag = f"{{{namespaces[namespace]}}}{element}"
+            for elem in root.findall(f".//{tag}"):
+                if elem.text and elem.text.strip():
+                    values.append(elem.text.strip())
+            
+            return values
+        except Exception as e:
+            self.log(f"Error extracting DC field {namespace}:{element}: {str(e)}", logging.WARNING)
+            return []
+    
+    def _extract_custom_field(self, element: str, namespace_uri: str) -> list:
+        """Extract data from custom namespace fields"""
+        try:
+            anies = self.current_record.get("anies", [])
+            if not anies:
+                return []
+            
+            dc_xml = anies[0] if isinstance(anies, list) else anies
+            root = ET.fromstring(dc_xml)
+            
+            values = []
+            tag = f"{{{namespace_uri}}}{element}"
+            for elem in root.findall(f".//{tag}"):
+                if elem.text and elem.text.strip():
+                    values.append(elem.text.strip())
+            
+            return values
+        except Exception as e:
+            self.log(f"Error extracting custom field {element}: {str(e)}", logging.WARNING)
+            return []
+    
+    def _map_bib_to_csv_row(self, bib: dict) -> dict:
+        """Map a bibliographic record to a CSV row using Dublin Core fields"""
+        column_headings = [
+            "group_id", "collection_id", "mms_id", "originating_system_id", "compoundrelationship",
+            "dc:title", "dcterms:alternative", "oldalttitle", "dc:identifier",
+            "dcterms:identifier.dcterms:URI", "dcterms:tableOfContents", "dc:creator",
+            "dc:contributor", "dc:subject", "dcterms:subject.dcterms:LCSH",
+            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
+            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
+            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
+            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
+            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
+            "dcterms:subject.dcterms:LCSH", "dc:description", "dcterms:provenance",
+            "dcterms:bibliographicCitation", "dcterms:abstract", "dcterms:publisher",
+            "dcterms:publisher", "dc:date", "dcterms:created", "dcterms:issued",
+            "dcterms:dateSubmitted", "dcterms:dateAccepted", "dc:type", "dc:format",
+            "dcterms:extent", "dcterms:extent", "dcterms:medium",
+            "dcterms:format.dcterms:IMT", "dcterms:type.dcterms:DCMIType", "dc:language",
+            "dc:relation", "dcterms:isPartOf", "dcterms:isPartOf", "dcterms:isPartOf",
+            "dc:coverage", "dcterms:spatial", "dcterms:spatial.dcterms:Point",
+            "dcterms:temporal", "dc:rights", "dc:source", "bib custom field",
+            "rep_label", "rep_public_note", "rep_access_rights", "rep_usage_type",
+            "rep_library", "rep_note", "rep_custom field", "file_name_1", "file_label_1",
+            "file_name_2", "file_label_2", "googlesheetsource", "dginfo"
+        ]
+        
+        row = {heading: "" for heading in column_headings}
+        
+        # Custom namespace URI
+        grinnell_ns = f"http://alma.exlibrisgroup.com/dc/{bib.get('originating_system', '01GCL_INST')}"
+        
+        # Basic metadata
+        row["mms_id"] = bib.get("mms_id", "")
+        row["originating_system_id"] = bib.get("originating_system_id", "")
+        
+        # Extract Dublin Core fields
+        titles = self._extract_dc_field("title", "dc")
+        row["dc:title"] = titles[0] if titles else bib.get("title", "")
+        
+        alt_titles = self._extract_dc_field("alternative", "dcterms")
+        row["dcterms:alternative"] = "; ".join(alt_titles) if alt_titles else ""
+        
+        identifiers = self._extract_dc_field("identifier", "dc")
+        row["dc:identifier"] = "; ".join(identifiers) if identifiers else ""
+        
+        for identifier in identifiers:
+            if identifier.startswith("http://") or identifier.startswith("https://"):
+                row["dcterms:identifier.dcterms:URI"] = identifier
+                break
+        
+        toc = self._extract_dc_field("tableOfContents", "dcterms")
+        row["dcterms:tableOfContents"] = "; ".join(toc) if toc else ""
+        
+        creators = self._extract_dc_field("creator", "dc")
+        row["dc:creator"] = "; ".join(creators) if creators else bib.get("author", "")
+        
+        contributors = self._extract_dc_field("contributor", "dc")
+        row["dc:contributor"] = "; ".join(contributors) if contributors else ""
+        
+        subjects = self._extract_dc_field("subject", "dc") + self._extract_dc_field("subject", "dcterms")
+        if subjects:
+            row["dc:subject"] = subjects[0]
+        
+        descriptions = self._extract_dc_field("description", "dc")
+        row["dc:description"] = "; ".join(descriptions) if descriptions else ""
+        
+        provenance = self._extract_dc_field("provenance", "dcterms")
+        row["dcterms:provenance"] = "; ".join(provenance) if provenance else ""
+        
+        citation = self._extract_dc_field("bibliographicCitation", "dcterms")
+        row["dcterms:bibliographicCitation"] = "; ".join(citation) if citation else ""
+        
+        abstract = self._extract_dc_field("abstract", "dcterms")
+        row["dcterms:abstract"] = "; ".join(abstract) if abstract else ""
+        
+        publishers = self._extract_dc_field("publisher", "dcterms")
+        if publishers:
+            row["dcterms:publisher"] = publishers[0]
+        
+        dates = self._extract_dc_field("date", "dc")
+        row["dc:date"] = dates[0] if dates else bib.get("date_of_publication", "")
+        
+        created = self._extract_dc_field("created", "dcterms")
+        row["dcterms:created"] = created[0] if created else ""
+        
+        issued = self._extract_dc_field("issued", "dcterms")
+        row["dcterms:issued"] = issued[0] if issued else ""
+        
+        submitted = self._extract_dc_field("dateSubmitted", "dcterms")
+        row["dcterms:dateSubmitted"] = submitted[0] if submitted else ""
+        
+        accepted = self._extract_dc_field("dateAccepted", "dcterms")
+        row["dcterms:dateAccepted"] = accepted[0] if accepted else ""
+        
+        types = self._extract_dc_field("type", "dc")
+        row["dc:type"] = types[0] if types else ""
+        
+        formats = self._extract_dc_field("format", "dc")
+        row["dc:format"] = formats[0] if formats else ""
+        
+        extents = self._extract_dc_field("extent", "dcterms")
+        if extents:
+            row["dcterms:extent"] = extents[0]
+        
+        medium = self._extract_dc_field("medium", "dcterms")
+        row["dcterms:medium"] = medium[0] if medium else ""
+        
+        languages = self._extract_dc_field("language", "dc")
+        row["dc:language"] = "; ".join(languages) if languages else ""
+        
+        relations = self._extract_dc_field("relation", "dc")
+        row["dc:relation"] = "; ".join(relations) if relations else ""
+        
+        ispartof = self._extract_dc_field("isPartOf", "dcterms")
+        if ispartof:
+            row["dcterms:isPartOf"] = ispartof[0]
+        
+        coverage = self._extract_dc_field("coverage", "dc")
+        row["dc:coverage"] = "; ".join(coverage) if coverage else ""
+        
+        spatial = self._extract_dc_field("spatial", "dcterms")
+        row["dcterms:spatial"] = "; ".join(spatial) if spatial else ""
+        
+        temporal = self._extract_dc_field("temporal", "dcterms")
+        row["dcterms:temporal"] = "; ".join(temporal) if temporal else ""
+        
+        rights = self._extract_dc_field("rights", "dc")
+        row["dc:rights"] = "; ".join(rights) if rights else ""
+        
+        sources = self._extract_dc_field("source", "dc")
+        row["dc:source"] = "; ".join(sources) if sources else ""
+        
+        # Custom fields
+        compound = self._extract_custom_field("compoundrelationship", grinnell_ns)
+        row["compoundrelationship"] = compound[0] if compound else ""
+        
+        sheets = self._extract_custom_field("googlesheetsource", grinnell_ns)
+        row["googlesheetsource"] = sheets[0] if sheets else ""
+        
+        dginfo = self._extract_custom_field("dginfo", grinnell_ns)
+        row["dginfo"] = dginfo[0] if dginfo else ""
+        
+        return row
     
     def placeholder_function_4(self, mms_id: str) -> tuple[bool, str]:
         """
@@ -792,15 +1220,49 @@ def main(page: ft.Page):
             update_status(message, not success)
     
     def on_function_3_click(e):
-        """Handle Function 3 click"""
-        logger.info("Function 3 button clicked")
-        if not mms_id_input.value:
-            update_status("Please enter an MMS ID", True)
+        """Handle Function 3 click - Export set to CSV"""
+        logger.info("Function 3 button clicked - Export to CSV")
+        
+        # Check if set is loaded
+        if not editor.set_members:
+            update_status("Please load a set first", True)
             return
         
-        add_log_message(f"Executing Function 3 for MMS ID: {mms_id_input.value}")
-        success, message = editor.placeholder_function_3(mms_id_input.value)
+        # Generate output filename with timestamp
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f"alma_export_{timestamp}.csv"
+        
+        add_log_message(f"Exporting {len(editor.set_members)} records to CSV: {output_file}")
+        
+        # Show progress bar
+        set_progress_bar.visible = True
+        set_progress_bar.value = None  # Indeterminate mode
+        set_progress_text.value = "Preparing export..."
+        set_progress_text.visible = True
+        page.update()
+        
+        def progress_callback(current, total):
+            """Update progress during export"""
+            set_progress_bar.value = current / total if total > 0 else None
+            set_progress_text.value = f"Exported {current} of {total} records"
+            page.update()
+        
+        # Export to CSV
+        success, message = editor.export_to_csv(
+            editor.set_members,
+            output_file,
+            progress_callback=progress_callback
+        )
+        
+        # Hide progress bar
+        set_progress_bar.visible = False
+        set_progress_text.visible = False
+        page.update()
+        
         update_status(message, not success)
+        if success:
+            add_log_message(f"CSV export complete: {output_file}")
     
     def on_function_4_click(e):
         """Handle Function 4 click"""
@@ -911,9 +1373,9 @@ def main(page: ft.Page):
                     ),
                     
                     ft.ElevatedButton(
-                        "3. Placeholder Function 3",
+                        "3. Export Set to DCAP01 CSV",
                         on_click=on_function_3_click,
-                        icon=ft.Icons.EDIT,
+                        icon=ft.Icons.DOWNLOAD,
                         width=400
                     ),
                     
