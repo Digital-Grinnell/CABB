@@ -116,6 +116,8 @@ class AlmaBibEditor:
         self.set_info = None   # Store set metadata
         self.current_record = None  # Store currently fetched bib record
         self.kill_switch = False  # Emergency stop for batch operations
+        self.last_manifest = None  # Store last retrieved IIIF manifest
+        self.last_manifest_url = None  # Store last manifest URL
         logger.debug(f"API Region: {self.api_region}")
         logger.debug(f"API Key configured: {'Yes' if self.api_key else 'No'}")
         
@@ -1137,15 +1139,209 @@ class AlmaBibEditor:
             self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
             return False, f"Error filtering CSV: {str(e)}"
     
-    def function_5_placeholder(self) -> tuple[bool, str]:
+    def get_iiif_manifest_and_canvas(self, mms_id: str, representation_id: str = None) -> tuple[bool, str]:
         """
-        Function 5: Placeholder for future functionality
+        Function 5: Retrieve IIIF manifest and canvas for a digital object
         
+        Args:
+            mms_id: The MMS ID of the bibliographic record
+            representation_id: Optional representation ID. If not provided, uses first available.
+            
         Returns:
             tuple: (success: bool, message: str)
         """
-        self.log("Function 5 is currently not implemented")
-        return False, "Function 5 is not yet implemented"
+        self.log(f"Retrieving IIIF manifest for MMS ID: {mms_id}")
+        
+        if not self.api_key:
+            self.log("API Key not configured", logging.ERROR)
+            return False, "API Key not configured"
+        
+        try:
+            api_url = self._get_alma_api_url()
+            
+            # Step 1: Get representations if representation_id not provided
+            if not representation_id:
+                self.log("Fetching representations list")
+                response = requests.get(
+                    f"{api_url}/almaws/v1/bibs/{mms_id}/representations?apikey={self.api_key}",
+                    headers={'Accept': 'application/json'}
+                )
+                
+                if response.status_code != 200:
+                    self.log(f"Failed to fetch representations: {response.status_code}", logging.ERROR)
+                    return False, f"Failed to fetch representations: {response.status_code}"
+                
+                reps_data = response.json()
+                representations = reps_data.get('representation', [])
+                
+                if not representations:
+                    return False, "No digital representations found for this record"
+                
+                # Use first representation (lowest ID derivative, or first master, or first remote)
+                representation_id = representations[0].get('id')
+                self.log(f"Using first representation: {representation_id}")
+            
+            # Step 2: Get IIIF manifest URL
+            # According to Alma documentation, IIIF manifest URLs follow this pattern:
+            # - Regional instances: https://{region}.alma.exlibrisgroup.com/view/iiif/presentation/{INST_CODE}/{REP_ID}/manifest
+            # - Custom domain: https://{domain}.alma.exlibrisgroup.com/view/iiif/presentation/{REP_ID}/manifest
+            # Note: The region domain (na01, eu01, etc.) differs from the API domain
+            
+            alma_domain = self._get_alma_domain()
+            institution_code = self._get_institution_code()
+            
+            # Construct URL based on whether we have institution code
+            if institution_code:
+                # Regional/sandbox instance - institution code in path
+                manifest_url = f"https://{alma_domain}.alma.exlibrisgroup.com/view/iiif/presentation/{institution_code}/{representation_id}/manifest"
+            else:
+                # Custom domain instance
+                manifest_url = f"https://{alma_domain}.alma.exlibrisgroup.com/view/iiif/presentation/{representation_id}/manifest"
+            
+            self.log(f"IIIF Manifest URL: {manifest_url}")
+            
+            # Step 3: Fetch the manifest (no authentication needed for public IIIF)
+            manifest_response = requests.get(manifest_url)
+            
+            if manifest_response.status_code != 200:
+                self.log(f"Failed to fetch IIIF manifest: {manifest_response.status_code}", logging.ERROR)
+                self.log(f"Response headers: {manifest_response.headers}", logging.DEBUG)
+                self.log(f"Response text: {manifest_response.text[:500]}", logging.DEBUG)
+                
+                # IIIF manifest might not be available - try getting delivery JSON instead
+                self.log("Attempting alternative: delivery JSON endpoint", logging.INFO)
+                delivery_url = f"https://{alma_domain}.alma.exlibrisgroup.com/view/delivery/{representation_id}.json"
+                if institution_code:
+                    delivery_url = f"https://{alma_domain}.alma.exlibrisgroup.com/view/delivery/{institution_code}/{representation_id}.json"
+                
+                delivery_response = requests.get(
+                    delivery_url,
+                    headers={'Accept': 'application/json'}
+                )
+                
+                if delivery_response.status_code == 200:
+                    delivery_data = delivery_response.json()
+                    
+                    result = f"Retrieved delivery information (IIIF manifest not available):\\n\\n"
+                    result += f"Representation ID: {representation_id}\\n"
+                    result += f"Delivery URL: {delivery_url}\\n"
+                    result += f"Label: {delivery_data.get('label', 'N/A')}\\n"
+                    
+                    # Extract file/canvas information from delivery JSON
+                    files = delivery_data.get('files', [])
+                    result += f"Number of files: {len(files)}\\n\\n"
+                    
+                    if files:
+                        result += "Files:\\n"
+                        for i, file in enumerate(files[:10], 1):
+                            label = file.get('label', f'File {i}')
+                            path = file.get('path', 'N/A')
+                            result += f"  {i}. {label}\\n     Path: {path}\\n"
+                        
+                        if len(files) > 10:
+                            result += f"  ... and {len(files) - 10} more files\\n"
+                    
+                    self.log("Retrieved delivery JSON successfully")
+                    return True, result
+                
+                # If delivery JSON also fails, try representation files API
+                self.log("Attempting to retrieve representation files for canvas URLs", logging.INFO)
+                api_url = self._get_alma_api_url()
+                files_response = requests.get(
+                    f"{api_url}/almaws/v1/bibs/{mms_id}/representations/{representation_id}/files?apikey={self.api_key}",
+                    headers={'Accept': 'application/json'}
+                )
+                
+                if files_response.status_code == 200:
+                    files_data = files_response.json()
+                    files = files_data.get('representation_file', [])
+                    
+                    result = f"Retrieved representation file information:\\n\\n"
+                    result += f"Representation ID: {representation_id}\\n"
+                    result += f"Number of files: {len(files)}\\n"
+                    result += f"Note: IIIF manifest and delivery JSON not accessible\\n\\n"
+                    
+                    if files:
+                        result += "Files (with potential canvas URLs):\\n"
+                        for i, file in enumerate(files[:10], 1):
+                            file_id = file.get('id', 'N/A')
+                            label = file.get('label', f'File {i}')
+                            path = file.get('path', 'N/A')
+                            # Canvas URL format (may not work if IIIF not enabled)
+                            canvas_url = f"https://{alma_domain}.alma.exlibrisgroup.com/view/iiif/presentation/{representation_id}/canvas/{file_id}"
+                            if institution_code:
+                                canvas_url = f"https://{alma_domain}.alma.exlibrisgroup.com/view/iiif/presentation/{institution_code}/{representation_id}/canvas/{file_id}"
+                            result += f"  {i}. {label}\\n"
+                            result += f"     File ID: {file_id}\\n"
+                            result += f"     Path: {path}\\n"
+                            result += f"     Canvas URL: {canvas_url}\\n"
+                        
+                        if len(files) > 10:
+                            result += f"  ... and {len(files) - 10} more files\\n"
+                    
+                    self.log("Retrieved file information successfully")
+                    return True, result
+                else:
+                    return False, f"Failed to fetch IIIF manifest (HTTP {manifest_response.status_code}), delivery JSON, and representation files"
+            
+            manifest_data = manifest_response.json()
+            
+            # Step 4: Extract canvas information
+            sequences = manifest_data.get('sequences', [])
+            canvases = []
+            
+            if sequences:
+                canvases = sequences[0].get('canvases', [])
+            
+            # Build result message
+            result = f"IIIF Manifest retrieved successfully\n\n"
+            result += f"Representation ID: {representation_id}\n"
+            result += f"Manifest URL: {manifest_url}\n"
+            result += f"Label: {manifest_data.get('label', 'N/A')}\n"
+            result += f"Number of canvases: {len(canvases)}\n\n"
+            
+            # List canvas details
+            if canvases:
+                result += "Canvases:\n"
+                for i, canvas in enumerate(canvases[:10], 1):  # Limit to first 10
+                    canvas_id = canvas.get('@id', 'N/A')
+                    canvas_label = canvas.get('label', f'Canvas {i}')
+                    result += f"  {i}. {canvas_label}\n     {canvas_id}\n"
+                
+                if len(canvases) > 10:
+                    result += f"  ... and {len(canvases) - 10} more canvases\n"
+            
+            # Store manifest data for potential use
+            self.last_manifest = manifest_data
+            self.last_manifest_url = manifest_url
+            
+            self.log("IIIF manifest retrieved successfully")
+            return True, result
+            
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            self.log(f"Error retrieving IIIF manifest: {str(e)}", logging.ERROR)
+            self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
+            return False, f"Error retrieving IIIF manifest: {str(e)}"
+    
+    def _get_alma_domain(self) -> str:
+        """
+        Get the Alma domain for the institution.
+        Returns the domain part of the Alma URL (e.g., 'grinnell' from grinnell.alma.exlibrisgroup.com)
+        """
+        # Try to extract from environment or use a default
+        # For institutions without custom domains, this would need to be configured
+        alma_domain = os.getenv('ALMA_DOMAIN', 'na01')  # Default to North America regional
+        return alma_domain
+    
+    def _get_institution_code(self) -> str:
+        """
+        Get the institution code (e.g., '01GRINNELL_INST').
+        Required for regional/sandbox IIIF URLs.
+        """
+        institution_code = os.getenv('ALMA_INSTITUTION_CODE', '')
+        return institution_code
 
 
 def main(page: ft.Page):
@@ -1543,12 +1739,22 @@ def main(page: ft.Page):
             add_log_message("CSV filtering complete")
     
     def on_function_5_click(e):
-        """Handle Function 5 click - Placeholder"""
-        logger.info("Function 5 button clicked - Placeholder")
-        storage.record_function_usage("function_5_placeholder")
+        """Handle Function 5 click - Get IIIF Manifest"""
+        logger.info("Function 5 button clicked - Get IIIF Manifest")
+        storage.record_function_usage("function_5_iiif")
         
-        success, message = editor.function_5_placeholder()
+        # Get MMS ID from input or use loaded set
+        mms_id = mms_id_input.value
+        
+        if not mms_id:
+            update_status("Please enter an MMS ID", True)
+            return
+        
+        add_log_message(f"Retrieving IIIF manifest for MMS ID: {mms_id}")
+        success, message = editor.get_iiif_manifest_and_canvas(mms_id)
         update_status(message, not success)
+        if success:
+            add_log_message("IIIF manifest retrieved successfully")
     
     # Function definitions with metadata
     functions = {
@@ -1572,9 +1778,9 @@ def main(page: ft.Page):
             "icon": "🔎",
             "handler": on_function_4_click
         },
-        "function_5_placeholder": {
-            "label": "Function 5 (Not Implemented)",
-            "icon": "⚠️",
+        "function_5_iiif": {
+            "label": "Get IIIF Manifest and Canvas",
+            "icon": "🖼️",
             "handler": on_function_5_click
         }
     }
