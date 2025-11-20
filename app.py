@@ -1,11 +1,12 @@
 """
-Clean Alma Bibs in Bulk (CABB)
+Crunch Alma Bibs in Bulk (CABB)
 A Flet UI app designed to perform various Alma-Digital bib record editing functions.
 """
 
 import flet as ft
 import os
 import logging
+import json
 from datetime import datetime
 from dotenv import load_dotenv
 import xml.etree.ElementTree as ET
@@ -31,6 +32,74 @@ logger = logging.getLogger(__name__)
 logging.getLogger('flet').setLevel(logging.WARNING)
 logging.getLogger('flet_core').setLevel(logging.WARNING)
 logging.getLogger('flet_desktop').setLevel(logging.WARNING)
+
+# Persistent storage file
+PERSISTENCE_FILE = "persistent.json"
+
+
+class PersistentStorage:
+    """Handle persistent storage of UI state and function usage"""
+    
+    def __init__(self):
+        self.data = self.load()
+    
+    def load(self) -> dict:
+        """Load persistent data from file"""
+        try:
+            if os.path.exists(PERSISTENCE_FILE):
+                with open(PERSISTENCE_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                logger.info(f"Loaded persistent data from {PERSISTENCE_FILE}")
+                return data
+        except Exception as e:
+            logger.warning(f"Could not load persistent data: {str(e)}")
+        
+        # Return default structure
+        return {
+            "ui_state": {
+                "mms_id": "",
+                "set_id": "",
+                "limit": "0"
+            },
+            "function_usage": {
+                # Format: "function_name": {"last_used": "ISO timestamp", "count": N}
+            }
+        }
+    
+    def save(self):
+        """Save persistent data to file"""
+        try:
+            with open(PERSISTENCE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.data, f, indent=2, ensure_ascii=False)
+            logger.debug(f"Saved persistent data to {PERSISTENCE_FILE}")
+        except Exception as e:
+            logger.error(f"Could not save persistent data: {str(e)}")
+    
+    def set_ui_state(self, field: str, value: str):
+        """Update UI state field"""
+        self.data["ui_state"][field] = value
+        self.save()
+    
+    def get_ui_state(self, field: str, default: str = "") -> str:
+        """Get UI state field"""
+        return self.data["ui_state"].get(field, default)
+    
+    def record_function_usage(self, function_name: str):
+        """Record that a function was used"""
+        if function_name not in self.data["function_usage"]:
+            self.data["function_usage"][function_name] = {"count": 0}
+        
+        self.data["function_usage"][function_name]["last_used"] = datetime.now().isoformat()
+        self.data["function_usage"][function_name]["count"] = self.data["function_usage"][function_name].get("count", 0) + 1
+        self.save()
+    
+    def get_function_usage(self, function_name: str) -> dict:
+        """Get usage stats for a function"""
+        return self.data["function_usage"].get(function_name, {"last_used": None, "count": 0})
+    
+    def get_all_function_usage(self) -> dict:
+        """Get all function usage stats"""
+        return self.data["function_usage"]
 
 
 class AlmaBibEditor:
@@ -1068,121 +1137,21 @@ class AlmaBibEditor:
             self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
             return False, f"Error filtering CSV: {str(e)}"
     
-    def create_set_from_members(self, set_name: str, set_description: str = "") -> tuple[bool, str]:
+    def function_5_placeholder(self) -> tuple[bool, str]:
         """
-        Function 5: Create a new itemized set in Alma from loaded set members
+        Function 5: Placeholder for future functionality
         
-        Args:
-            set_name: Name for the new set
-            set_description: Optional description for the set
-            
         Returns:
             tuple: (success: bool, message: str)
         """
-        self.log(f"Creating new set: {set_name}")
-        
-        if not self.api_key:
-            self.log("API Key not configured", logging.ERROR)
-            return False, "API Key not configured"
-        
-        if not self.set_members:
-            return False, "No set members loaded. Please load a set first."
-        
-        try:
-            api_url = self._get_alma_api_url()
-            
-            # Construct XML for new set creation
-            from datetime import datetime
-            timestamp = datetime.now().strftime("%Y-%m-%dZ")
-            
-            # Build set XML
-            set_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<set link="https://api-na.hosted.exlibrisgroup.com/almaws/v1/conf/sets">
-    <name>{set_name}</name>
-    <description>{set_description if set_description else f'Created by CABB on {timestamp}'}</description>
-    <type desc="Itemized">ITEMIZED</type>
-    <content desc="Bibliographic Records - MMS IDs">BIB_MMS</content>
-    <private desc="Private">false</private>
-    <status desc="Active - New items cannot be added">ACTIVE_CANNOT_CHANGE</status>
-    <created_by>API</created_by>
-    <created_date>{timestamp}</created_date>
-</set>"""
-            
-            self.log("Creating set in Alma")
-            headers = {
-                'Accept': 'application/json',
-                'Content-Type': 'application/xml'
-            }
-            
-            # Step 1: Create the set
-            response = requests.post(
-                f"{api_url}/almaws/v1/conf/sets?apikey={self.api_key}",
-                headers=headers,
-                data=set_xml.encode('utf-8')
-            )
-            
-            if response.status_code != 200:
-                self.log(f"Failed to create set: {response.status_code}", logging.ERROR)
-                self.log(f"Response: {response.text}", logging.ERROR)
-                return False, f"Failed to create set: {response.status_code}"
-            
-            # Get the new set ID
-            set_data = response.json()
-            new_set_id = set_data.get('id')
-            self.log(f"Set created with ID: {new_set_id}")
-            
-            # Step 2: Add members to the set
-            self.log(f"Adding {len(self.set_members)} members to set")
-            
-            added_count = 0
-            failed_count = 0
-            
-            # Add members in batches (API accepts one member at a time for itemized sets)
-            for i, mms_id in enumerate(self.set_members, 1):
-                member_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<member link="https://api-na.hosted.exlibrisgroup.com/almaws/v1/conf/sets/{new_set_id}/members/{mms_id}">
-    <id>{mms_id}</id>
-</member>"""
-                
-                try:
-                    response = requests.post(
-                        f"{api_url}/almaws/v1/conf/sets/{new_set_id}/members?apikey={self.api_key}",
-                        headers={'Content-Type': 'application/xml', 'Accept': 'application/json'},
-                        data=member_xml.encode('utf-8')
-                    )
-                    
-                    if response.status_code == 200:
-                        added_count += 1
-                    else:
-                        failed_count += 1
-                        self.log(f"Failed to add member {mms_id}: {response.status_code}", logging.WARNING)
-                    
-                    if i % 50 == 0:
-                        self.log(f"Added {i}/{len(self.set_members)} members")
-                        
-                except Exception as e:
-                    failed_count += 1
-                    self.log(f"Error adding member {mms_id}: {str(e)}", logging.WARNING)
-            
-            message = f"Created set '{set_name}' (ID: {new_set_id}) with {added_count} members"
-            if failed_count > 0:
-                message += f" ({failed_count} failed)"
-            
-            self.log(message)
-            return True, message
-            
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            self.log(f"Error creating set: {str(e)}", logging.ERROR)
-            self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
-            return False, f"Error creating set: {str(e)}"
+        self.log("Function 5 is currently not implemented")
+        return False, "Function 5 is not yet implemented"
 
 
 def main(page: ft.Page):
     """Main Flet application"""
     logger.info("Starting Flet application")
-    page.title = "🚕 CABB - Clean Alma Bibs in Bulk"
+    page.title = "🚕 CABB - Crunch Alma Bibs in Bulk"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 20
     
@@ -1192,6 +1161,10 @@ def main(page: ft.Page):
     page.window.resizable = True
     
     page.scroll = ft.ScrollMode.AUTO  # Enable vertical scrolling if needed
+    
+    # Initialize persistent storage
+    storage = PersistentStorage()
+    logger.info("Persistent storage initialized")
     
     # Log display list
     log_messages = []
@@ -1227,26 +1200,31 @@ def main(page: ft.Page):
     add_log_message("Application started")
     add_log_message(f"Log file: {log_filename}")
     
-    # Input fields
+    # Input fields - restore from persistent storage
     mms_id_input = ft.TextField(
         label="MMS ID",
         hint_text="Enter bibliographic record MMS ID",
-        width=400
+        width=400,
+        value=storage.get_ui_state("mms_id"),
+        on_change=lambda e: storage.set_ui_state("mms_id", e.control.value)
     )
     
     set_id_input = ft.TextField(
         label="Set ID or CSV Path",
         hint_text="Enter Alma Set ID or path to CSV file",
-        width=300
+        width=300,
+        value=storage.get_ui_state("set_id"),
+        on_change=lambda e: storage.set_ui_state("set_id", e.control.value)
     )
     
     limit_input = ft.TextField(
         label="Limit",
         hint_text="Max records to process",
-        value="0",
+        value=storage.get_ui_state("limit", "0"),
         width=100,
         keyboard_type=ft.KeyboardType.NUMBER,
-        tooltip="Enter 0 for no limit, or a number to process only first N records"
+        tooltip="Enter 0 for no limit, or a number to process only first N records",
+        on_change=lambda e: storage.set_ui_state("limit", e.control.value)
     )
     
     # Set members display
@@ -1417,6 +1395,7 @@ def main(page: ft.Page):
     def on_function_1_click(e):
         """Handle Function 1: Fetch and display XML"""
         logger.info("Function 1 button clicked")
+        storage.record_function_usage("function_1_fetch_xml")
         if not mms_id_input.value:
             update_status("Please enter an MMS ID", True)
             return
@@ -1424,11 +1403,11 @@ def main(page: ft.Page):
         add_log_message(f"Fetching XML for MMS ID: {mms_id_input.value}")
         success, message = editor.fetch_and_display_xml(mms_id_input.value, page)
         update_status(message, not success)
-        update_status(message, not success)
     
     def on_function_2_click(e):
         """Handle Function 2: Clear dc:relation collections"""
         logger.info("Function 2 button clicked")
+        storage.record_function_usage("function_2_clear_dc_relation")
         
         # Determine if processing single record or batch
         if editor.set_members:
@@ -1509,6 +1488,7 @@ def main(page: ft.Page):
     def on_function_3_click(e):
         """Handle Function 3 click - Export set to CSV"""
         logger.info("Function 3 button clicked - Export to CSV")
+        storage.record_function_usage("function_3_export_csv")
         
         # Check if set is loaded
         if not editor.set_members:
@@ -1554,6 +1534,7 @@ def main(page: ft.Page):
     def on_function_4_click(e):
         """Handle Function 4 click - Filter CSV by pre-1931 dates"""
         logger.info("Function 4 button clicked - Filter CSV")
+        storage.record_function_usage("function_4_filter_pre1931")
         
         add_log_message("Filtering latest CSV export for pre-1931 dates")
         success, message = editor.filter_csv_by_pre1931_dates()
@@ -1562,76 +1543,93 @@ def main(page: ft.Page):
             add_log_message("CSV filtering complete")
     
     def on_function_5_click(e):
-        """Handle Function 5 click - Create new set from loaded members"""
-        logger.info("Function 5 button clicked - Create Set")
+        """Handle Function 5 click - Placeholder"""
+        logger.info("Function 5 button clicked - Placeholder")
+        storage.record_function_usage("function_5_placeholder")
         
-        # Check if members are loaded
-        if not editor.set_members:
-            update_status("Please load a set first", True)
-            return
-        
-        # Create dialog for set name input
-        set_name_input = ft.TextField(
-            label="Set Name",
-            hint_text="Enter name for new set",
-            autofocus=True,
-            width=400
-        )
-        
-        set_description_input = ft.TextField(
-            label="Description (optional)",
-            hint_text="Enter description",
-            multiline=True,
-            min_lines=2,
-            max_lines=4,
-            width=400
-        )
-        
-        def create_set(dialog_e):
-            if not set_name_input.value:
-                update_status("Please enter a set name", True)
-                return
+        success, message = editor.function_5_placeholder()
+        update_status(message, not success)
+    
+    # Function definitions with metadata
+    functions = {
+        "function_1_fetch_xml": {
+            "label": "Fetch and Display Single XML",
+            "icon": "🔍",
+            "handler": on_function_1_click
+        },
+        "function_2_clear_dc_relation": {
+            "label": "Clear dc:relation Collections Fields",
+            "icon": "🧹",
+            "handler": on_function_2_click
+        },
+        "function_3_export_csv": {
+            "label": "Export Set to DCAP01 CSV",
+            "icon": "📥",
+            "handler": on_function_3_click
+        },
+        "function_4_filter_pre1931": {
+            "label": "Filter CSV for Pre-1931 Dates",
+            "icon": "🔎",
+            "handler": on_function_4_click
+        },
+        "function_5_placeholder": {
+            "label": "Function 5 (Not Implemented)",
+            "icon": "⚠️",
+            "handler": on_function_5_click
+        }
+    }
+    
+    def execute_selected_function(function_key):
+        """Execute the selected function from dropdown"""
+        if function_key and function_key in functions:
+            # Call the function handler with a mock event
+            class MockEvent:
+                pass
+            functions[function_key]["handler"](MockEvent())
             
-            # Close dialog
-            create_set_dialog.open = False
+            # Refresh dropdown order after execution
+            function_dropdown.options = get_sorted_function_options()
+            function_dropdown.value = None  # Clear selection
             page.update()
+    
+    def get_sorted_function_options():
+        """Get function dropdown options sorted by last use date"""
+        from datetime import datetime
+        
+        usage_data = storage.get_all_function_usage()
+        
+        # Create list of (function_key, last_used_timestamp)
+        function_usage = []
+        for func_key in functions.keys():
+            usage = usage_data.get(func_key, {})
+            last_used = usage.get("last_used")
+            # Parse ISO timestamp or use epoch start for never-used functions
+            if last_used:
+                try:
+                    timestamp = datetime.fromisoformat(last_used)
+                except:
+                    timestamp = datetime.min
+            else:
+                timestamp = datetime.min
             
-            add_log_message(f"Creating new set: {set_name_input.value} with {len(editor.set_members)} members")
-            success, message = editor.create_set_from_members(
-                set_name_input.value,
-                set_description_input.value
-            )
-            update_status(message, not success)
-            if success:
-                add_log_message("Set creation complete")
+            function_usage.append((func_key, timestamp))
         
-        def cancel_create(dialog_e):
-            create_set_dialog.open = False
-            page.update()
+        # Sort by timestamp (most recent first)
+        function_usage.sort(key=lambda x: x[1], reverse=True)
         
-        create_set_dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text(f"Create New Set from {len(editor.set_members)} Members"),
-            content=ft.Container(
-                content=ft.Column([
-                    set_name_input,
-                    set_description_input,
-                ], tight=True),
-                width=400,
-            ),
-            actions=[
-                ft.TextButton("Cancel", on_click=cancel_create),
-                ft.ElevatedButton("Create Set", on_click=create_set),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
+        # Create dropdown options
+        options = []
+        for func_key, timestamp in function_usage:
+            func_info = functions[func_key]
+            label = f"{func_info['icon']} {func_info['label']}"
+            options.append(ft.dropdown.Option(key=func_key, text=label))
         
-        page.open(create_set_dialog)
+        return options
     
     # Build UI
     page.add(
         ft.Column([
-            ft.Text("🚕 CABB - Clean Alma Bibs in Bulk", 
+            ft.Text("🚕 CABB - Crunch Alma Bibs in Bulk", 
                    size=24, 
                    weight=ft.FontWeight.BOLD),
             ft.Divider(height=5),
@@ -1700,39 +1698,13 @@ def main(page: ft.Page):
                 content=ft.Column([
                     ft.Text("Editing Functions", size=18, weight=ft.FontWeight.BOLD),
                     
-                    ft.ElevatedButton(
-                        "1. Fetch and Display Single XML",
-                        on_click=on_function_1_click,
-                        icon=ft.Icons.PREVIEW,
-                        width=400
-                    ),
-                    
-                    ft.ElevatedButton(
-                        "2. Clear dc:relation Collections Fields",
-                        on_click=on_function_2_click,
-                        icon=ft.Icons.CLEAR_ALL,
-                        width=400
-                    ),
-                    
-                    ft.ElevatedButton(
-                        "3. Export Set to DCAP01 CSV",
-                        on_click=on_function_3_click,
-                        icon=ft.Icons.DOWNLOAD,
-                        width=400
-                    ),
-                    
-                    ft.ElevatedButton(
-                        "4. Filter CSV for Pre-1931 Dates",
-                        on_click=on_function_4_click,
-                        icon=ft.Icons.FILTER_ALT,
-                        width=400
-                    ),
-                    
-                    ft.ElevatedButton(
-                        "5. Create New Set from Loaded Members",
-                        on_click=on_function_5_click,
-                        icon=ft.Icons.CREATE_NEW_FOLDER,
-                        width=400
+                    # Function selector dropdown (will be updated after page.add)
+                    function_dropdown := ft.Dropdown(
+                        label="Select Function to Execute",
+                        hint_text="Functions ordered by most recently used",
+                        width=400,
+                        options=[],
+                        on_change=lambda e: execute_selected_function(e.control.value)
                     ),
                 ], spacing=5),
                 padding=5,
@@ -1776,6 +1748,10 @@ def main(page: ft.Page):
             ),
         ])
     )
+    
+    # Populate function dropdown with sorted options
+    function_dropdown.options = get_sorted_function_options()
+    page.update()
     
     logger.info("UI initialized successfully")
 

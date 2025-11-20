@@ -45,4 +45,8 @@ Thumbs.db
 # Logs
 *.log
 
+# Persistent storage
+persistent.json
+
+# Generated CSV exports
 *_export_*.csv

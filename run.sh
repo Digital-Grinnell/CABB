@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Clean Alma Bibs in Bulk (CABB) - Quick Launch Script
+# Crunch Alma Bibs in Bulk (CABB) - Quick Launch Script
 # This script sets up the virtual environment and launches the Flet app
 
 set -e  # Exit on error
@@ -8,7 +8,7 @@ set -e  # Exit on error
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "=== Clean Alma Bibs in Bulk (CABB) ==="
+echo "=== Crunch Alma Bibs in Bulk (CABB) ==="
 echo
 
 # Check if .venv exists, create if not

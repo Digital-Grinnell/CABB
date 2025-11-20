@@ -1,8 +1,8 @@
-# 🚕 CABB - Clean Alma Bibs in Bulk
+# 🚕 CABB - Crunch Alma Bibs in Bulk
 
 A Flet-based single-page UI application designed to perform various Alma-Digital bibliographic record editing functions using the Alma API.
 
-**🚕 CABB** (Clean Alma Bibs in Bulk) provides a user-friendly interface for cleaning and maintaining Alma bibliographic records, supporting both single-record operations and batch processing via Alma Sets.
+**🚕 CABB** (Crunch Alma Bibs in Bulk) provides a user-friendly interface for cleaning and maintaining Alma bibliographic records, supporting both single-record operations and batch processing via Alma Sets.
 
 ## Features
 
