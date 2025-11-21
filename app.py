@@ -1325,6 +1325,179 @@ class AlmaBibEditor:
             self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
             return False, f"Error retrieving IIIF manifest: {str(e)}"
     
+    def replace_author_copyright_rights(self, mms_id: str) -> tuple[bool, str]:
+        """
+        Function 6: Replace dc:rights fields starting with "Copyright to this work is held by the author(s)"
+        with a rights statement URL and xml:lang attribute.
+        
+        Finds dc:rights fields with value starting "Copyright to this work is held by the author(s)"
+        and replaces with dc:rights xml:lang="eng" value="https://rightsstatements.org/page/NoC-US/1.0/?language=en"
+        Ensures no duplicate values are created.
+        
+        Args:
+            mms_id: The MMS ID of the bibliographic record
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        self.log(f"Starting replace_author_copyright_rights for MMS ID: {mms_id}")
+        if not self.api_key:
+            self.log("API Key not configured", logging.ERROR)
+            return False, "API Key not configured"
+        
+        try:
+            # Get the Alma API base URL
+            api_url = self._get_alma_api_url()
+            
+            # Step 1: GET the bib record as XML
+            self.log(f"Fetching bibliographic record {mms_id} as XML")
+            headers = {'Accept': 'application/xml'}
+            response = requests.get(
+                f"{api_url}/almaws/v1/bibs/{mms_id}?view=full&expand=None&apikey={self.api_key}",
+                headers=headers
+            )
+            
+            if response.status_code != 200:
+                self.log(f"Failed to fetch record: {response.status_code}", logging.ERROR)
+                self.log(f"Response: {response.text}", logging.ERROR)
+                return False, f"Failed to fetch record: {response.status_code}"
+            
+            # Step 2: Parse the XML response
+            self.log("Parsing XML response")
+            root = ET.fromstring(response.text)
+            
+            # Register namespaces (but NOT the default namespace)
+            namespaces_to_register = {
+                'dc': 'http://purl.org/dc/elements/1.1/',
+                'dcterms': 'http://purl.org/dc/terms/',
+                'xsi': 'http://www.w3.org/2001/XMLSchema-instance',
+                'xml': 'http://www.w3.org/XML/1998/namespace'
+            }
+            for prefix, uri in namespaces_to_register.items():
+                ET.register_namespace(prefix, uri)
+            
+            self.log("Registered namespaces: dc, dcterms, xsi, xml")
+            
+            # Step 3: Find dc:rights elements
+            search_namespaces = {
+                'dc': 'http://purl.org/dc/elements/1.1/',
+                'dcterms': 'http://purl.org/dc/terms/'
+            }
+            rights_elements = root.findall('.//dc:rights', search_namespaces)
+            self.log(f"Found {len(rights_elements)} dc:rights elements")
+            
+            # Constants
+            pattern_start = "Copyright to this work is held by the author(s)"
+            new_value = "https://rightsstatements.org/page/NoC-US/1.0/?language=en"
+            
+            # Check if new value already exists
+            url_exists = False
+            url_element = None
+            author_copyright_elements = []
+            
+            for rights_elem in rights_elements:
+                if rights_elem.text:
+                    if rights_elem.text == new_value:
+                        url_exists = True
+                        url_element = rights_elem
+                        self.log(f"Rights statement URL already exists: {new_value}")
+                    elif rights_elem.text.startswith(pattern_start):
+                        author_copyright_elements.append(rights_elem)
+                        self.log(f"Found author copyright field: {rights_elem.text[:80]}...")
+            
+            # If URL already exists, remove any author copyright fields
+            if url_exists:
+                if author_copyright_elements:
+                    self.log(f"URL exists, removing {len(author_copyright_elements)} author copyright field(s)")
+                    for rights_elem in author_copyright_elements:
+                        # Find parent and remove the element
+                        for parent in root.iter():
+                            if rights_elem in list(parent):
+                                parent.remove(rights_elem)
+                                self.log(f"Removed: {rights_elem.text[:80]}...")
+                                break
+                    
+                    changes_made = len(author_copyright_elements)
+                else:
+                    self.log("URL exists and no author copyright fields to remove")
+                    return True, "Rights statement URL already exists, no changes needed"
+            else:
+                # URL doesn't exist, replace author copyright fields
+                if not author_copyright_elements:
+                    self.log("No matching dc:rights fields found")
+                    return True, "No matching dc:rights fields found"
+                
+                # Replace first matching element with new value
+                first_elem = author_copyright_elements[0]
+                first_elem.text = new_value
+                self.log(f"Replaced first author copyright field with URL")
+                
+                # Remove any additional author copyright fields (duplicates)
+                for rights_elem in author_copyright_elements[1:]:
+                    for parent in root.iter():
+                        if rights_elem in list(parent):
+                            parent.remove(rights_elem)
+                            self.log(f"Removed duplicate: {rights_elem.text[:80]}...")
+                            break
+                
+                changes_made = len(author_copyright_elements)
+            
+            # Step 4: Convert the modified tree back to XML bytes
+            self.log(f"Modified {changes_made} dc:rights field(s), preparing to update")
+            xml_bytes = ET.tostring(root, encoding='utf-8')
+            
+            # Convert to string and fix namespace prefixes
+            xml_str = xml_bytes.decode('utf-8')
+            # Remove ns0: prefix from element names
+            xml_str = xml_str.replace('ns0:', '').replace(':ns0', '')
+            # Remove the xmlns declaration for the Alma namespace
+            xml_str = xml_str.replace(' xmlns="http://alma.exlibrisgroup.com/dc/01GCL_INST"', '')
+            xml_bytes = xml_str.encode('utf-8')
+            
+            # Log a sample of the XML being sent
+            self.log("=" * 60)
+            self.log("XML being sent to Alma (first 500 chars):")
+            self.log(xml_str[:500])
+            self.log("=" * 60)
+            
+            # Step 5: PUT the modified XML back to Alma
+            self.log(f"Updating record {mms_id} in Alma")
+            headers = {
+                'Accept': 'application/xml',
+                'Content-Type': 'application/xml; charset=utf-8'
+            }
+            response = requests.put(
+                f"{api_url}/almaws/v1/bibs/{mms_id}?validate=true&override_warning=true&override_lock=true&stale_version_check=false&check_match=false&apikey={self.api_key}",
+                headers=headers,
+                data=xml_bytes
+            )
+            
+            if response.status_code != 200:
+                self.log(f"Failed to update record: {response.status_code}", logging.ERROR)
+                self.log(f"Response: {response.text}", logging.ERROR)
+                self.log("=" * 60)
+                self.log("Full XML that was sent:")
+                self.log(xml_str)
+                self.log("=" * 60)
+                return False, f"Failed to update record: {response.status_code}"
+            
+            self.log(f"Successfully updated record {mms_id}")
+            
+            # Build appropriate success message
+            if url_exists:
+                message = f"Removed {changes_made} author copyright field(s) (rights URL already present) in record {mms_id}"
+            else:
+                message = f"Replaced {changes_made} author copyright field(s) with rights URL in record {mms_id}"
+            
+            return True, message
+            
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            self.log(f"Error processing record {mms_id}: {str(e)}", logging.ERROR)
+            self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
+            return False, f"Error processing record {mms_id}: {str(e)}"
+    
     def _get_alma_domain(self) -> str:
         """
         Get the Alma domain for the institution.
@@ -1756,6 +1929,74 @@ def main(page: ft.Page):
         if success:
             add_log_message("IIIF manifest retrieved successfully")
     
+    def on_function_6_click(e):
+        """Handle Function 6 click - Replace Author Copyright Rights"""
+        logger.info("Function 6 button clicked - Replace Author Copyright Rights")
+        storage.record_function_usage("function_6_replace_rights")
+        
+        # Check if processing a batch or single record
+        if editor.set_members and len(editor.set_members) > 0:
+            # Batch processing
+            add_log_message(f"Starting batch replace_author_copyright_rights for {len(editor.set_members)} records")
+            
+            # Get limit
+            try:
+                limit = int(limit_input.value) if limit_input.value else 0
+                if limit < 0:
+                    limit = 0
+            except ValueError:
+                limit = 0
+            
+            # Calculate how many to process
+            member_count = len(editor.set_members)
+            process_count = min(limit, member_count) if limit > 0 else member_count
+            
+            # Show progress bar
+            set_progress_bar.visible = True
+            set_progress_text.visible = True
+            set_progress_bar.value = 0
+            set_progress_text.value = f"Processing 0/{process_count}"
+            page.update()
+            
+            success_count = 0
+            error_count = 0
+            
+            for i, mms_id in enumerate(editor.set_members[:process_count], 1):
+                if editor.kill_switch:
+                    add_log_message("Batch processing stopped by user")
+                    break
+                
+                # Update progress
+                set_progress_bar.value = i / process_count
+                set_progress_text.value = f"Processing {i}/{process_count}: {mms_id}"
+                page.update()
+                
+                success, message = editor.replace_author_copyright_rights(mms_id)
+                if success:
+                    success_count += 1
+                    add_log_message(f"✓ {mms_id}: {message}")
+                else:
+                    error_count += 1
+                    add_log_message(f"✗ {mms_id}: {message}")
+            
+            # Hide progress bar
+            set_progress_bar.visible = False
+            set_progress_text.visible = False
+            
+            summary = f"Batch complete: {success_count} succeeded, {error_count} failed out of {process_count} records"
+            if limit > 0 and limit < member_count:
+                summary += f" (limited from {member_count} total)"
+            update_status(summary, error_count > 0)
+        else:
+            # Single record processing
+            if not mms_id_input.value:
+                update_status("Please enter an MMS ID or load a set", True)
+                return
+            
+            add_log_message(f"Starting replace_author_copyright_rights for MMS ID: {mms_id_input.value}")
+            success, message = editor.replace_author_copyright_rights(mms_id_input.value)
+            update_status(message, not success)
+    
     # Function definitions with metadata
     functions = {
         "function_1_fetch_xml": {
@@ -1782,6 +2023,11 @@ def main(page: ft.Page):
             "label": "Get IIIF Manifest and Canvas",
             "icon": "🖼️",
             "handler": on_function_5_click
+        },
+        "function_6_replace_rights": {
+            "label": "Replace old dc:rights with Public Domain link",
+            "icon": "©️",
+            "handler": on_function_6_click
         }
     }
     
