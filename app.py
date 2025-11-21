@@ -1388,28 +1388,35 @@ class AlmaBibEditor:
             
             # Constants
             pattern_start = "Copyright to this work is held by the author(s)"
-            new_value = "https://rightsstatements.org/page/NoC-US/1.0/?language=en"
+            new_value = '<a href="https://rightsstatements.org/page/NoC-US/1.0/?language=en" target="_blank">Public Domain in the United States</a>'
+            url_pattern = "https://rightsstatements.org/page/NoC-US/1.0/?language=en"
             
             # Check if new value already exists
             url_exists = False
             url_element = None
             author_copyright_elements = []
+            old_link_elements = []  # Links without target attribute
             
             for rights_elem in rights_elements:
                 if rights_elem.text:
                     if rights_elem.text == new_value:
                         url_exists = True
                         url_element = rights_elem
-                        self.log(f"Rights statement URL already exists: {new_value}")
+                        self.log(f"Rights statement URL with target already exists")
                     elif rights_elem.text.startswith(pattern_start):
                         author_copyright_elements.append(rights_elem)
                         self.log(f"Found author copyright field: {rights_elem.text[:80]}...")
+                    elif url_pattern in rights_elem.text and 'target="_blank"' not in rights_elem.text:
+                        # Found old link without target attribute
+                        old_link_elements.append(rights_elem)
+                        self.log(f"Found old link without target: {rights_elem.text[:80]}...")
             
-            # If URL already exists, remove any author copyright fields
+            # If URL with target already exists, remove any author copyright fields and old links
             if url_exists:
-                if author_copyright_elements:
-                    self.log(f"URL exists, removing {len(author_copyright_elements)} author copyright field(s)")
-                    for rights_elem in author_copyright_elements:
+                elements_to_remove = author_copyright_elements + old_link_elements
+                if elements_to_remove:
+                    self.log(f"URL exists, removing {len(elements_to_remove)} old field(s)")
+                    for rights_elem in elements_to_remove:
                         # Find parent and remove the element
                         for parent in root.iter():
                             if rights_elem in list(parent):
@@ -1417,30 +1424,31 @@ class AlmaBibEditor:
                                 self.log(f"Removed: {rights_elem.text[:80]}...")
                                 break
                     
-                    changes_made = len(author_copyright_elements)
+                    changes_made = len(elements_to_remove)
                 else:
-                    self.log("URL exists and no author copyright fields to remove")
+                    self.log("URL exists and no old fields to remove")
                     return True, "Rights statement URL already exists, no changes needed"
             else:
-                # URL doesn't exist, replace author copyright fields
-                if not author_copyright_elements:
+                # URL doesn't exist, replace author copyright fields or old links
+                elements_to_replace = author_copyright_elements + old_link_elements
+                if not elements_to_replace:
                     self.log("No matching dc:rights fields found")
                     return True, "No matching dc:rights fields found"
                 
                 # Replace first matching element with new value
-                first_elem = author_copyright_elements[0]
+                first_elem = elements_to_replace[0]
                 first_elem.text = new_value
-                self.log(f"Replaced first author copyright field with URL")
+                self.log(f"Replaced first old field with new URL")
                 
-                # Remove any additional author copyright fields (duplicates)
-                for rights_elem in author_copyright_elements[1:]:
+                # Remove any additional fields (duplicates)
+                for rights_elem in elements_to_replace[1:]:
                     for parent in root.iter():
                         if rights_elem in list(parent):
                             parent.remove(rights_elem)
                             self.log(f"Removed duplicate: {rights_elem.text[:80]}...")
                             break
                 
-                changes_made = len(author_copyright_elements)
+                changes_made = len(elements_to_replace)
             
             # Step 4: Convert the modified tree back to XML bytes
             self.log(f"Modified {changes_made} dc:rights field(s), preparing to update")
@@ -1776,83 +1784,126 @@ def main(page: ft.Page):
     def on_function_2_click(e):
         """Handle Function 2: Clear dc:relation collections"""
         logger.info("Function 2 button clicked")
-        storage.record_function_usage("function_2_clear_dc_relation")
         
-        # Determine if processing single record or batch
-        if editor.set_members:
-            # Batch processing
-            member_count = len(editor.set_members)
+        def execute_function_2():
+            """Execute Function 2 after confirmation"""
+            storage.record_function_usage("function_2_clear_dc_relation")
             
-            # Get limit value
+            # Determine if processing single record or batch
+            if editor.set_members:
+                # Batch processing
+                member_count = len(editor.set_members)
+                
+                # Get limit value
+                try:
+                    limit = int(limit_input.value) if limit_input.value else 0
+                except ValueError:
+                    update_status("Invalid limit value - must be a whole number", True)
+                    return
+                
+                # Apply limit if set
+                members_to_process = editor.set_members
+                if limit > 0 and limit < member_count:
+                    members_to_process = editor.set_members[:limit]
+                    add_log_message(f"Limiting batch to first {limit} of {member_count} records")
+                
+                process_count = len(members_to_process)
+                add_log_message(f"Starting batch clear_dc_relation for {process_count} records from set")
+                
+                # Show progress bar
+                set_progress_bar.visible = True
+                set_progress_text.visible = True
+                set_progress_bar.value = 0
+                set_progress_text.value = f"Processing: 0 of {process_count}"
+                page.update()
+                
+                # Reset kill switch before starting
+                editor.kill_switch = False
+                
+                success_count = 0
+                error_count = 0
+                
+                for idx, mms_id in enumerate(members_to_process, 1):
+                    # Check kill switch
+                    if editor.kill_switch:
+                        add_log_message(f"⚠️ Batch operation stopped by kill switch at record {idx}/{process_count}")
+                        set_progress_bar.visible = False
+                        set_progress_text.visible = False
+                        update_status(f"⚠️ STOPPED by kill switch: {success_count} succeeded, {error_count} failed, {process_count - idx + 1} skipped", True)
+                        editor.kill_switch = False  # Reset for next operation
+                        return
+                    
+                    add_log_message(f"Processing {idx}/{process_count}: {mms_id}")
+                    
+                    # Update progress bar and text
+                    set_progress_bar.value = idx / process_count
+                    set_progress_text.value = f"Processing: {idx} of {process_count}"
+                    update_status(f"Processing {idx}/{process_count}: {mms_id}", False)
+                    
+                    success, message = editor.clear_dc_relation_collections(mms_id)
+                    if success:
+                        success_count += 1
+                    else:
+                        error_count += 1
+                        add_log_message(f"ERROR on {mms_id}: {message}")
+                
+                # Hide progress bar
+                set_progress_bar.visible = False
+                set_progress_text.visible = False
+                
+                summary = f"Batch complete: {success_count} succeeded, {error_count} failed out of {process_count} records"
+                if limit > 0 and limit < member_count:
+                    summary += f" (limited from {member_count} total)"
+                update_status(summary, error_count > 0)
+            else:
+                # Single record processing
+                if not mms_id_input.value:
+                    update_status("Please enter an MMS ID or load a set", True)
+                    return
+                
+                add_log_message(f"Starting clear_dc_relation for MMS ID: {mms_id_input.value}")
+                success, message = editor.clear_dc_relation_collections(mms_id_input.value)
+                update_status(message, not success)
+        
+        # Show confirmation dialog
+        def confirm_action(e):
+            dialog.open = False
+            page.update()
+            execute_function_2()
+        
+        def cancel_action(e):
+            dialog.open = False
+            page.update()
+            update_status("Operation cancelled by user", False)
+        
+        # Determine warning message based on single or batch
+        if editor.set_members:
+            member_count = len(editor.set_members)
             try:
                 limit = int(limit_input.value) if limit_input.value else 0
             except ValueError:
-                update_status("Invalid limit value - must be a whole number", True)
-                return
+                limit = 0
             
-            # Apply limit if set
-            members_to_process = editor.set_members
-            if limit > 0 and limit < member_count:
-                members_to_process = editor.set_members[:limit]
-                add_log_message(f"Limiting batch to first {limit} of {member_count} records")
-            
-            process_count = len(members_to_process)
-            add_log_message(f"Starting batch clear_dc_relation for {process_count} records from set")
-            
-            # Show progress bar
-            set_progress_bar.visible = True
-            set_progress_text.visible = True
-            set_progress_bar.value = 0
-            set_progress_text.value = f"Processing: 0 of {process_count}"
-            page.update()
-            
-            # Reset kill switch before starting
-            editor.kill_switch = False
-            
-            success_count = 0
-            error_count = 0
-            
-            for idx, mms_id in enumerate(members_to_process, 1):
-                # Check kill switch
-                if editor.kill_switch:
-                    add_log_message(f"⚠️ Batch operation stopped by kill switch at record {idx}/{process_count}")
-                    set_progress_bar.visible = False
-                    set_progress_text.visible = False
-                    update_status(f"⚠️ STOPPED by kill switch: {success_count} succeeded, {error_count} failed, {process_count - idx + 1} skipped", True)
-                    editor.kill_switch = False  # Reset for next operation
-                    return
-                
-                add_log_message(f"Processing {idx}/{process_count}: {mms_id}")
-                
-                # Update progress bar and text
-                set_progress_bar.value = idx / process_count
-                set_progress_text.value = f"Processing: {idx} of {process_count}"
-                update_status(f"Processing {idx}/{process_count}: {mms_id}", False)
-                
-                success, message = editor.clear_dc_relation_collections(mms_id)
-                if success:
-                    success_count += 1
-                else:
-                    error_count += 1
-                    add_log_message(f"ERROR on {mms_id}: {message}")
-            
-            # Hide progress bar
-            set_progress_bar.visible = False
-            set_progress_text.visible = False
-            
-            summary = f"Batch complete: {success_count} succeeded, {error_count} failed out of {process_count} records"
-            if limit > 0 and limit < member_count:
-                summary += f" (limited from {member_count} total)"
-            update_status(summary, error_count > 0)
+            process_count = min(limit, member_count) if limit > 0 else member_count
+            warning_msg = f"⚠️ WARNING: This will modify {process_count} bibliographic record(s) in Alma.\n\nFunction: Clear dc:relation Collections Fields\n\nThis action will PERMANENTLY remove matching dc:relation fields from the records.\n\nDo you want to continue?"
         else:
-            # Single record processing
             if not mms_id_input.value:
                 update_status("Please enter an MMS ID or load a set", True)
                 return
-            
-            add_log_message(f"Starting clear_dc_relation for MMS ID: {mms_id_input.value}")
-            success, message = editor.clear_dc_relation_collections(mms_id_input.value)
-            update_status(message, not success)
+            warning_msg = f"⚠️ WARNING: This will modify the bibliographic record in Alma.\n\nMMS ID: {mms_id_input.value}\nFunction: Clear dc:relation Collections Fields\n\nThis action will PERMANENTLY remove matching dc:relation fields.\n\nDo you want to continue?"
+        
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("⚠️ Confirm Data Modification", weight=ft.FontWeight.BOLD),
+            content=ft.Text(warning_msg, size=14),
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel_action),
+                ft.TextButton("Proceed", on_click=confirm_action, style=ft.ButtonStyle(color=ft.Colors.RED)),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        page.open(dialog)
     
     def on_function_3_click(e):
         """Handle Function 3 click - Export set to CSV"""
@@ -1932,14 +1983,88 @@ def main(page: ft.Page):
     def on_function_6_click(e):
         """Handle Function 6 click - Replace Author Copyright Rights"""
         logger.info("Function 6 button clicked - Replace Author Copyright Rights")
-        storage.record_function_usage("function_6_replace_rights")
         
-        # Check if processing a batch or single record
-        if editor.set_members and len(editor.set_members) > 0:
-            # Batch processing
-            add_log_message(f"Starting batch replace_author_copyright_rights for {len(editor.set_members)} records")
+        def execute_function_6():
+            """Execute Function 6 after confirmation"""
+            storage.record_function_usage("function_6_replace_rights")
             
-            # Get limit
+            # Check if processing a batch or single record
+            if editor.set_members and len(editor.set_members) > 0:
+                # Batch processing
+                add_log_message(f"Starting batch replace_author_copyright_rights for {len(editor.set_members)} records")
+                
+                # Get limit
+                try:
+                    limit = int(limit_input.value) if limit_input.value else 0
+                    if limit < 0:
+                        limit = 0
+                except ValueError:
+                    limit = 0
+                
+                # Calculate how many to process
+                member_count = len(editor.set_members)
+                process_count = min(limit, member_count) if limit > 0 else member_count
+                
+                # Show progress bar
+                set_progress_bar.visible = True
+                set_progress_text.visible = True
+                set_progress_bar.value = 0
+                set_progress_text.value = f"Processing 0/{process_count}"
+                page.update()
+                
+                success_count = 0
+                error_count = 0
+                
+                for i, mms_id in enumerate(editor.set_members[:process_count], 1):
+                    if editor.kill_switch:
+                        add_log_message("Batch processing stopped by user")
+                        break
+                    
+                    # Update progress
+                    set_progress_bar.value = i / process_count
+                    set_progress_text.value = f"Processing {i}/{process_count}: {mms_id}"
+                    page.update()
+                    
+                    success, message = editor.replace_author_copyright_rights(mms_id)
+                    if success:
+                        success_count += 1
+                        add_log_message(f"✓ {mms_id}: {message}")
+                    else:
+                        error_count += 1
+                        add_log_message(f"✗ {mms_id}: {message}")
+                
+                # Hide progress bar
+                set_progress_bar.visible = False
+                set_progress_text.visible = False
+                
+                summary = f"Batch complete: {success_count} succeeded, {error_count} failed out of {process_count} records"
+                if limit > 0 and limit < member_count:
+                    summary += f" (limited from {member_count} total)"
+                update_status(summary, error_count > 0)
+            else:
+                # Single record processing
+                if not mms_id_input.value:
+                    update_status("Please enter an MMS ID or load a set", True)
+                    return
+                
+                add_log_message(f"Starting replace_author_copyright_rights for MMS ID: {mms_id_input.value}")
+                success, message = editor.replace_author_copyright_rights(mms_id_input.value)
+                update_status(message, not success)
+        
+        # Show confirmation dialog
+        def confirm_action(e):
+            dialog.open = False
+            page.update()
+            execute_function_6()
+        
+        def cancel_action(e):
+            dialog.open = False
+            page.update()
+            update_status("Operation cancelled by user", False)
+        
+        # Determine warning message based on single or batch
+        if editor.set_members and len(editor.set_members) > 0:
+            member_count = len(editor.set_members)
             try:
                 limit = int(limit_input.value) if limit_input.value else 0
                 if limit < 0:
@@ -1947,55 +2072,26 @@ def main(page: ft.Page):
             except ValueError:
                 limit = 0
             
-            # Calculate how many to process
-            member_count = len(editor.set_members)
             process_count = min(limit, member_count) if limit > 0 else member_count
-            
-            # Show progress bar
-            set_progress_bar.visible = True
-            set_progress_text.visible = True
-            set_progress_bar.value = 0
-            set_progress_text.value = f"Processing 0/{process_count}"
-            page.update()
-            
-            success_count = 0
-            error_count = 0
-            
-            for i, mms_id in enumerate(editor.set_members[:process_count], 1):
-                if editor.kill_switch:
-                    add_log_message("Batch processing stopped by user")
-                    break
-                
-                # Update progress
-                set_progress_bar.value = i / process_count
-                set_progress_text.value = f"Processing {i}/{process_count}: {mms_id}"
-                page.update()
-                
-                success, message = editor.replace_author_copyright_rights(mms_id)
-                if success:
-                    success_count += 1
-                    add_log_message(f"✓ {mms_id}: {message}")
-                else:
-                    error_count += 1
-                    add_log_message(f"✗ {mms_id}: {message}")
-            
-            # Hide progress bar
-            set_progress_bar.visible = False
-            set_progress_text.visible = False
-            
-            summary = f"Batch complete: {success_count} succeeded, {error_count} failed out of {process_count} records"
-            if limit > 0 and limit < member_count:
-                summary += f" (limited from {member_count} total)"
-            update_status(summary, error_count > 0)
+            warning_msg = f"⚠️ WARNING: This will modify {process_count} bibliographic record(s) in Alma.\n\nFunction: Replace old dc:rights with Public Domain link\n\nThis action will PERMANENTLY modify dc:rights fields in the records.\n\nDo you want to continue?"
         else:
-            # Single record processing
             if not mms_id_input.value:
                 update_status("Please enter an MMS ID or load a set", True)
                 return
-            
-            add_log_message(f"Starting replace_author_copyright_rights for MMS ID: {mms_id_input.value}")
-            success, message = editor.replace_author_copyright_rights(mms_id_input.value)
-            update_status(message, not success)
+            warning_msg = f"⚠️ WARNING: This will modify the bibliographic record in Alma.\n\nMMS ID: {mms_id_input.value}\nFunction: Replace old dc:rights with Public Domain link\n\nThis action will PERMANENTLY modify dc:rights fields.\n\nDo you want to continue?"
+        
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("⚠️ Confirm Data Modification", weight=ft.FontWeight.BOLD),
+            content=ft.Text(warning_msg, size=14),
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel_action),
+                ft.TextButton("Proceed", on_click=confirm_action, style=ft.ButtonStyle(color=ft.Colors.RED)),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        page.open(dialog)
     
     # Function definitions with metadata
     functions = {
