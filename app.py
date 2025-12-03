@@ -1508,6 +1508,162 @@ class AlmaBibEditor:
             self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
             return False, f"Error processing record {mms_id}: {str(e)}"
     
+    def add_grinnell_identifier(self, mms_id: str) -> tuple[bool, str]:
+        """
+        Function 7: Add Grinnell: dc:identifier field as needed
+        
+        Finds records with dc:identifier starting with "dg_" and adds a corresponding
+        "Grinnell:<number>" dc:identifier if one doesn't already exist.
+        
+        Args:
+            mms_id: The MMS ID of the bibliographic record
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        self.log(f"Starting add_grinnell_identifier for MMS ID: {mms_id}")
+        if not self.api_key:
+            self.log("API Key not configured", logging.ERROR)
+            return False, "API Key not configured"
+        
+        try:
+            # Get the Alma API base URL
+            api_url = self._get_alma_api_url()
+            
+            # Step 1: GET the bib record as XML
+            self.log(f"Fetching bibliographic record {mms_id} as XML")
+            headers = {'Accept': 'application/xml'}
+            response = requests.get(
+                f"{api_url}/almaws/v1/bibs/{mms_id}?view=full&expand=None&apikey={self.api_key}",
+                headers=headers
+            )
+            
+            if response.status_code != 200:
+                self.log(f"Failed to fetch record: {response.status_code}", logging.ERROR)
+                self.log(f"Response: {response.text}", logging.ERROR)
+                return False, f"Failed to fetch record: {response.status_code}"
+            
+            # Step 2: Parse the XML response
+            self.log("Parsing XML response")
+            root = ET.fromstring(response.text)
+            
+            # Register namespaces
+            namespaces_to_register = {
+                'dc': 'http://purl.org/dc/elements/1.1/',
+                'dcterms': 'http://purl.org/dc/terms/',
+                'xsi': 'http://www.w3.org/2001/XMLSchema-instance'
+            }
+            for prefix, uri in namespaces_to_register.items():
+                ET.register_namespace(prefix, uri)
+            
+            self.log("Registered namespaces: dc, dcterms, xsi")
+            
+            # Step 3: Find dc:identifier elements
+            search_namespaces = {
+                'dc': 'http://purl.org/dc/elements/1.1/',
+                'dcterms': 'http://purl.org/dc/terms/'
+            }
+            identifier_elements = root.findall('.//dc:identifier', search_namespaces)
+            self.log(f"Found {len(identifier_elements)} dc:identifier elements")
+            
+            # Step 4: Check for existing identifiers
+            dg_identifier = None
+            grinnell_identifier_exists = False
+            
+            for identifier_elem in identifier_elements:
+                if identifier_elem.text:
+                    if identifier_elem.text.startswith("dg_"):
+                        dg_identifier = identifier_elem.text
+                        self.log(f"Found dg_ identifier: {dg_identifier}")
+                    elif identifier_elem.text.startswith("Grinnell:"):
+                        grinnell_identifier_exists = True
+                        self.log(f"Found existing Grinnell: identifier: {identifier_elem.text}")
+            
+            # Step 5: Determine if we need to add Grinnell: identifier
+            if not dg_identifier:
+                self.log("No dg_ identifier found - nothing to do")
+                return True, "No dg_ identifier found"
+            
+            if grinnell_identifier_exists:
+                self.log("Grinnell: identifier already exists - nothing to do")
+                return True, "Grinnell: identifier already exists"
+            
+            # Step 6: Extract number from dg_ identifier and create Grinnell: identifier
+            # Extract number from "dg_<number>"
+            dg_number = dg_identifier.replace("dg_", "")
+            new_grinnell_id = f"Grinnell:{dg_number}"
+            self.log(f"Creating new identifier: {new_grinnell_id}")
+            
+            # Step 7: Add new dc:identifier element
+            # Find the parent element that contains dc:identifier elements
+            # Typically this is the record element in the anies section
+            parent_element = None
+            for identifier_elem in identifier_elements:
+                for parent in root.iter():
+                    if identifier_elem in list(parent):
+                        parent_element = parent
+                        break
+                if parent_element:
+                    break
+            
+            if not parent_element:
+                self.log("Could not find parent element for dc:identifier", logging.ERROR)
+                return False, "Could not find parent element for dc:identifier"
+            
+            # Create new dc:identifier element
+            new_identifier = ET.Element('{http://purl.org/dc/elements/1.1/}identifier')
+            new_identifier.text = new_grinnell_id
+            parent_element.append(new_identifier)
+            self.log(f"Added new dc:identifier: {new_grinnell_id}")
+            
+            # Step 8: Convert the modified tree back to XML bytes
+            xml_bytes = ET.tostring(root, encoding='utf-8')
+            
+            # Convert to string and fix namespace prefixes
+            xml_str = xml_bytes.decode('utf-8')
+            # Remove ns0: prefix from element names
+            xml_str = xml_str.replace('ns0:', '').replace(':ns0', '')
+            # Remove the xmlns declaration for the Alma namespace
+            xml_str = xml_str.replace(' xmlns="http://alma.exlibrisgroup.com/dc/01GCL_INST"', '')
+            xml_bytes = xml_str.encode('utf-8')
+            
+            # Log a sample of the XML being sent
+            self.log("=" * 60)
+            self.log("XML being sent to Alma (first 500 chars):")
+            self.log(xml_str[:500])
+            self.log("=" * 60)
+            
+            # Step 9: PUT the modified XML back to Alma
+            self.log(f"Updating record {mms_id} in Alma")
+            headers = {
+                'Accept': 'application/xml',
+                'Content-Type': 'application/xml; charset=utf-8'
+            }
+            response = requests.put(
+                f"{api_url}/almaws/v1/bibs/{mms_id}?validate=true&override_warning=true&override_lock=true&stale_version_check=false&check_match=false&apikey={self.api_key}",
+                headers=headers,
+                data=xml_bytes
+            )
+            
+            if response.status_code != 200:
+                self.log(f"Failed to update record: {response.status_code}", logging.ERROR)
+                self.log(f"Response: {response.text}", logging.ERROR)
+                self.log("=" * 60)
+                self.log("Full XML that was sent:")
+                self.log(xml_str)
+                self.log("=" * 60)
+                return False, f"Failed to update record: {response.status_code}"
+            
+            self.log(f"Successfully updated record {mms_id}")
+            return True, f"Added {new_grinnell_id} to record {mms_id}"
+            
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            self.log(f"Error processing record {mms_id}: {str(e)}", logging.ERROR)
+            self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
+            return False, f"Error processing record {mms_id}: {str(e)}"
+    
     def _get_alma_domain(self) -> str:
         """
         Get the Alma domain for the institution.
@@ -2117,6 +2273,124 @@ def main(page: ft.Page):
         
         page.open(dialog)
     
+    def on_function_7_click(e):
+        """Handle Function 7 click - Add Grinnell: dc:identifier"""
+        logger.info("Function 7 button clicked - Add Grinnell: dc:identifier")
+        
+        def execute_function_7():
+            """Execute Function 7 after confirmation"""
+            storage.record_function_usage("function_7_add_grinnell_id")
+            
+            # Check if processing a batch or single record
+            if editor.set_members and len(editor.set_members) > 0:
+                # Batch processing
+                add_log_message(f"Starting batch add_grinnell_identifier for {len(editor.set_members)} records")
+                
+                # Get limit
+                try:
+                    limit = int(limit_input.value) if limit_input.value else 0
+                    if limit < 0:
+                        limit = 0
+                except ValueError:
+                    limit = 0
+                
+                # Calculate how many to process
+                member_count = len(editor.set_members)
+                process_count = min(limit, member_count) if limit > 0 else member_count
+                
+                # Show progress bar
+                set_progress_bar.visible = True
+                set_progress_text.visible = True
+                set_progress_bar.value = 0
+                set_progress_text.value = f"Processing 0/{process_count}"
+                page.update()
+                
+                success_count = 0
+                error_count = 0
+                skipped_count = 0
+                
+                for i, mms_id in enumerate(editor.set_members[:process_count], 1):
+                    if editor.kill_switch:
+                        add_log_message("Batch processing stopped by user")
+                        break
+                    
+                    # Update progress
+                    set_progress_bar.value = i / process_count
+                    set_progress_text.value = f"Processing {i}/{process_count}: {mms_id}"
+                    page.update()
+                    
+                    success, message = editor.add_grinnell_identifier(mms_id)
+                    if success:
+                        if "already exists" in message or "No dg_" in message:
+                            skipped_count += 1
+                            add_log_message(f"⊘ {mms_id}: {message}")
+                        else:
+                            success_count += 1
+                            add_log_message(f"✓ {mms_id}: {message}")
+                    else:
+                        error_count += 1
+                        add_log_message(f"✗ {mms_id}: {message}")
+                
+                # Hide progress bar
+                set_progress_bar.visible = False
+                set_progress_text.visible = False
+                
+                summary = f"Batch complete: {success_count} added, {skipped_count} skipped, {error_count} failed out of {process_count} records"
+                if limit > 0 and limit < member_count:
+                    summary += f" (limited from {member_count} total)"
+                update_status(summary, error_count > 0)
+            else:
+                # Single record processing
+                if not mms_id_input.value:
+                    update_status("Please enter an MMS ID or load a set", True)
+                    return
+                
+                add_log_message(f"Starting add_grinnell_identifier for MMS ID: {mms_id_input.value}")
+                success, message = editor.add_grinnell_identifier(mms_id_input.value)
+                update_status(message, not success)
+        
+        # Show confirmation dialog
+        def confirm_action(e):
+            dialog.open = False
+            page.update()
+            execute_function_7()
+        
+        def cancel_action(e):
+            dialog.open = False
+            page.update()
+            update_status("Operation cancelled by user", False)
+        
+        # Determine warning message based on single or batch
+        if editor.set_members and len(editor.set_members) > 0:
+            member_count = len(editor.set_members)
+            try:
+                limit = int(limit_input.value) if limit_input.value else 0
+                if limit < 0:
+                    limit = 0
+            except ValueError:
+                limit = 0
+            
+            process_count = min(limit, member_count) if limit > 0 else member_count
+            warning_msg = f"⚠️ WARNING: This will modify {process_count} bibliographic record(s) in Alma.\n\nFunction: Add Grinnell: dc:identifier Field As Needed\n\nThis action will PERMANENTLY add dc:identifier fields to records with dg_ identifiers.\n\nDo you want to continue?"
+        else:
+            if not mms_id_input.value:
+                update_status("Please enter an MMS ID or load a set", True)
+                return
+            warning_msg = f"⚠️ WARNING: This will modify the bibliographic record in Alma.\n\nMMS ID: {mms_id_input.value}\nFunction: Add Grinnell: dc:identifier Field As Needed\n\nThis action will PERMANENTLY add a dc:identifier field if a dg_ identifier exists.\n\nDo you want to continue?"
+        
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("⚠️ Confirm Data Modification", weight=ft.FontWeight.BOLD),
+            content=ft.Text(warning_msg, size=14),
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel_action),
+                ft.TextButton("Proceed", on_click=confirm_action, style=ft.ButtonStyle(color=ft.Colors.RED)),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        page.open(dialog)
+    
     # Function definitions with metadata
     functions = {
         "function_1_fetch_xml": {
@@ -2148,6 +2422,11 @@ def main(page: ft.Page):
             "label": "Replace old dc:rights with Public Domain link",
             "icon": "©️",
             "handler": on_function_6_click
+        },
+        "function_7_add_grinnell_id": {
+            "label": "Add Grinnell: dc:identifier Field As Needed",
+            "icon": "🏷️",
+            "handler": on_function_7_click
         }
     }
     
