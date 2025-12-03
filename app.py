@@ -1607,7 +1607,21 @@ def main(page: ft.Page):
     )
     
     # Set members display
-    set_info_text = ft.Text("No set loaded", size=12, color=ft.Colors.GREY_700)
+    def load_dcap01_set(e):
+        """Load the DCAP01 set ID into the input field"""
+        set_id_input.value = "7071087320004641"
+        page.update()
+        add_log_message("DCAP01 set ID loaded into Set ID field")
+    
+    set_info_text = ft.Row([
+        ft.Text("No set loaded - All Digital Titles in DCAP01 Format set ID is: ", size=12, color=ft.Colors.GREY_700),
+        ft.TextButton(
+            "7071087320004641",
+            on_click=load_dcap01_set,
+            style=ft.ButtonStyle(padding=0),
+            tooltip="Click to load this Set ID"
+        )
+    ], spacing=0)
     set_progress_text = ft.Text("", size=12, color=ft.Colors.BLUE_700, visible=False)
     set_progress_bar = ft.ProgressBar(
         width=400,
@@ -1684,9 +1698,9 @@ def main(page: ft.Page):
             # Apply limit if set
             if limit > 0 and len(members) > limit:
                 editor.set_members = members[:limit]
-                set_info_text.value = f"CSV: {input_value.split('/')[-1]} ({limit} of {len(members)} IDs loaded - limited)"
+                set_info_text.controls = [ft.Text(f"CSV: {input_value.split('/')[-1]} ({limit} of {len(members)} IDs loaded - limited)", size=12, color=ft.Colors.GREY_700)]
             else:
-                set_info_text.value = f"CSV: {input_value.split('/')[-1]} ({len(members)} IDs)"
+                set_info_text.controls = [ft.Text(f"CSV: {input_value.split('/')[-1]} ({len(members)} IDs)", size=12, color=ft.Colors.GREY_700)]
             
             page.update()
             update_status(f"Loaded {len(editor.set_members)} MMS IDs from CSV", False)
@@ -1741,9 +1755,9 @@ def main(page: ft.Page):
             set_name = set_data.get('name', 'Unknown')
             member_count = len(members)
             if limit > 0 and member_count >= limit:
-                set_info_text.value = f"Set: {set_name} ({member_count} of {limit} members loaded - limited)"
+                set_info_text.controls = [ft.Text(f"Set: {set_name} ({member_count} of {limit} members loaded - limited)", size=12, color=ft.Colors.GREY_700)]
             else:
-                set_info_text.value = f"Set: {set_name} ({member_count} members)"
+                set_info_text.controls = [ft.Text(f"Set: {set_name} ({member_count} members)", size=12, color=ft.Colors.GREY_700)]
             
             # Hide progress bar after loading
             set_progress_bar.visible = False
@@ -1757,7 +1771,15 @@ def main(page: ft.Page):
         logger.info("Clear Set button clicked")
         editor.set_members = []
         editor.set_info = None
-        set_info_text.value = "No set loaded"
+        set_info_text.controls = [
+            ft.Text("No set loaded - All Digital Titles in DCAP01 Format set ID is: ", size=12, color=ft.Colors.GREY_700),
+            ft.TextButton(
+                "7071087320004641",
+                on_click=load_dcap01_set,
+                style=ft.ButtonStyle(padding=0),
+                tooltip="Click to load this Set ID"
+            )
+        ]
         set_progress_bar.visible = False
         set_progress_text.visible = False
         page.update()
