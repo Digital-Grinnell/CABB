@@ -17,7 +17,9 @@ import requests
 load_dotenv()
 
 # Configure logging
-log_filename = f"cabb_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+# Create logfiles directory if it doesn't exist
+os.makedirs('logfiles', exist_ok=True)
+log_filename = f"logfiles/cabb_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
