@@ -1779,6 +1779,173 @@ class AlmaBibEditor:
             self.log(error_msg, logging.ERROR)
             return False, error_msg
     
+    def validate_handles_to_csv(self, mms_ids: list, output_file: str, progress_callback=None) -> tuple[bool, str]:
+        """
+        Function 9: Validate Handle URLs and export results to CSV
+        Creates a CSV with Handle URL, dc:title, and HTTP status code.
+        Useful for finding broken Handle links (404s, redirects, etc.)
+        
+        Args:
+            mms_ids: List of MMS IDs to check
+            output_file: Path to output CSV file
+            progress_callback: Optional callback function(current, total) for progress updates
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        import csv
+        
+        self.log(f"Starting Handle validation for {len(mms_ids)} records to {output_file}")
+        
+        # Define CSV column headings
+        column_headings = [
+            "MMS ID",
+            "Handle URL",
+            "dc:title",
+            "HTTP Status Code",
+            "Status Message"
+        ]
+        
+        try:
+            with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=column_headings)
+                writer.writeheader()
+                
+                success_count = 0
+                failed_count = 0
+                no_handle_count = 0
+                status_200_count = 0
+                status_404_count = 0
+                status_other_count = 0
+                total = len(mms_ids)
+                batch_size = 100  # Alma API supports up to 100 MMS IDs per batch call
+                
+                # Calculate total number of API calls
+                total_batches = (total + batch_size - 1) // batch_size
+                self.log(f"Using batch API calls: {total_batches} calls for {total} records")
+                
+                # Process in batches
+                for batch_start in range(0, total, batch_size):
+                    batch_end = min(batch_start + batch_size, total)
+                    batch_ids = mms_ids[batch_start:batch_end]
+                    batch_num = (batch_start // batch_size) + 1
+                    
+                    self.log(f"Processing batch {batch_num}/{total_batches}: records {batch_start+1}-{batch_end}")
+                    
+                    # Fetch batch of records
+                    batch_records = self.fetch_bib_records_batch(batch_ids)
+                    
+                    # Process each record in the batch
+                    for i in range(len(batch_ids)):
+                        record_index = batch_start + i + 1
+                        mms_id = batch_ids[i]
+                        
+                        try:
+                            # Check if record was successfully fetched
+                            if mms_id in batch_records:
+                                # Set as current record for field extraction
+                                self.current_record = batch_records[mms_id]
+                                
+                                # Extract title
+                                titles = self._extract_dc_field("title", "dc")
+                                title = titles[0] if titles else "No title found"
+                                
+                                # Extract all dc:identifier values
+                                identifiers = self._extract_dc_field("identifier", "dc")
+                                
+                                # Find Handle identifier
+                                handle_url = ""
+                                for identifier in identifiers:
+                                    if identifier.startswith("http://hdl.handle.net/"):
+                                        handle_url = identifier
+                                        break
+                                
+                                if handle_url:
+                                    # Test the Handle URL
+                                    self.log(f"Testing Handle: {handle_url}")
+                                    try:
+                                        response = requests.head(handle_url, allow_redirects=True, timeout=10)
+                                        status_code = response.status_code
+                                        
+                                        # Get status message
+                                        if status_code == 200:
+                                            status_message = "OK"
+                                        elif status_code == 404:
+                                            status_message = "Not Found"
+                                        elif status_code == 301:
+                                            status_message = "Moved Permanently"
+                                        elif status_code == 302:
+                                            status_message = "Found (Redirect)"
+                                        elif status_code == 403:
+                                            status_message = "Forbidden"
+                                        elif status_code == 500:
+                                            status_message = "Internal Server Error"
+                                        else:
+                                            status_message = response.reason if hasattr(response, 'reason') else "Unknown"
+                                        
+                                        self.log(f"Handle {handle_url} returned {status_code}: {status_message}")
+                                        
+                                    except requests.exceptions.Timeout:
+                                        status_code = 0
+                                        status_message = "Timeout"
+                                        self.log(f"Handle {handle_url} timed out", logging.WARNING)
+                                    except requests.exceptions.ConnectionError:
+                                        status_code = 0
+                                        status_message = "Connection Error"
+                                        self.log(f"Handle {handle_url} connection error", logging.WARNING)
+                                    except Exception as e:
+                                        status_code = 0
+                                        status_message = f"Error: {str(e)}"
+                                        self.log(f"Handle {handle_url} error: {str(e)}", logging.WARNING)
+                                    
+                                    # Create CSV row
+                                    row = {
+                                        "MMS ID": mms_id,
+                                        "Handle URL": handle_url,
+                                        "dc:title": title,
+                                        "HTTP Status Code": status_code,
+                                        "Status Message": status_message
+                                    }
+                                    
+                                    writer.writerow(row)
+                                    success_count += 1
+                                    
+                                    # Track status code categories
+                                    if status_code == 200:
+                                        status_200_count += 1
+                                    elif status_code == 404:
+                                        status_404_count += 1
+                                    else:
+                                        status_other_count += 1
+                                else:
+                                    # No Handle found - skip this record
+                                    no_handle_count += 1
+                                    self.log(f"No Handle found for MMS ID {mms_id}", logging.DEBUG)
+                            else:
+                                self.log(f"Record not returned in batch: {mms_id}", logging.WARNING)
+                                failed_count += 1
+                            
+                            # Update progress
+                            if progress_callback:
+                                progress_callback(record_index, total)
+                            
+                            if record_index % 50 == 0:
+                                self.log(f"Validated {record_index}/{total} records")
+                                
+                        except Exception as e:
+                            self.log(f"Error validating {mms_id}: {str(e)}", logging.ERROR)
+                            failed_count += 1
+                
+                message = f"Handle validation complete: {success_count} handles tested, {no_handle_count} records without handles, {failed_count} failed. Status codes: {status_200_count} OK (200), {status_404_count} Not Found (404), {status_other_count} Other. File: {output_file}"
+                self.log(message)
+                self.log(f"API efficiency: {total_batches} batch calls vs {total} individual calls (saved {total - total_batches} calls)")
+                return True, message
+                
+        except Exception as e:
+            error_msg = f"Error creating Handle validation CSV file: {str(e)}"
+            self.log(error_msg, logging.ERROR)
+            return False, error_msg
+    
     def _get_alma_domain(self) -> str:
         """
         Get the Alma domain for the institution.
@@ -2562,6 +2729,62 @@ def main(page: ft.Page):
             set_progress_text.value = ""
             page.update()
     
+    def on_function_9_click(e):
+        """Handle Function 9 click - Validate Handle URLs"""
+        logger.info("Function 9 button clicked - Validate Handle URLs")
+        storage.record_function_usage("function_9_validate_handles")
+        
+        # Check if set is loaded
+        if not editor.set_members:
+            update_status("Please load a set first", True)
+            return
+        
+        # Generate output filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f"handle_validation_{timestamp}.csv"
+        
+        add_log_message(f"Validating Handle URLs from {len(editor.set_members)} records to CSV: {output_file}")
+        add_log_message("⚠️ Note: This will make HTTP requests to each Handle URL, which may take some time")
+        
+        # Show progress bar
+        set_progress_bar.visible = True
+        set_progress_bar.value = None  # Indeterminate mode
+        set_progress_text.value = "Preparing Handle validation..."
+        set_progress_text.visible = True
+        page.update()
+        
+        def progress_callback(current, total):
+            """Update progress during validation"""
+            set_progress_bar.value = current / total if total > 0 else None
+            set_progress_text.value = f"Validated {current} of {total} records"
+            page.update()
+        
+        try:
+            success, message = editor.validate_handles_to_csv(
+                editor.set_members,
+                output_file,
+                progress_callback=progress_callback
+            )
+            
+            if success:
+                update_status(f"✅ {message}", False)
+                add_log_message(message)
+                add_log_message(f"💡 Tip: Open {output_file} and filter by 'HTTP Status Code' to find errors (404, 500, etc.)")
+            else:
+                update_status(f"❌ {message}", True)
+                add_log_message(f"Validation failed: {message}")
+                
+        except Exception as e:
+            error_msg = f"Error during Handle validation: {str(e)}"
+            update_status(error_msg, True)
+            logger.error(error_msg)
+        finally:
+            set_progress_bar.visible = False
+            set_progress_bar.value = None
+            set_progress_text.visible = False
+            set_progress_text.value = ""
+            page.update()
+    
     # Function definitions with metadata
     functions = {
         "function_1_fetch_xml": {
@@ -2611,6 +2834,12 @@ def main(page: ft.Page):
             "icon": "🔖",
             "handler": on_function_8_click,
             "help_file": "FUNCTION_8_EXPORT_IDENTIFIERS.md"
+        },
+        "function_9_validate_handles": {
+            "label": "Validate Handle URLs and Export Results",
+            "icon": "🔗",
+            "handler": on_function_9_click,
+            "help_file": "FUNCTION_9_VALIDATE_HANDLES.md"
         }
     }
     
@@ -2675,8 +2904,9 @@ def main(page: ft.Page):
                             bgcolor=ft.Colors.WHITE,
                             border=ft.border.all(1, ft.Colors.GREY_300),
                             border_radius=5,
+                            scroll=ft.ScrollMode.AUTO,
                         ),
-                    ], scroll=ft.ScrollMode.AUTO),
+                    ]),
                     padding=10,
                 ),
                 actions=[
