@@ -2396,52 +2396,149 @@ def main(page: ft.Page):
         "function_1_fetch_xml": {
             "label": "Fetch and Display Single XML",
             "icon": "🔍",
-            "handler": on_function_1_click
+            "handler": on_function_1_click,
+            "help_file": "FUNCTION_1_FETCH_DISPLAY_XML.md"
         },
         "function_2_clear_dc_relation": {
             "label": "Clear dc:relation Collections Fields",
             "icon": "🧹",
-            "handler": on_function_2_click
+            "handler": on_function_2_click,
+            "help_file": "FUNCTION_2_CLEAR_DC_RELATION.md"
         },
         "function_3_export_csv": {
             "label": "Export Set to DCAP01 CSV",
             "icon": "📥",
-            "handler": on_function_3_click
+            "handler": on_function_3_click,
+            "help_file": "FUNCTION_3_EXPORT_TO_CSV.md"
         },
         "function_4_filter_pre1931": {
             "label": "Filter CSV for Pre-1931 Dates",
             "icon": "🔎",
-            "handler": on_function_4_click
+            "handler": on_function_4_click,
+            "help_file": "FUNCTION_4_CREATE_DCAP01_RECORD.md"
         },
         "function_5_iiif": {
             "label": "Get IIIF Manifest and Canvas",
             "icon": "🖼️",
-            "handler": on_function_5_click
+            "handler": on_function_5_click,
+            "help_file": "FUNCTION_5_BATCH_FETCH_JSON.md"
         },
         "function_6_replace_rights": {
             "label": "Replace old dc:rights with Public Domain link",
             "icon": "©️",
-            "handler": on_function_6_click
+            "handler": on_function_6_click,
+            "help_file": "FUNCTION_6_DC_RIGHTS_REPLACEMENT.md"
         },
         "function_7_add_grinnell_id": {
             "label": "Add Grinnell: dc:identifier Field As Needed",
             "icon": "🏷️",
-            "handler": on_function_7_click
+            "handler": on_function_7_click,
+            "help_file": "FUNCTION_7_ADD_GRINNELL_IDENTIFIER.md"
         }
     }
     
-    def execute_selected_function(function_key):
-        """Execute the selected function from dropdown"""
-        if function_key and function_key in functions:
-            # Call the function handler with a mock event
-            class MockEvent:
-                pass
-            functions[function_key]["handler"](MockEvent())
+    # Help checkbox state
+    help_mode_enabled = ft.Ref[ft.Checkbox]()
+    
+    def show_help_dialog(function_key):
+        """Display the help markdown file for a function"""
+        if function_key not in functions:
+            return
+        
+        func_info = functions[function_key]
+        help_file = func_info.get("help_file")
+        
+        if not help_file:
+            add_log_message(f"No help file available for {func_info['label']}")
+            return
+        
+        try:
+            # Read the markdown file
+            with open(help_file, 'r', encoding='utf-8') as f:
+                markdown_content = f.read()
             
-            # Refresh dropdown order after execution
-            function_dropdown.options = get_sorted_function_options()
-            function_dropdown.value = None  # Clear selection
-            page.update()
+            add_log_message(f"Displaying help for: {func_info['label']}")
+            
+            def close_help_dialog(e):
+                help_dialog.open = False
+                page.update()
+            
+            def copy_help(e):
+                page.set_clipboard(markdown_content)
+                copy_help_button.text = "Copied!"
+                page.update()
+                # Reset button text after 2 seconds
+                import threading
+                def reset_text():
+                    import time
+                    time.sleep(2)
+                    copy_help_button.text = "Copy to Clipboard"
+                    page.update()
+                threading.Thread(target=reset_text, daemon=True).start()
+            
+            copy_help_button = ft.TextButton("Copy to Clipboard", on_click=copy_help)
+            
+            help_dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text(f"📖 Help: {func_info['label']}", weight=ft.FontWeight.BOLD),
+                content=ft.Container(
+                    content=ft.Column([
+                        ft.Text(f"File: {help_file}", size=11, color=ft.Colors.GREY_600, italic=True),
+                        ft.Container(height=10),
+                        ft.Container(
+                            content=ft.Markdown(
+                                value=markdown_content,
+                                selectable=True,
+                                extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                                on_tap_link=lambda e: page.launch_url(e.data),
+                            ),
+                            width=900,
+                            height=700,
+                            padding=10,
+                            bgcolor=ft.Colors.WHITE,
+                            border=ft.border.all(1, ft.Colors.GREY_300),
+                            border_radius=5,
+                        ),
+                    ], scroll=ft.ScrollMode.AUTO),
+                    padding=10,
+                ),
+                actions=[
+                    copy_help_button,
+                    ft.TextButton("Close", on_click=close_help_dialog),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+            
+            page.open(help_dialog)
+            
+        except FileNotFoundError:
+            add_log_message(f"Help file not found: {help_file}")
+            update_status(f"Help file not found: {help_file}", True)
+        except Exception as e:
+            add_log_message(f"Error reading help file: {str(e)}")
+            update_status(f"Error reading help file: {str(e)}", True)
+    
+    def execute_selected_function(function_key):
+        """Execute the selected function from dropdown or show help if help mode is enabled"""
+        if function_key and function_key in functions:
+            # Check if help mode is enabled
+            if help_mode_enabled.current and help_mode_enabled.current.value:
+                # Show help dialog instead of executing
+                show_help_dialog(function_key)
+                # Clear selection
+                function_dropdown.value = None
+                page.update()
+            else:
+                # Execute the function normally
+                # Call the function handler with a mock event
+                class MockEvent:
+                    pass
+                functions[function_key]["handler"](MockEvent())
+                
+                # Refresh dropdown order after execution
+                function_dropdown.options = get_sorted_function_options()
+                function_dropdown.value = None  # Clear selection
+                page.update()
     
     def get_sorted_function_options():
         """Get function dropdown options sorted by last use date"""
@@ -2547,7 +2644,7 @@ def main(page: ft.Page):
             # Functions section
             ft.Container(
                 content=ft.Column([
-                    ft.Text("Editing Functions", size=18, weight=ft.FontWeight.BOLD),
+                    ft.Text("Active Functions", size=18, weight=ft.FontWeight.BOLD),
                     
                     # Function selector dropdown (will be updated after page.add)
                     function_dropdown := ft.Dropdown(
@@ -2556,6 +2653,11 @@ def main(page: ft.Page):
                         width=400,
                         options=[],
                         on_change=lambda e: execute_selected_function(e.control.value)
+                    ),
+                    ft.Checkbox(
+                        label="Help Mode",
+                        ref=help_mode_enabled,
+                        tooltip="Enable to view help documentation for functions instead of executing them"
                     ),
                 ], spacing=5),
                 padding=5,
