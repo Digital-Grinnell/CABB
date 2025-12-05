@@ -2888,25 +2888,25 @@ def main(page: ft.Page):
                 modal=True,
                 title=ft.Text(f"📖 Help: {func_info['label']}", weight=ft.FontWeight.BOLD),
                 content=ft.Container(
-                    content=ft.Column([
-                        ft.Text(f"File: {help_file}", size=11, color=ft.Colors.GREY_600, italic=True),
-                        ft.Container(height=10),
-                        ft.Container(
-                            content=ft.Markdown(
-                                value=markdown_content,
-                                selectable=True,
-                                extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                                on_tap_link=lambda e: page.launch_url(e.data),
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(f"File: {help_file}", size=11, color=ft.Colors.GREY_600, italic=True),
+                            ft.Container(height=10),
+                            ft.Column(
+                                controls=[
+                                    ft.Markdown(
+                                        value=markdown_content,
+                                        selectable=True,
+                                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                                        on_tap_link=lambda e: page.launch_url(e.data),
+                                    ),
+                                ],
+                                scroll=ft.ScrollMode.AUTO,
+                                width=900,
+                                height=700,
                             ),
-                            width=900,
-                            height=700,
-                            padding=10,
-                            bgcolor=ft.Colors.WHITE,
-                            border=ft.border.all(1, ft.Colors.GREY_300),
-                            border_radius=5,
-                            scroll=ft.ScrollMode.AUTO,
-                        ),
-                    ]),
+                        ],
+                    ),
                     padding=10,
                 ),
                 actions=[
