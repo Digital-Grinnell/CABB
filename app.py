@@ -2743,6 +2743,88 @@ def main(page: ft.Page):
         
         page.open(dialog)
     
+    def on_function_8_click(e):
+        """Handle Function 8: Export Identifier CSV"""
+        if not editor.set_members or len(editor.set_members) == 0:
+            update_status("Please load a set first", True)
+            return
+        
+        # Generate timestamped filename
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f"identifier_export_{timestamp}.csv"
+        
+        add_log_message(f"Starting identifier export to {output_file}")
+        update_status(f"Exporting identifiers for {len(editor.set_members)} records...", False)
+        
+        def progress_update(current, total):
+            progress = current / total
+            set_progress_bar.value = progress
+            status_text.value = f"Exporting identifiers: {current}/{total} records ({progress*100:.1f}%)"
+            page.update()
+        
+        try:
+            set_progress_bar.value = 0
+            set_progress_bar.visible = True
+            page.update()
+            
+            success, message = editor.export_identifier_csv(
+                editor.set_members,
+                output_file,
+                progress_callback=progress_update
+            )
+            
+            set_progress_bar.visible = False
+            update_status(message, not success)
+            
+        except Exception as e:
+            set_progress_bar.visible = False
+            error_msg = f"Error during identifier export: {str(e)}"
+            add_log_message(error_msg, True)
+            update_status(error_msg, True)
+    
+    def on_function_9_click(e):
+        """Handle Function 9: Validate Handle URLs"""
+        if not editor.set_members or len(editor.set_members) == 0:
+            update_status("Please load a set first", True)
+            return
+        
+        # Generate timestamped filename
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f"handle_validation_{timestamp}.csv"
+        
+        add_log_message(f"Starting Handle validation to {output_file}")
+        update_status(f"⚠️ This will make HTTP requests to each Handle URL. Validating {len(editor.set_members)} records...", False)
+        
+        def progress_update(current, total):
+            progress = current / total
+            set_progress_bar.value = progress
+            status_text.value = f"Validating Handles: {current}/{total} records ({progress*100:.1f}%)"
+            page.update()
+        
+        try:
+            set_progress_bar.value = 0
+            set_progress_bar.visible = True
+            page.update()
+            
+            success, message = editor.validate_handles_to_csv(
+                editor.set_members,
+                output_file,
+                progress_callback=progress_update
+            )
+            
+            set_progress_bar.visible = False
+            update_status(message, not success)
+            
+            add_log_message("💡 Tip: Filter the CSV by 'HTTP Status Code' ≠ 200 to find problems")
+            
+        except Exception as e:
+            set_progress_bar.visible = False
+            error_msg = f"Error during Handle validation: {str(e)}"
+            add_log_message(error_msg, True)
+            update_status(error_msg, True)
+    
     # Function definitions with metadata
     functions = {
         "function_1_fetch_xml": {
@@ -2786,6 +2868,18 @@ def main(page: ft.Page):
             "icon": "🏷️",
             "handler": on_function_7_click,
             "help_file": "FUNCTION_7_ADD_GRINNELL_IDENTIFIER.md"
+        },
+        "function_8_export_identifiers": {
+            "label": "Export dc:identifier CSV",
+            "icon": "🔖",
+            "handler": on_function_8_click,
+            "help_file": "FUNCTION_8_EXPORT_IDENTIFIERS.md"
+        },
+        "function_9_validate_handles": {
+            "label": "Validate Handle URLs and Export Results",
+            "icon": "🔗",
+            "handler": on_function_9_click,
+            "help_file": "FUNCTION_9_VALIDATE_HANDLES.md"
         }
     }
     
