@@ -12,7 +12,8 @@ This function processes all records in a loaded set and:
 - Records the HTTP status code (200, 404, etc.)
 - Follows redirects to capture the final destination URL
 - Validates that the redirect URL contains the correct MMS ID
-- Exports results to a CSV file with Handle, title, status, and validation information
+- Queries Primo API to retrieve and compare titles (when MMS ID matches)
+- Exports results to a CSV file with Handle, title, status, validation, and title comparison information
 - Identifies broken or problematic links for remediation
 
 ### Key Features
@@ -21,12 +22,14 @@ This function processes all records in a loaded set and:
 - **Status reporting**: Records HTTP status codes (200, 404, 301, 500, etc.)
 - **Redirect tracking**: Captures final destination URL after following redirects
 - **MMS ID verification**: Confirms the Handle redirects to the correct record
+- **Primo API integration**: Queries Primo to get the title from the discovery system
+- **Title comparison**: Compares Alma dc:title with Primo display title
 - **Error detection**: Identifies timeouts and connection errors
 - **Title inclusion**: Includes dc:title for context
-- **CSV export**: Easy-to-analyze spreadsheet format with 7 columns
+- **CSV export**: Easy-to-analyze spreadsheet format with 8 columns
 - **Batch processing**: Efficient API calls for Alma records (100 records per call)
 - **Progress tracking**: Real-time progress updates
-- **Filter-friendly output**: Easy to find problems (filter by status code or MMS ID match)
+- **Filter-friendly output**: Easy to find problems (filter by status code, MMS ID match, or title match)
 - **Kill switch support**: Can interrupt long-running validations
 
 ## The Need for This Function
@@ -85,8 +88,19 @@ Rather than waiting for users to report broken links:
    - For other status codes:
      - Mark as N/A (not applicable)
 
-5. **Export Results**:
-   - Write CSV with 7 columns:
+5. **Query Primo API for Title** (when MMS ID matches):
+   - If MMS ID found in redirect URL (step 4 = TRUE):
+     - Construct Primo API URL: `https://grinnell.primo.exlibrisgroup.com/primaws/rest/pub/pnxs/undefined/alma{MMS_ID}?vid=01GCL_INST:GCL&lang=en&lang=en`
+     - Send GET request to Primo API
+     - Parse JSON response
+     - Extract title from `pnx.display.title[0]`
+     - Compare with dc:title from Alma record (case-insensitive)
+     - Mark as TRUE if titles match, FALSE if different
+   - If MMS ID not found or API error:
+     - Mark as N/A
+
+6. **Export Results**:
+   - Write CSV with 8 columns:
      - MMS ID
      - Handle URL
      - dc:title
@@ -94,15 +108,16 @@ Rather than waiting for users to report broken links:
      - Status Message
      - Final Redirect URL
      - Returned Correct MMS ID
+     - Titles Match!
 
-6. **Progress Updates**:
+7. **Progress Updates**:
    - Update progress bar after each record
    - Log batch completion
    - Show final statistics with status code counts
 
 ### HTTP Request Details
 
-**Request Type**: HEAD followed by GET for successful responses
+**Request Type**: HEAD followed by GET for successful responses, plus Primo API query
 - **HEAD request**: Gets headers only (faster, less load)
   - Determines HTTP status code
   - Checks if Handle resolves
@@ -111,6 +126,44 @@ Rather than waiting for users to report broken links:
   - Captures final redirect URL
   - Verifies MMS ID in destination URL
   - Used for validation, not content parsing
+- **Primo API request**: When MMS ID matches
+  - Queries Primo's public REST API
+  - Retrieves JSON record with display fields
+  - Extracts title for comparison with Alma metadata
+
+**Primo API Integration**
+
+When a Handle successfully resolves (200 status) and the redirect URL contains the correct MMS ID, Function 9 makes an additional API call to Primo:
+
+**API Endpoint Pattern**:
+```
+https://grinnell.primo.exlibrisgroup.com/primaws/rest/pub/pnxs/undefined/alma{MMS_ID}?vid=01GCL_INST:GCL&lang=en&lang=en
+```
+
+**Example**:
+```
+https://grinnell.primo.exlibrisgroup.com/primaws/rest/pub/pnxs/undefined/alma991011506418804641?vid=01GCL_INST:GCL&lang=en&lang=en
+```
+
+**Response Format**: JSON object with PNX (Primo Normalized XML) structure
+```json
+{
+  "pnx": {
+    "display": {
+      "title": ["Data Repository for Reproducible Research"],
+      "creator": [...],
+      "type": [...]
+    },
+    "search": {...},
+    "control": {...}
+  }
+}
+```
+
+**Title Extraction**: The function extracts the title from `pnx.display.title[0]` and compares it with the `dc:title` from the Alma bibliographic record. This verifies that:
+1. The Handle points to the correct MMS ID
+2. The Primo discovery system has the same title as Alma
+3. Metadata synchronization between Alma and Primo is working correctly
 
 **Why Not Extract Page Titles?**
 
@@ -201,13 +254,17 @@ An earlier version of this function attempted to extract and compare page titles
    - FALSE: Handle points to wrong record (critical!)
    - TRUE: Handle correctly redirects
    - N/A: Could not verify (due to error)
+5. Check "Titles Match!" column:
+   - FALSE: Primo title differs from Alma (may need re-publish)
+   - TRUE: Titles match (expected)
+   - N/A: Could not compare (Handle failed or API error)
 
 ### Filtering for Problems
 
 **Find All Problems (Excel/Google Sheets)**:
 1. Select all data
 2. Create filter
-3. Filter "HTTP Status Code" ≠ 200 OR "Returned Correct MMS ID" = FALSE
+3. Filter "HTTP Status Code" ≠ 200 OR "Returned Correct MMS ID" = FALSE OR "Titles Match!" = FALSE
 
 **Find Broken Links Only**:
 1. Filter "HTTP Status Code" column
@@ -218,6 +275,12 @@ An earlier version of this function attempted to extract and compare page titles
 1. Filter "Returned Correct MMS ID" column
 2. Select only: FALSE
 3. Shows Handles pointing to wrong records
+
+**Find Title Mismatches**:
+1. Filter "Titles Match!" column
+2. Select only: FALSE
+3. Shows records where Primo title differs from Alma
+4. May indicate need to re-publish from Alma to Primo
 
 **Excel Filter**:
 1. Select column D (HTTP Status Code)
@@ -252,15 +315,16 @@ ORDER BY http_status_code;
 
 **Header Row:**
 ```
-MMS ID,Handle URL,dc:title,HTTP Status Code,Status Message,Final Redirect URL,Returned Correct MMS ID
+MMS ID,Handle URL,dc:title,HTTP Status Code,Status Message,Final Redirect URL,Returned Correct MMS ID,Titles Match!
 ```
 
 **Example Data Rows:**
 ```
-991234567890104641,http://hdl.handle.net/11084/12345,Historic Campus Photo,200,OK,https://grinnell.primo.exlibrisgroup.com/discovery/fulldisplay/alma991234567890104641/01GCL_INST:GCL,TRUE
-991234567890204641,http://hdl.handle.net/11084/12346,Student Yearbook 1925,404,Not Found,,N/A
-991234567890304641,http://hdl.handle.net/11084/12347,Faculty Portrait,301,Moved Permanently,,N/A
-991234567890404641,http://hdl.handle.net/11084/12348,Annual Report,0,Timeout,,N/A
+991234567890104641,http://hdl.handle.net/11084/12345,Historic Campus Photo,200,OK,https://grinnell.primo.exlibrisgroup.com/discovery/fulldisplay/alma991234567890104641/01GCL_INST:GCL,TRUE,TRUE
+991234567890204641,http://hdl.handle.net/11084/12346,Student Yearbook 1925,404,Not Found,,N/A,N/A
+991234567890304641,http://hdl.handle.net/11084/12347,Faculty Portrait,301,Moved Permanently,,N/A,N/A
+991234567890404641,http://hdl.handle.net/11084/12348,Annual Report,0,Timeout,,N/A,N/A
+991234567890504641,http://hdl.handle.net/11084/12349,Historic Document,200,OK,https://grinnell.primo.exlibrisgroup.com/discovery/fulldisplay/alma991234567890504641/01GCL_INST:GCL,TRUE,FALSE
 ```
 
 ### Column Details
@@ -274,6 +338,7 @@ MMS ID,Handle URL,dc:title,HTTP Status Code,Status Message,Final Redirect URL,Re
 | Status Message | Human-readable status | OK, Not Found, Timeout |
 | Final Redirect URL | Destination URL after redirects (200 only) | https://grinnell.primo.exlibrisgroup.com/... |
 | Returned Correct MMS ID | MMS ID found in redirect URL | TRUE, FALSE, N/A |
+| Titles Match! | Alma title matches Primo title | TRUE, FALSE, N/A |
 | Handle URL | Full Handle URL from dc:identifier | http://hdl.handle.net/11084/12345 |
 | dc:title | Title from Dublin Core metadata | Historic Campus Photo |
 | HTTP Status Code | Numeric HTTP status | 200, 404, 301, 500, 0 |
@@ -327,6 +392,45 @@ The "Returned Correct MMS ID" column indicates whether the Handle redirects to t
 Filter column G (Returned Correct MMS ID) = FALSE
 ```
 These require immediate attention as they point to wrong records.
+
+### Title Comparison Results
+
+The "Titles Match!" column (column 8) indicates whether the Primo discovery system has the same title as the Alma bibliographic record:
+
+**TRUE**: ✅ Titles match perfectly
+- Primo API title matches dc:title from Alma
+- Case-insensitive comparison (ignores uppercase/lowercase differences)
+- Whitespace trimmed before comparison
+- Indicates proper metadata synchronization
+- This is the expected result
+
+**FALSE**: ⚠️ Title mismatch detected (POTENTIAL PROBLEM)
+- Primo has a different title than Alma
+- Could indicate:
+  - Outdated Primo index (hasn't synced recent Alma changes)
+  - Title was edited in Alma but not yet published to Primo
+  - Different title normalization/display rules
+  - Data inconsistency requiring investigation
+- Review these records to determine if re-publishing is needed
+
+**N/A**: Not applicable
+- MMS ID did not match (column 7 = FALSE)
+- Handle did not resolve successfully (status ≠ 200)
+- Primo API query failed or timed out
+- No title field found in Primo JSON response
+- Cannot compare titles when Handle or API fails
+
+**How to Find Title Mismatches:**
+```
+Filter column H (Titles Match!) = FALSE
+```
+These may indicate records that need to be re-published from Alma to Primo.
+
+**Combined Problem Filter:**
+```
+Filter: Status Code ≠ 200 OR MMS ID = FALSE OR Titles Match! = FALSE
+```
+This shows all records with any validation issue.
 
 ## Use Cases
 

@@ -1664,6 +1664,358 @@ class AlmaBibEditor:
             self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
             return False, f"Error processing record {mms_id}: {str(e)}"
     
+    def export_identifier_csv(self, mms_ids: list, output_file: str, progress_callback=None) -> tuple[bool, str]:
+        """
+        Function 8: Export dc:identifier fields to specialized CSV
+        Creates a 4-column CSV with MMS ID and three specific identifier types:
+        - dg_* identifiers (legacy Digital Grinnell)
+        - Grinnell:* identifiers (standardized format)
+        - http://hdl.handle.net/* identifiers (Handle System)
+        
+        Args:
+            mms_ids: List of MMS IDs to export
+            output_file: Path to output CSV file
+            progress_callback: Optional callback function(current, total) for progress updates
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        import csv
+        
+        self.log(f"Starting identifier CSV export for {len(mms_ids)} records to {output_file}")
+        
+        # Define CSV column headings
+        column_headings = [
+            "MMS ID",
+            "dg_* identifier",
+            "Grinnell:* identifier",
+            "Handle identifier"
+        ]
+        
+        try:
+            with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=column_headings)
+                writer.writeheader()
+                
+                success_count = 0
+                failed_count = 0
+                total = len(mms_ids)
+                batch_size = 100  # Alma API supports up to 100 MMS IDs per batch call
+                
+                # Calculate total number of API calls
+                total_batches = (total + batch_size - 1) // batch_size
+                self.log(f"Using batch API calls: {total_batches} calls for {total} records")
+                
+                # Process in batches
+                for batch_start in range(0, total, batch_size):
+                    batch_end = min(batch_start + batch_size, total)
+                    batch_ids = mms_ids[batch_start:batch_end]
+                    batch_num = (batch_start // batch_size) + 1
+                    
+                    self.log(f"Processing batch {batch_num}/{total_batches}: records {batch_start+1}-{batch_end}")
+                    
+                    # Fetch batch of records
+                    batch_records = self.fetch_bib_records_batch(batch_ids)
+                    
+                    # Process each record in the batch
+                    for i in range(len(batch_ids)):
+                        record_index = batch_start + i + 1
+                        mms_id = batch_ids[i]
+                        
+                        try:
+                            # Check if record was successfully fetched
+                            if mms_id in batch_records:
+                                # Set as current record for field extraction
+                                self.current_record = batch_records[mms_id]
+                                
+                                # Extract all dc:identifier values
+                                identifiers = self._extract_dc_field("identifier", "dc")
+                                
+                                # Categorize identifiers
+                                dg_identifier = ""
+                                grinnell_identifier = ""
+                                handle_identifier = ""
+                                
+                                for identifier in identifiers:
+                                    if identifier.startswith("dg_"):
+                                        dg_identifier = identifier
+                                    elif identifier.startswith("Grinnell:"):
+                                        grinnell_identifier = identifier
+                                    elif identifier.startswith("http://hdl.handle.net/"):
+                                        handle_identifier = identifier
+                                
+                                # Create CSV row
+                                row = {
+                                    "MMS ID": mms_id,
+                                    "dg_* identifier": dg_identifier,
+                                    "Grinnell:* identifier": grinnell_identifier,
+                                    "Handle identifier": handle_identifier
+                                }
+                                
+                                writer.writerow(row)
+                                success_count += 1
+                            else:
+                                self.log(f"Record not returned in batch: {mms_id}", logging.WARNING)
+                                failed_count += 1
+                            
+                            # Update progress
+                            if progress_callback:
+                                progress_callback(record_index, total)
+                            
+                            if record_index % 50 == 0:
+                                self.log(f"Exported {record_index}/{total} records")
+                                
+                        except Exception as e:
+                            self.log(f"Error exporting {mms_id}: {str(e)}", logging.ERROR)
+                            failed_count += 1
+                
+                message = f"Identifier CSV export complete: {success_count} succeeded, {failed_count} failed. File: {output_file}"
+                self.log(message)
+                self.log(f"API efficiency: {total_batches} batch calls vs {total} individual calls (saved {total - total_batches} calls)")
+                return True, message
+                
+        except Exception as e:
+            error_msg = f"Error creating identifier CSV file: {str(e)}"
+            self.log(error_msg, logging.ERROR)
+            return False, error_msg
+    
+    def validate_handles_to_csv(self, mms_ids: list, output_file: str, progress_callback=None) -> tuple[bool, str]:
+        """
+        Function 9: Validate Handle URLs and export results to CSV
+        Creates a CSV with Handle URL, dc:title, and HTTP status code.
+        Useful for finding broken Handle links (404s, redirects, etc.)
+        
+        Args:
+            mms_ids: List of MMS IDs to check
+            output_file: Path to output CSV file
+            progress_callback: Optional callback function(current, total) for progress updates
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        import csv
+        
+        self.log(f"Starting Handle validation for {len(mms_ids)} records to {output_file}")
+        
+        # Define CSV column headings
+        column_headings = [
+            "MMS ID",
+            "Handle URL",
+            "dc:title",
+            "HTTP Status Code",
+            "Status Message",
+            "Final Redirect URL",
+            "Returned Correct MMS ID",
+            "Titles Match!"
+        ]
+        
+        try:
+            with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=column_headings)
+                writer.writeheader()
+                
+                success_count = 0
+                failed_count = 0
+                no_handle_count = 0
+                status_200_count = 0
+                status_404_count = 0
+                status_other_count = 0
+                total = len(mms_ids)
+                batch_size = 100  # Alma API supports up to 100 MMS IDs per batch call
+                
+                # Calculate total number of API calls
+                total_batches = (total + batch_size - 1) // batch_size
+                self.log(f"Using batch API calls: {total_batches} calls for {total} records")
+                
+                # Process in batches
+                for batch_start in range(0, total, batch_size):
+                    # Check kill switch
+                    if self.kill_switch:
+                        self.log("Process stopped by user")
+                        break
+                    batch_end = min(batch_start + batch_size, total)
+                    batch_ids = mms_ids[batch_start:batch_end]
+                    batch_num = (batch_start // batch_size) + 1
+                    
+                    self.log(f"Processing batch {batch_num}/{total_batches}: records {batch_start+1}-{batch_end}")
+                    
+                    # Fetch batch of records
+                    batch_records = self.fetch_bib_records_batch(batch_ids)
+                    
+                    # Process each record in the batch
+                    for i in range(len(batch_ids)):
+                        # Check kill switch
+                        if self.kill_switch:
+                            self.log("Process stopped by user")
+                            break
+                        
+                        record_index = batch_start + i + 1
+                        mms_id = batch_ids[i]
+                        
+                        try:
+                            # Check if record was successfully fetched
+                            if mms_id in batch_records:
+                                # Set as current record for field extraction
+                                self.current_record = batch_records[mms_id]
+                                
+                                # Extract title
+                                titles = self._extract_dc_field("title", "dc")
+                                title = titles[0] if titles else "No title found"
+                                
+                                # Extract all dc:identifier values
+                                identifiers = self._extract_dc_field("identifier", "dc")
+                                
+                                # Find Handle identifier
+                                handle_url = ""
+                                for identifier in identifiers:
+                                    if identifier.startswith("http://hdl.handle.net/"):
+                                        handle_url = identifier
+                                        break
+                                
+                                if handle_url:
+                                    # Test the Handle URL
+                                    self.log(f"Testing Handle: {handle_url}")
+                                    returned_title = ""
+                                    title_matches = ""
+                                    primo_title_match = "N/A"
+                                    
+                                    try:
+                                        response = requests.head(handle_url, allow_redirects=True, timeout=10)
+                                        status_code = response.status_code
+                                        
+                                        # Get status message
+                                        if status_code == 200:
+                                            status_message = "OK"
+                                            # Check the final redirect URL to verify it contains the correct MMS ID
+                                            try:
+                                                full_response = requests.get(handle_url, allow_redirects=True, timeout=10)
+                                                if full_response.status_code == 200:
+                                                    final_url = full_response.url
+                                                    returned_title = final_url
+                                                    
+                                                    # Check if the final URL contains the MMS ID
+                                                    # Handle URLs typically redirect to Primo with pattern: .../alma{MMS_ID}/...
+                                                    primo_title_match = "N/A"
+                                                    if mms_id in final_url:
+                                                        title_matches = "TRUE"
+                                                        self.log(f"MMS ID {mms_id} found in redirect URL: {final_url}")
+                                                        
+                                                        # Query Primo API for title comparison
+                                                        try:
+                                                            primo_api_url = f"https://grinnell.primo.exlibrisgroup.com/primaws/rest/pub/pnxs/undefined/alma{mms_id}?vid=01GCL_INST:GCL&lang=en&lang=en"
+                                                            self.log(f"Querying Primo API: {primo_api_url}", logging.DEBUG)
+                                                            primo_response = requests.get(primo_api_url, timeout=10)
+                                                            
+                                                            if primo_response.status_code == 200:
+                                                                primo_data = primo_response.json()
+                                                                # Extract title from JSON - typically in pnx.display.title[0]
+                                                                if 'pnx' in primo_data and 'display' in primo_data['pnx'] and 'title' in primo_data['pnx']['display']:
+                                                                    primo_title = primo_data['pnx']['display']['title'][0] if primo_data['pnx']['display']['title'] else ""
+                                                                    # Compare titles (case-insensitive, strip whitespace)
+                                                                    if primo_title.strip().lower() == title.strip().lower():
+                                                                        primo_title_match = "TRUE"
+                                                                        self.log(f"Primo title matches: '{primo_title}'")
+                                                                    else:
+                                                                        primo_title_match = "FALSE"
+                                                                        self.log(f"Primo title mismatch: '{primo_title}' vs '{title}'", logging.WARNING)
+                                                                else:
+                                                                    self.log("No title field found in Primo JSON response", logging.WARNING)
+                                                            else:
+                                                                self.log(f"Primo API returned status {primo_response.status_code}", logging.WARNING)
+                                                        except Exception as e:
+                                                            self.log(f"Error querying Primo API: {str(e)}", logging.DEBUG)
+                                                    else:
+                                                        title_matches = "FALSE"
+                                                        self.log(f"MMS ID {mms_id} NOT found in redirect URL: {final_url}", logging.WARNING)
+                                            except Exception as e:
+                                                self.log(f"Could not fetch redirect URL: {str(e)}", logging.DEBUG)
+                                                returned_title = "Error fetching page"
+                                                title_matches = "N/A"
+                                        elif status_code == 404:
+                                            status_message = "Not Found"
+                                        elif status_code == 301:
+                                            status_message = "Moved Permanently"
+                                        elif status_code == 302:
+                                            status_message = "Found (Redirect)"
+                                        elif status_code == 403:
+                                            status_message = "Forbidden"
+                                        elif status_code == 500:
+                                            status_message = "Internal Server Error"
+                                        else:
+                                            status_message = response.reason if hasattr(response, 'reason') else "Unknown"
+                                        
+                                        self.log(f"Handle {handle_url} returned {status_code}: {status_message}")
+                                        
+                                    except requests.exceptions.Timeout:
+                                        status_code = 0
+                                        status_message = "Timeout"
+                                        returned_title = ""
+                                        title_matches = "N/A"
+                                        self.log(f"Handle {handle_url} timed out", logging.WARNING)
+                                    except requests.exceptions.ConnectionError:
+                                        status_code = 0
+                                        status_message = "Connection Error"
+                                        returned_title = ""
+                                        title_matches = "N/A"
+                                        self.log(f"Handle {handle_url} connection error", logging.WARNING)
+                                    except Exception as e:
+                                        status_code = 0
+                                        status_message = f"Error: {str(e)}"
+                                        returned_title = ""
+                                        title_matches = "N/A"
+                                        self.log(f"Handle {handle_url} error: {str(e)}", logging.WARNING)
+                                    
+                                    # Create CSV row
+                                    row = {
+                                        "MMS ID": mms_id,
+                                        "Handle URL": handle_url,
+                                        "dc:title": title,
+                                        "HTTP Status Code": status_code,
+                                        "Status Message": status_message,
+                                        "Final Redirect URL": returned_title,
+                                        "Returned Correct MMS ID": title_matches,
+                                        "Titles Match!": primo_title_match
+                                    }
+                                    
+                                    writer.writerow(row)
+                                    success_count += 1
+                                    
+                                    # Track status code categories
+                                    if status_code == 200:
+                                        status_200_count += 1
+                                    elif status_code == 404:
+                                        status_404_count += 1
+                                    else:
+                                        status_other_count += 1
+                                else:
+                                    # No Handle found - skip this record
+                                    no_handle_count += 1
+                                    self.log(f"No Handle found for MMS ID {mms_id}", logging.DEBUG)
+                            else:
+                                self.log(f"Record not returned in batch: {mms_id}", logging.WARNING)
+                                failed_count += 1
+                            
+                            # Update progress
+                            if progress_callback:
+                                progress_callback(record_index, total)
+                            
+                            if record_index % 50 == 0:
+                                self.log(f"Validated {record_index}/{total} records")
+                                
+                        except Exception as e:
+                            self.log(f"Error validating {mms_id}: {str(e)}", logging.ERROR)
+                            failed_count += 1
+                
+                message = f"Handle validation complete: {success_count} handles tested, {no_handle_count} records without handles, {failed_count} failed. Status codes: {status_200_count} OK (200), {status_404_count} Not Found (404), {status_other_count} Other. File: {output_file}"
+                self.log(message)
+                self.log(f"API efficiency: {total_batches} batch calls vs {total} individual calls (saved {total - total_batches} calls)")
+                return True, message
+                
+        except Exception as e:
+            error_msg = f"Error creating Handle validation CSV file: {str(e)}"
+            self.log(error_msg, logging.ERROR)
+            return False, error_msg
+    
     def _get_alma_domain(self) -> str:
         """
         Get the Alma domain for the institution.
