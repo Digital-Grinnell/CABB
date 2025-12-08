@@ -1803,7 +1803,9 @@ class AlmaBibEditor:
             "Handle URL",
             "dc:title",
             "HTTP Status Code",
-            "Status Message"
+            "Status Message",
+            "Final Redirect URL",
+            "Returned Correct MMS ID"
         ]
         
         try:
@@ -1826,6 +1828,10 @@ class AlmaBibEditor:
                 
                 # Process in batches
                 for batch_start in range(0, total, batch_size):
+                    # Check kill switch
+                    if self.kill_switch:
+                        self.log("Process stopped by user")
+                        break
                     batch_end = min(batch_start + batch_size, total)
                     batch_ids = mms_ids[batch_start:batch_end]
                     batch_num = (batch_start // batch_size) + 1
@@ -1837,6 +1843,11 @@ class AlmaBibEditor:
                     
                     # Process each record in the batch
                     for i in range(len(batch_ids)):
+                        # Check kill switch
+                        if self.kill_switch:
+                            self.log("Process stopped by user")
+                            break
+                        
                         record_index = batch_start + i + 1
                         mms_id = batch_ids[i]
                         
@@ -1863,6 +1874,9 @@ class AlmaBibEditor:
                                 if handle_url:
                                     # Test the Handle URL
                                     self.log(f"Testing Handle: {handle_url}")
+                                    returned_title = ""
+                                    title_matches = ""
+                                    
                                     try:
                                         response = requests.head(handle_url, allow_redirects=True, timeout=10)
                                         status_code = response.status_code
@@ -1870,6 +1884,25 @@ class AlmaBibEditor:
                                         # Get status message
                                         if status_code == 200:
                                             status_message = "OK"
+                                            # Check the final redirect URL to verify it contains the correct MMS ID
+                                            try:
+                                                full_response = requests.get(handle_url, allow_redirects=True, timeout=10)
+                                                if full_response.status_code == 200:
+                                                    final_url = full_response.url
+                                                    returned_title = final_url
+                                                    
+                                                    # Check if the final URL contains the MMS ID
+                                                    # Handle URLs typically redirect to Primo with pattern: .../alma{MMS_ID}/...
+                                                    if mms_id in final_url:
+                                                        title_matches = "TRUE"
+                                                        self.log(f"MMS ID {mms_id} found in redirect URL: {final_url}")
+                                                    else:
+                                                        title_matches = "FALSE"
+                                                        self.log(f"MMS ID {mms_id} NOT found in redirect URL: {final_url}", logging.WARNING)
+                                            except Exception as e:
+                                                self.log(f"Could not fetch redirect URL: {str(e)}", logging.DEBUG)
+                                                returned_title = "Error fetching page"
+                                                title_matches = "N/A"
                                         elif status_code == 404:
                                             status_message = "Not Found"
                                         elif status_code == 301:
@@ -1888,14 +1921,20 @@ class AlmaBibEditor:
                                     except requests.exceptions.Timeout:
                                         status_code = 0
                                         status_message = "Timeout"
+                                        returned_title = ""
+                                        title_matches = "N/A"
                                         self.log(f"Handle {handle_url} timed out", logging.WARNING)
                                     except requests.exceptions.ConnectionError:
                                         status_code = 0
                                         status_message = "Connection Error"
+                                        returned_title = ""
+                                        title_matches = "N/A"
                                         self.log(f"Handle {handle_url} connection error", logging.WARNING)
                                     except Exception as e:
                                         status_code = 0
                                         status_message = f"Error: {str(e)}"
+                                        returned_title = ""
+                                        title_matches = "N/A"
                                         self.log(f"Handle {handle_url} error: {str(e)}", logging.WARNING)
                                     
                                     # Create CSV row
@@ -1904,7 +1943,9 @@ class AlmaBibEditor:
                                         "Handle URL": handle_url,
                                         "dc:title": title,
                                         "HTTP Status Code": status_code,
-                                        "Status Message": status_message
+                                        "Status Message": status_message,
+                                        "Final Redirect URL": returned_title,
+                                        "Returned Correct MMS ID": title_matches
                                     }
                                     
                                     writer.writerow(row)

@@ -10,19 +10,24 @@ This function processes all records in a loaded set and:
 - Extracts Handle URLs (dc:identifier starting with `http://hdl.handle.net/`)
 - Tests each Handle URL with an HTTP HEAD request
 - Records the HTTP status code (200, 404, etc.)
-- Exports results to a CSV file with Handle, title, and status information
+- Follows redirects to capture the final destination URL
+- Validates that the redirect URL contains the correct MMS ID
+- Exports results to a CSV file with Handle, title, status, and validation information
 - Identifies broken or problematic links for remediation
 
 ### Key Features
 
 - **HTTP validation**: Tests actual URL accessibility
 - **Status reporting**: Records HTTP status codes (200, 404, 301, 500, etc.)
+- **Redirect tracking**: Captures final destination URL after following redirects
+- **MMS ID verification**: Confirms the Handle redirects to the correct record
 - **Error detection**: Identifies timeouts and connection errors
 - **Title inclusion**: Includes dc:title for context
-- **CSV export**: Easy-to-analyze spreadsheet format
-- **Batch processing**: Efficient API calls for Alma records
+- **CSV export**: Easy-to-analyze spreadsheet format with 7 columns
+- **Batch processing**: Efficient API calls for Alma records (100 records per call)
 - **Progress tracking**: Real-time progress updates
-- **Filter-friendly output**: Easy to find problems (filter by status code)
+- **Filter-friendly output**: Easy to find problems (filter by status code or MMS ID match)
+- **Kill switch support**: Can interrupt long-running validations
 
 ## The Need for This Function
 
@@ -65,33 +70,79 @@ Rather than waiting for users to report broken links:
 3. **Test Handle URL**:
    - Send HTTP HEAD request to Handle URL
    - Allow redirects (follow 301/302)
-   - Set 10-second timeout
    - Record HTTP status code
+   - If status is 200, send GET request to capture final URL
+   - Extract final redirect destination URL
+   - Check if MMS ID appears in the redirect URL
+   - Set 10-second timeout
    - Map status code to message
 
-4. **Export Results**:
-   - Write CSV with 5 columns:
+4. **Validate MMS ID**:
+   - For successful redirects (200 status):
+     - Extract the final destination URL
+     - Check if the MMS ID is contained in the URL
+     - Mark as TRUE if MMS ID found, FALSE if not
+   - For other status codes:
+     - Mark as N/A (not applicable)
+
+5. **Export Results**:
+   - Write CSV with 7 columns:
      - MMS ID
      - Handle URL
      - dc:title
      - HTTP Status Code
      - Status Message
+     - Final Redirect URL
+     - Returned Correct MMS ID
 
-5. **Progress Updates**:
+6. **Progress Updates**:
    - Update progress bar after each record
    - Log batch completion
-   - Show final statistics
+   - Show final statistics with status code counts
 
 ### HTTP Request Details
 
-**Request Type**: HEAD (gets headers only, not content)
-- Faster than GET (no body download)
-- Less server load
-- Sufficient to determine accessibility
+**Request Type**: HEAD followed by GET for successful responses
+- **HEAD request**: Gets headers only (faster, less load)
+  - Determines HTTP status code
+  - Checks if Handle resolves
+  - Sufficient for error detection
+- **GET request**: For 200 status codes only
+  - Captures final redirect URL
+  - Verifies MMS ID in destination URL
+  - Used for validation, not content parsing
+
+**Why Not Extract Page Titles?**
+
+An earlier version of this function attempted to extract and compare page titles from the returned HTML. This approach was abandoned because:
+
+1. **JavaScript-Rendered Pages**: Grinnell's Handle URLs redirect to Primo (Ex Libris discovery system), which is a JavaScript-based single-page application. The HTML returned by a simple HTTP request contains empty `<title>` tags that get populated by JavaScript after the page loads:
+   ```html
+   <title id="primoExploreTitle"></title>
+   ```
+
+2. **Empty Meta Tags**: Meta tags that might contain title information are also empty in the initial HTML:
+   ```html
+   <meta id="ogTitle" property="og:title" content="">
+   ```
+
+3. **Would Require Browser Automation**: To extract dynamically-loaded titles would require:
+   - Headless browser (Selenium, Playwright, Puppeteer)
+   - JavaScript execution
+   - Much slower processing (~10-30 seconds per URL)
+   - Significantly more complex code
+   - Higher resource usage
+
+4. **Better Alternative**: Instead, the function now verifies that the Handle redirects to a URL containing the correct MMS ID. Grinnell's Handle URLs redirect to Primo with this pattern:
+   ```
+   https://grinnell.primo.exlibrisgroup.com/discovery/fulldisplay/alma991011506418804641/01GCL_INST:GCL
+   ```
+   The presence of the MMS ID in the URL confirms the Handle points to the correct record.
 
 **Redirects**: `allow_redirects=True`
 - Follows 301/302 redirects automatically
 - Reports final status code after redirect chain
+- Captures final destination URL
 
 **Timeout**: 10 seconds
 - Prevents hanging on slow servers
@@ -146,8 +197,27 @@ Rather than waiting for users to report broken links:
    - Status code 404: Broken links
    - Status code 500: Server errors
    - Status code 0: Timeouts/connection errors
+4. Check "Returned Correct MMS ID" column:
+   - FALSE: Handle points to wrong record (critical!)
+   - TRUE: Handle correctly redirects
+   - N/A: Could not verify (due to error)
 
 ### Filtering for Problems
+
+**Find All Problems (Excel/Google Sheets)**:
+1. Select all data
+2. Create filter
+3. Filter "HTTP Status Code" ≠ 200 OR "Returned Correct MMS ID" = FALSE
+
+**Find Broken Links Only**:
+1. Filter "HTTP Status Code" column
+2. Select only: 404, 500, 0
+3. Shows unreachable Handles
+
+**Find Wrong Redirects**:
+1. Filter "Returned Correct MMS ID" column
+2. Select only: FALSE
+3. Shows Handles pointing to wrong records
 
 **Excel Filter**:
 1. Select column D (HTTP Status Code)
@@ -182,15 +252,15 @@ ORDER BY http_status_code;
 
 **Header Row:**
 ```
-MMS ID,Handle URL,dc:title,HTTP Status Code,Status Message
+MMS ID,Handle URL,dc:title,HTTP Status Code,Status Message,Final Redirect URL,Returned Correct MMS ID
 ```
 
 **Example Data Rows:**
 ```
-991234567890104641,http://hdl.handle.net/11084/12345,Historic Campus Photo,200,OK
-991234567890204641,http://hdl.handle.net/11084/12346,Student Yearbook 1925,404,Not Found
-991234567890304641,http://hdl.handle.net/11084/12347,Faculty Portrait,301,Moved Permanently
-991234567890404641,http://hdl.handle.net/11084/12348,Annual Report,0,Timeout
+991234567890104641,http://hdl.handle.net/11084/12345,Historic Campus Photo,200,OK,https://grinnell.primo.exlibrisgroup.com/discovery/fulldisplay/alma991234567890104641/01GCL_INST:GCL,TRUE
+991234567890204641,http://hdl.handle.net/11084/12346,Student Yearbook 1925,404,Not Found,,N/A
+991234567890304641,http://hdl.handle.net/11084/12347,Faculty Portrait,301,Moved Permanently,,N/A
+991234567890404641,http://hdl.handle.net/11084/12348,Annual Report,0,Timeout,,N/A
 ```
 
 ### Column Details
@@ -198,6 +268,12 @@ MMS ID,Handle URL,dc:title,HTTP Status Code,Status Message
 | Column | Description | Example Values |
 |--------|-------------|----------------|
 | MMS ID | Alma record identifier | 991234567890104641 |
+| Handle URL | Full Handle URL from dc:identifier | http://hdl.handle.net/11084/12345 |
+| dc:title | Title from Dublin Core metadata | Historic Campus Photo |
+| HTTP Status Code | Numeric HTTP status | 200, 404, 301, 500, 0 |
+| Status Message | Human-readable status | OK, Not Found, Timeout |
+| Final Redirect URL | Destination URL after redirects (200 only) | https://grinnell.primo.exlibrisgroup.com/... |
+| Returned Correct MMS ID | MMS ID found in redirect URL | TRUE, FALSE, N/A |
 | Handle URL | Full Handle URL from dc:identifier | http://hdl.handle.net/11084/12345 |
 | dc:title | Title from Dublin Core metadata | Historic Campus Photo |
 | HTTP Status Code | Numeric HTTP status | 200, 404, 301, 500, 0 |
@@ -224,6 +300,33 @@ MMS ID,Handle URL,dc:title,HTTP Status Code,Status Message
 **Connection Issues:**
 - **0 Timeout**: Request took >10 seconds (PROBLEM)
 - **0 Connection Error**: DNS, network, or routing issue (PROBLEM)
+
+### MMS ID Validation Results
+
+The "Returned Correct MMS ID" column indicates whether the Handle redirects to the correct record:
+
+**TRUE**: ✅ Handle correctly points to the record
+- MMS ID found in the final redirect URL
+- Example: Handle for 991011506418804641 redirects to URL containing "alma991011506418804641"
+- This is the expected behavior
+
+**FALSE**: ⚠️ Handle points to wrong record (SERIOUS PROBLEM)
+- MMS ID NOT found in redirect URL
+- Handle may point to different record
+- Requires investigation and correction
+- Could indicate Handle configuration error
+
+**N/A**: Not applicable
+- Status code was not 200 (OK)
+- No redirect URL captured
+- Cannot verify MMS ID for failed requests
+- Examples: 404, 500, timeouts, connection errors
+
+**How to Find Mismatched Handles:**
+```
+Filter column G (Returned Correct MMS ID) = FALSE
+```
+These require immediate attention as they point to wrong records.
 
 ## Use Cases
 
