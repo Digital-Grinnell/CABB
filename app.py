@@ -875,7 +875,7 @@ class AlmaBibEditor:
             return []
     
     def _extract_custom_field(self, element: str, namespace_uri: str) -> list:
-        """Extract data from custom namespace fields"""
+        """Extract data from custom namespace fields (tries both namespaced and unprefixed)"""
         try:
             anies = self.current_record.get("anies", [])
             if not anies:
@@ -885,10 +885,17 @@ class AlmaBibEditor:
             root = ET.fromstring(dc_xml)
             
             values = []
+            # Try namespaced version first
             tag = f"{{{namespace_uri}}}{element}"
             for elem in root.findall(f".//{tag}"):
                 if elem.text and elem.text.strip():
                     values.append(elem.text.strip())
+            
+            # If no namespaced elements found, try unprefixed (for dginfo, compoundrelationship, etc.)
+            if not values:
+                for elem in root.findall(f".//{element}"):
+                    if elem.text and elem.text.strip():
+                        values.append(elem.text.strip())
             
             return values
         except Exception as e:
@@ -923,8 +930,19 @@ class AlmaBibEditor:
         
         row = {heading: "" for heading in column_headings}
         
-        # Custom namespace URI
-        grinnell_ns = f"http://alma.exlibrisgroup.com/dc/{bib.get('originating_system', '01GCL_INST')}"
+        # Extract the actual namespace from the XML record
+        grinnell_ns = "http://alma.exlibrisgroup.com/dc/01GCL_INST"  # Default
+        try:
+            anies = bib.get("anies", [])
+            if anies:
+                dc_xml = anies[0] if isinstance(anies, list) else anies
+                # Extract namespace from root element
+                import re
+                ns_match = re.search(r'xmlns="([^"]+)"', dc_xml)
+                if ns_match:
+                    grinnell_ns = ns_match.group(1)
+        except Exception as e:
+            self.log(f"Could not extract namespace from XML: {str(e)}", logging.DEBUG)
         
         # Basic metadata
         row["mms_id"] = bib.get("mms_id", "")
@@ -1027,15 +1045,29 @@ class AlmaBibEditor:
         sources = self._extract_dc_field("source", "dc")
         row["dc:source"] = "; ".join(sources) if sources else ""
         
-        # Custom fields
+        # Custom fields - debug logging
+        self.log(f"Extracting custom fields for MMS ID {row['mms_id']}, namespace: {grinnell_ns}", logging.DEBUG)
+        
         compound = self._extract_custom_field("compoundrelationship", grinnell_ns)
+        if compound:
+            self.log(f"Found compoundrelationship: {compound[0]}", logging.DEBUG)
         row["compoundrelationship"] = compound[0] if compound else ""
         
         sheets = self._extract_custom_field("googlesheetsource", grinnell_ns)
+        if sheets:
+            self.log(f"Found googlesheetsource: {sheets[0]}", logging.DEBUG)
         row["googlesheetsource"] = sheets[0] if sheets else ""
         
         dginfo = self._extract_custom_field("dginfo", grinnell_ns)
+        if dginfo:
+            self.log(f"Found dginfo: {dginfo[0]}", logging.DEBUG)
         row["dginfo"] = dginfo[0] if dginfo else ""
+        
+        # Debug: log the anies content for first record to see structure
+        if row['mms_id'] == "991011506418804641":
+            anies = bib.get("anies", [])
+            if anies:
+                self.log(f"DEBUG: anies content sample (first 500 chars): {str(anies[0])[:500]}", logging.INFO)
         
         return row
     
