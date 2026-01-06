@@ -9,6 +9,7 @@ import logging
 import json
 from datetime import datetime
 from dotenv import load_dotenv
+from typing import Optional
 import xml.etree.ElementTree as ET
 import xml.dom.minidom as minidom
 import requests
@@ -1120,7 +1121,7 @@ class AlmaBibEditor:
                 "dcterms:dateAccepted"
             ]
             
-            def extract_year(date_str: str) -> int | None:
+            def extract_year(date_str: str) -> Optional[int]:
                 """Extract 4-digit year from date string"""
                 if not date_str or not date_str.strip():
                     return None
@@ -2250,8 +2251,6 @@ def main(page: ft.Page):
             # Get limit value
             try:
                 limit = int(limit_input.value) if limit_input.value else 0
-                if limit < 0:
-                    limit = 0
             except ValueError:
                 update_status("Invalid limit value - using 0 (no limit)", True)
                 limit = 0
