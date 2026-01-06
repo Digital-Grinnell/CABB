@@ -2795,25 +2795,21 @@ def main(page: ft.Page):
             status_text.value = f"Exporting identifiers: {current}/{total} records ({progress*100:.1f}%)"
             page.update()
         
-        try:
-            set_progress_bar.value = 0
-            set_progress_bar.visible = True
-            page.update()
-            
-            success, message = editor.export_identifier_csv(
-                editor.set_members,
-                output_file,
-                progress_callback=progress_update
-            )
-            
-            set_progress_bar.visible = False
-            update_status(message, not success)
-            
-        except Exception as e:
-            set_progress_bar.visible = False
-            error_msg = f"Error during identifier export: {str(e)}"
-            add_log_message(error_msg, True)
-            update_status(error_msg, True)
+        # Export to CSV
+        success, message = editor.export_identifier_csv(
+            editor.set_members,
+            output_file,
+            progress_callback=progress_update
+        )
+        
+        # Hide progress bar
+        set_progress_bar.visible = False
+        set_progress_text.visible = False
+        page.update()
+        
+        update_status(message, not success)
+        if success:
+            add_log_message(f"Identifier CSV export complete: {output_file}")
     
     def on_function_9_click(e):
         """Handle Function 9: Validate Handle URLs"""
@@ -2835,27 +2831,22 @@ def main(page: ft.Page):
             status_text.value = f"Validating Handles: {current}/{total} records ({progress*100:.1f}%)"
             page.update()
         
-        try:
-            set_progress_bar.value = 0
-            set_progress_bar.visible = True
-            page.update()
-            
-            success, message = editor.validate_handles_to_csv(
-                editor.set_members,
-                output_file,
-                progress_callback=progress_update
-            )
-            
-            set_progress_bar.visible = False
-            update_status(message, not success)
-            
+        # Validate Handles
+        success, message = editor.validate_handles_to_csv(
+            editor.set_members,
+            output_file,
+            progress_callback=progress_update
+        )
+        
+        # Hide progress bar
+        set_progress_bar.visible = False
+        set_progress_text.visible = False
+        page.update()
+        
+        update_status(message, not success)
+        if success:
+            add_log_message("Handle validation complete")
             add_log_message("💡 Tip: Filter the CSV by 'HTTP Status Code' ≠ 200 to find problems")
-            
-        except Exception as e:
-            set_progress_bar.visible = False
-            error_msg = f"Error during Handle validation: {str(e)}"
-            add_log_message(error_msg, True)
-            update_status(error_msg, True)
     
     # Function definitions with metadata
     functions = {
@@ -2881,7 +2872,7 @@ def main(page: ft.Page):
             "label": "Filter CSV for Pre-1931 Dates",
             "icon": "🔎",
             "handler": on_function_4_click,
-            "help_file": "FUNCTION_4_CREATE_DCAP01_RECORD.md"
+            "help_file": "FUNCTION_4_FILTER_PRE1931_DATES.md"
         },
         "function_5_iiif": {
             "label": "Get IIIF Manifest and Canvas",
