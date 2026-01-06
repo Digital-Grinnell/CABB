@@ -1360,25 +1360,27 @@ class AlmaBibEditor:
             self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
             return False, f"Error retrieving IIIF manifest: {str(e)}"
     
-    def replace_author_copyright_rights(self, mms_id: str) -> tuple[bool, str]:
+    def replace_author_copyright_rights(self, mms_id: str) -> tuple[bool, str, str]:
         """
         Function 6: Replace dc:rights fields starting with "Copyright to this work is held by the author(s)"
-        with a rights statement URL and xml:lang attribute.
+        with a rights statement URL and xml:lang attribute. Also adds new dc:rights for records with none.
         
         Finds dc:rights fields with value starting "Copyright to this work is held by the author(s)"
         and replaces with dc:rights xml:lang="eng" value="https://rightsstatements.org/page/NoC-US/1.0/?language=en"
+        For records with NO dc:rights elements, adds the new Public Domain rights element.
         Ensures no duplicate values are created.
         
         Args:
             mms_id: The MMS ID of the bibliographic record
             
         Returns:
-            tuple: (success: bool, message: str)
+            tuple: (success: bool, message: str, outcome: str)
+                outcome can be: 'replaced', 'added', 'removed_duplicates', 'no_change', 'error'
         """
         self.log(f"Starting replace_author_copyright_rights for MMS ID: {mms_id}")
         if not self.api_key:
             self.log("API Key not configured", logging.ERROR)
-            return False, "API Key not configured"
+            return False, "API Key not configured", "error"
         
         try:
             # Get the Alma API base URL
@@ -1395,7 +1397,7 @@ class AlmaBibEditor:
             if response.status_code != 200:
                 self.log(f"Failed to fetch record: {response.status_code}", logging.ERROR)
                 self.log(f"Response: {response.text}", logging.ERROR)
-                return False, f"Failed to fetch record: {response.status_code}"
+                return False, f"Failed to fetch record: {response.status_code}", "error"
             
             # Step 2: Parse the XML response
             self.log("Parsing XML response")
@@ -1460,30 +1462,58 @@ class AlmaBibEditor:
                                 break
                     
                     changes_made = len(elements_to_remove)
+                    outcome = "removed_duplicates"
                 else:
                     self.log("URL exists and no old fields to remove")
-                    return True, "Rights statement URL already exists, no changes needed"
+                    return True, "Rights statement URL already exists, no changes needed", "no_change"
             else:
-                # URL doesn't exist, replace author copyright fields or old links
+                # URL doesn't exist, replace author copyright fields or old links OR add new element
                 elements_to_replace = author_copyright_elements + old_link_elements
                 if not elements_to_replace:
-                    self.log("No matching dc:rights fields found")
-                    return True, "No matching dc:rights fields found"
+                    # No dc:rights elements exist, add a new one
+                    if len(rights_elements) == 0:
+                        self.log("No dc:rights elements found, adding new Public Domain rights element")
+                        # Find the record element to add dc:rights to
+                        # The structure is: <bib><record>...<metadata>...<dc:rights>
+                        metadata_elem = root.find('.//{http://purl.org/dc/elements/1.1/}metadata', {'dc': 'http://purl.org/dc/elements/1.1/'})
+                        if metadata_elem is None:
+                            # Try finding without namespace prefix
+                            for elem in root.iter():
+                                if elem.tag.endswith('metadata'):
+                                    metadata_elem = elem
+                                    break
+                        
+                        if metadata_elem is not None:
+                            # Create new dc:rights element
+                            new_rights_elem = ET.Element('{http://purl.org/dc/elements/1.1/}rights')
+                            new_rights_elem.text = new_value
+                            metadata_elem.append(new_rights_elem)
+                            self.log(f"Added new dc:rights element: {new_value}")
+                            changes_made = 1
+                            outcome = "added"
+                        else:
+                            self.log("Could not find metadata element to add dc:rights", logging.ERROR)
+                            return False, "Could not find metadata element to add dc:rights", "error"
+                    else:
+                        self.log("No matching dc:rights fields found")
+                        return True, "No matching dc:rights fields found", "no_change"
                 
-                # Replace first matching element with new value
-                first_elem = elements_to_replace[0]
-                first_elem.text = new_value
-                self.log(f"Replaced first old field with new URL")
-                
-                # Remove any additional fields (duplicates)
-                for rights_elem in elements_to_replace[1:]:
-                    for parent in root.iter():
-                        if rights_elem in list(parent):
-                            parent.remove(rights_elem)
-                            self.log(f"Removed duplicate: {rights_elem.text[:80]}...")
-                            break
-                
-                changes_made = len(elements_to_replace)
+                else:
+                    # Replace first matching element with new value
+                    first_elem = elements_to_replace[0]
+                    first_elem.text = new_value
+                    self.log(f"Replaced first old field with new URL")
+                    
+                    # Remove any additional fields (duplicates)
+                    for rights_elem in elements_to_replace[1:]:
+                        for parent in root.iter():
+                            if rights_elem in list(parent):
+                                parent.remove(rights_elem)
+                                self.log(f"Removed duplicate: {rights_elem.text[:80]}...")
+                                break
+                    
+                    changes_made = len(elements_to_replace)
+                    outcome = "replaced"
             
             # Step 4: Convert the modified tree back to XML bytes
             self.log(f"Modified {changes_made} dc:rights field(s), preparing to update")
@@ -1522,24 +1552,28 @@ class AlmaBibEditor:
                 self.log("Full XML that was sent:")
                 self.log(xml_str)
                 self.log("=" * 60)
-                return False, f"Failed to update record: {response.status_code}"
+                return False, f"Failed to update record: {response.status_code}", "error"
             
             self.log(f"Successfully updated record {mms_id}")
             
-            # Build appropriate success message
-            if url_exists:
-                message = f"Removed {changes_made} author copyright field(s) (rights URL already present) in record {mms_id}"
+            # Build appropriate success message based on outcome
+            if outcome == "removed_duplicates":
+                message = f"Removed {changes_made} duplicate field(s) (rights URL already present) in record {mms_id}"
+            elif outcome == "replaced":
+                message = f"Replaced {changes_made} old dc:rights field(s) with Public Domain link in record {mms_id}"
+            elif outcome == "added":
+                message = f"Added new Public Domain dc:rights element to record {mms_id}"
             else:
-                message = f"Replaced {changes_made} author copyright field(s) with rights URL in record {mms_id}"
+                message = f"Updated record {mms_id}"
             
-            return True, message
+            return True, message, outcome
             
         except Exception as e:
             import traceback
             error_details = traceback.format_exc()
             self.log(f"Error processing record {mms_id}: {str(e)}", logging.ERROR)
             self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
-            return False, f"Error processing record {mms_id}: {str(e)}"
+            return False, f"Error processing record {mms_id}: {str(e)}", "error"
     
     def add_grinnell_identifier(self, mms_id: str) -> tuple[bool, str]:
         """
@@ -2575,7 +2609,11 @@ def main(page: ft.Page):
                 set_progress_text.value = f"Processing 0/{process_count}"
                 page.update()
                 
-                success_count = 0
+                total_count = 0
+                replaced_count = 0
+                added_count = 0
+                removed_duplicates_count = 0
+                no_change_count = 0
                 error_count = 0
                 
                 for i, mms_id in enumerate(editor.set_members[:process_count], 1):
@@ -2583,15 +2621,27 @@ def main(page: ft.Page):
                         add_log_message("Batch processing stopped by user")
                         break
                     
+                    total_count += 1
+                    
                     # Update progress
                     set_progress_bar.value = i / process_count
                     set_progress_text.value = f"Processing {i}/{process_count}: {mms_id}"
                     page.update()
                     
-                    success, message = editor.replace_author_copyright_rights(mms_id)
+                    success, message, outcome = editor.replace_author_copyright_rights(mms_id)
                     if success:
-                        success_count += 1
-                        add_log_message(f"✓ {mms_id}: {message}")
+                        if outcome == "replaced":
+                            replaced_count += 1
+                            add_log_message(f"✓ {mms_id}: {message}")
+                        elif outcome == "added":
+                            added_count += 1
+                            add_log_message(f"+ {mms_id}: {message}")
+                        elif outcome == "removed_duplicates":
+                            removed_duplicates_count += 1
+                            add_log_message(f"◆ {mms_id}: {message}")
+                        elif outcome == "no_change":
+                            no_change_count += 1
+                            add_log_message(f"⊘ {mms_id}: {message}")
                     else:
                         error_count += 1
                         add_log_message(f"✗ {mms_id}: {message}")
@@ -2600,7 +2650,8 @@ def main(page: ft.Page):
                 set_progress_bar.visible = False
                 set_progress_text.visible = False
                 
-                summary = f"Batch complete: {success_count} succeeded, {error_count} failed out of {process_count} records"
+                # Build detailed summary
+                summary = f"Batch complete ({total_count} records): {replaced_count} replaced, {added_count} added, {removed_duplicates_count} duplicates removed, {no_change_count} no change, {error_count} errors"
                 if limit > 0 and limit < member_count:
                     summary += f" (limited from {member_count} total)"
                 update_status(summary, error_count > 0)
@@ -2611,7 +2662,7 @@ def main(page: ft.Page):
                     return
                 
                 add_log_message(f"Starting replace_author_copyright_rights for MMS ID: {mms_id_input.value}")
-                success, message = editor.replace_author_copyright_rights(mms_id_input.value)
+                success, message, outcome = editor.replace_author_copyright_rights(mms_id_input.value)
                 update_status(message, not success)
         
         # Show confirmation dialog

@@ -2,11 +2,16 @@
 
 ## Overview
 
-Function 6 automatically replaces outdated copyright statements in Alma bibliographic records with a standardized Public Domain rights statement. This function ensures consistent rights metadata across the digital collection by converting old text-based copyright notices into a properly formatted HTML link.
+Function 6 automatically replaces outdated copyright statements in Alma bibliographic records with a standardized Public Domain rights statement. **NEW:** This function now also adds Public Domain rights statements to records that have NO dc:rights element at all. This ensures consistent rights metadata across the digital collection by converting old text-based copyright notices into properly formatted HTML links and filling in missing rights information.
 
 ## What It Does
 
-This function searches for and replaces `dc:rights` fields in bibliographic records that contain outdated copyright statements, replacing them with a standardized Public Domain rights statement link.
+This function searches for and processes `dc:rights` fields in bibliographic records, performing one of the following actions:
+
+1. **Replaces** outdated copyright statements with standardized Public Domain link
+2. **Adds** Public Domain link to records with NO dc:rights elements
+3. **Removes** duplicate old fields when the new link already exists
+4. **Reports** no change when proper link already exists
 
 ### Targeted Rights Statements
 
@@ -19,9 +24,11 @@ The function identifies and replaces the following types of `dc:rights` fields:
    - Contains: `https://rightsstatements.org/page/NoC-US/1.0/?language=en`
    - Missing: `target="_blank"` attribute
 
+3. **Missing dc:rights**: **NEW** - Records with NO dc:rights element at all
+
 ### Replacement Value
 
-All matching fields are replaced with:
+All matching fields are replaced with (or a new element is added with):
 
 ```html
 <a href="https://rightsstatements.org/page/NoC-US/1.0/?language=en" target="_blank">Public Domain in the United States</a>
@@ -34,29 +41,52 @@ This creates a clickable link that:
 
 ## Processing Logic
 
-### Duplicate Prevention
+### Processing Scenarios
 
-The function implements smart duplicate handling to ensure clean metadata:
+The function handles five distinct scenarios:
 
-1. **If the new link already exists in the record:**
-   - Remove all old author copyright fields
-   - Remove all old links without the target attribute
-   - Keep the new link intact
+#### 1. New Link Already Exists + Old Fields Present
+- **Action**: Remove all old author copyright fields and old links
+- **Outcome**: `removed_duplicates`
+- **Result**: Clean record with only the proper Public Domain link
 
-2. **If the new link doesn't exist:**
-   - Replace the first old field (author copyright OR old link) with the new link
-   - Remove all remaining duplicate old fields
+#### 2. New Link Already Exists + No Old Fields
+- **Action**: None (record already correct)
+- **Outcome**: `no_change`
+- **Result**: Record unchanged
+
+#### 3. Old Fields Present (No New Link)
+- **Action**: Replace first old field with new link, remove any additional old fields
+- **Outcome**: `replaced`
+- **Result**: Old fields converted to standardized link
+
+#### 4. **NEW** - NO dc:rights Elements Present
+- **Action**: Add new dc:rights element with Public Domain link
+- **Outcome**: `added`
+- **Result**: Previously missing rights information now present
+
+#### 5. Error Occurred
+- **Action**: Log error, skip record (in batch mode)
+- **Outcome**: `error`
+- **Result**: No changes made, error logged
 
 ### Step-by-Step Process
 
 1. **Fetch Record**: Retrieves the bibliographic record from Alma as XML
 2. **Parse XML**: Parses the XML and identifies all `dc:rights` elements
-3. **Categorize Fields**: Sorts rights elements into three categories:
+3. **Categorize Fields**: Sorts rights elements into categories:
    - New links (with target attribute) ✓
    - Author copyright statements (to be replaced)
    - Old links (without target attribute, to be replaced)
-4. **Apply Changes**: Either removes duplicates or replaces/removes old fields
-5. **Update Alma**: Sends the modified XML back to Alma
+   - **NEW**: None found (needs new element added)
+4. **Determine Action**: 
+   - If new link exists: remove old duplicates
+   - If old fields exist: replace/remove them
+   - **NEW**: If NO dc:rights exists: add new element
+   - If already correct: report no change
+5. **Apply Changes**: Execute the appropriate modification
+6. **Update Alma**: Sends the modified XML back to Alma
+7. **Report Outcome**: Categorizes the result as replaced, added, removed_duplicates, no_change, or error
 
 ## Operation Modes
 
@@ -85,8 +115,15 @@ Process multiple records from a loaded set:
 **Batch Processing Features:**
 - Progress bar shows current record being processed
 - Kill switch available to stop processing mid-batch
-- Summary shows success/failure counts
-- Individual record results logged
+- **NEW**: Detailed summary with breakdown by outcome type
+- Individual record results logged with outcome indicators
+
+**Outcome Indicators in Log:**
+- `✓` - Replaced old dc:rights field(s)
+- `+` - Added new dc:rights element (record had none)
+- `◆` - Removed duplicates (new link already existed)
+- `⊘` - No change (record already correct)
+- `✗` - Error occurred
 
 ## Safety Features
 
@@ -160,19 +197,61 @@ Common errors and handling:
 
 ### Success Messages
 
-- **Single record**: `"Successfully replaced N dc:rights field(s)"`
-- **Batch mode**: `"Batch complete: X succeeded, Y failed out of Z records"`
+**Single Record:**
+- Replaced: `"Replaced N old dc:rights field(s) with Public Domain link in record {mms_id}"`
+- Added: `"Added new Public Domain dc:rights element to record {mms_id}"`
+- Removed duplicates: `"Removed N duplicate field(s) (rights URL already present) in record {mms_id}"`
+- No change: `"Rights statement URL already exists, no changes needed"`
+
+**Batch Mode:**
+```
+Batch complete (150 records): 45 replaced, 32 added, 12 duplicates removed, 58 no change, 3 errors
+```
+
+### Detailed Reporting
+
+The batch summary now provides a complete breakdown:
+
+- **Total records processed**: Overall count of records touched
+- **Replaced**: Records where old dc:rights were replaced with new link
+- **Added**: **NEW** - Records where a new dc:rights element was added (had none before)
+- **Duplicates removed**: Records where old fields were removed (new link already existed)
+- **No change**: Records already correct (proper link exists, no old fields)
+- **Errors**: Records that failed due to API errors or other issues
+
+**Example Output:**
+```
+Batch complete (3255 records): 1200 replaced, 850 added, 150 duplicates removed, 1000 no change, 55 errors
+```
+
+This tells you:
+- 1200 records had old statements replaced
+- 850 records had NO dc:rights and now have the Public Domain link
+- 150 records had duplicates cleaned up
+- 1000 records were already correct
+- 55 records encountered errors
 
 ### Log Entries
 
 The function logs:
 - Start of operation with MMS ID
-- Number of `dc:rights` elements found
+- Number of `dc:rights` elements found (including 0 if none)
 - Each matching field identified
+- **NEW**: When adding element: "No dc:rights elements found, adding new Public Domain rights element"
 - Replacement or removal actions taken
 - API request/response details (first 500 chars)
-- Success or failure for each record
-- Final summary statistics
+- Success or failure for each record with outcome category
+- Final summary statistics with breakdown by outcome
+
+**Sample Log Entries:**
+
+```
+2026-01-06 14:39:34,663 - __main__ - INFO - Starting replace_author_copyright_rights for MMS ID: 991011688294904641
+2026-01-06 14:39:34,661 - __main__ - INFO - Found 0 dc:rights elements
+2026-01-06 14:39:34,663 - __main__ - INFO - No dc:rights elements found, adding new Public Domain rights element
+2026-01-06 14:39:34,664 - __main__ - INFO - Added new dc:rights element: <a href="..." target="_blank">Public Domain in the United States</a>
+2026-01-06 14:39:34,671 - __main__ - INFO - Successfully updated record 991011688294904641
+```
 
 ### Status Updates
 
@@ -184,49 +263,180 @@ Real-time status updates show:
 
 ## Use Cases
 
-### Bulk Rights Statement Updates
+### 1. Bulk Rights Statement Updates for Pre-1931 Materials
 
-Apply consistent Public Domain statements to a collection of pre-1931 materials:
+Apply consistent Public Domain statements to a collection of materials:
 
-1. Export set to CSV
-2. Filter for pre-1931 dates
-3. Load filtered CSV
-4. Run Function 6 on the set
-5. All old copyright statements updated to standardized link
+1. Load set of pre-1931 materials (e.g., DCAP01 set)
+2. Run Function 6 on the set
+3. Review summary to see breakdown of actions taken
+4. All records now have proper Public Domain rights statements
 
-### Individual Record Correction
+**Example Result:**
+```
+Batch complete (2847 records): 1200 replaced, 850 added, 150 duplicates removed, 647 no change, 0 errors
+```
 
-Fix a single record with outdated rights metadata:
+This shows:
+- 1200 had old statements updated
+- 850 were missing dc:rights entirely (now added)
+- 150 had cleanup of duplicates
+- 647 were already correct
+
+### 2. **NEW** - Add Missing Rights Metadata
+
+Identify and fix records with NO dc:rights:
+
+1. Export set to CSV using Function 3
+2. Review in spreadsheet to identify records missing rights info
+3. Create filtered CSV with just those records
+4. Load filtered CSV
+5. Run Function 6
+6. All records now have Public Domain rights statement
+
+**Before:** Record has NO dc:rights element
+**After:** Record has `<dc:rights><a href="..." target="_blank">Public Domain in the United States</a></dc:rights>`
+
+### 3. Individual Record Correction
+
+Fix a single record with outdated or missing rights metadata:
 
 1. Enter MMS ID
 2. Run Function 6
-3. Verify update in Alma
+3. Check log to see what action was taken:
+   - `+` means rights were added (was missing)
+   - `✓` means old rights were replaced
+   - `⊘` means already correct
+4. Verify update in Alma
 
-### Link Format Standardization
+### 4. Link Format Standardization
 
 Update records that have the correct URL but incorrect format:
 
 - Old: `https://rightsstatements.org/page/NoC-US/1.0/?language=en`
 - New: `<a href="..." target="_blank">Public Domain in the United States</a>`
 
+### 5. **NEW** - Quality Assurance After Migration
+
+After migrating records from another system:
+
+1. Load entire migrated set
+2. Run Function 6 to ensure all records have proper rights
+3. Review detailed summary:
+   - `added` count shows how many had no rights metadata
+   - `replaced` count shows how many had old formats
+   - `no_change` count shows how many were already correct
+4. Generate report for documentation
+
 ## Best Practices
 
 1. **Test first**: Try on a single record before running batch operations
 2. **Use limits**: For large sets, start with a small limit to verify behavior
 3. **Monitor logs**: Watch for patterns in errors or unexpected results
-4. **Keep backups**: Alma maintains record history, but document your changes
-5. **Verify results**: Spot-check modified records in Alma to confirm expected changes
+4. **Review detailed summary**: Check the breakdown to understand what actions were taken
+5. **Pay attention to "added" count**: **NEW** - This shows records that had NO rights metadata
+6. **Keep backups**: Alma maintains record history, but document your changes
+7. **Verify results**: Spot-check modified records in Alma to confirm expected changes
+8. **Export before and after**: Use Function 3 to export metadata before and after for comparison
+9. **Check "no change" count**: High numbers here mean most records were already correct
+
+## Statistics Interpretation
+
+Understanding the batch summary helps with quality control:
+
+**High "replaced" count**: Many records had old-style copyright statements
+- Action: Normal for older collections
+- Follow-up: None needed
+
+**High "added" count**: Many records were missing dc:rights entirely
+- Action: **Important** - indicates metadata gaps in original records
+- Follow-up: Review why these records lacked rights metadata; may indicate systematic issue
+
+**High "duplicates removed" count**: Many records had both old and new formats
+- Action: Indicates partial previous cleanup or multiple update passes
+- Follow-up: Review workflow to avoid creating duplicates in future
+
+**High "no change" count**: Most records already correct
+- Action: Good! Collection already has proper rights metadata
+- Follow-up: May not need to run function again unless new records added
+
+**High "errors" count**: Many records failed processing
+- Action: **Requires attention** - systematic issue with API or records
+- Follow-up: Review error logs, check API key permissions, verify record structure
 
 ## Limitations
 
 - Only processes `dc:rights` fields (not other rights metadata fields)
 - Matches exact pattern for author copyright statements
 - Does not modify rights statements with different wording
-- Requires valid Alma API key with appropriate permissions
+- **NEW**: When adding new element, uses standard Public Domain link (doesn't customize based on date or other factors)
+- Adds new dc:rights to the `metadata` section of the record
+- Requires valid Alma API key with appropriate permissions (Bibs read/write)
 - Subject to Alma API rate limits for large batch operations
+- Cannot process records that are locked by another user/process
 
 ## Related Functions
 
 - **Function 3**: Export Set to CSV - useful for identifying records needing updates
 - **Function 4**: Filter CSV for Pre-1931 Dates - commonly used before applying rights updates
 - **Function 1**: Fetch and Display XML - verify record structure before/after changes
+
+## Working with Records Missing dc:rights
+
+### Finding Records Without dc:rights
+
+When you run Function 6 on a large set, the log file will show which records had no dc:rights elements. You can extract these:
+
+1. **Check the log file** in the `logfiles/` directory
+2. **Search for** the message: "No matching dc:rights fields found"
+3. **Extract MMS IDs** from the lines preceding this message
+
+**Example using command line:**
+```bash
+# Count occurrences
+grep -c "No matching dc:rights fields found" logfiles/cabb_20260106_143729.log
+
+# Extract MMS IDs to CSV
+grep -B 5 "No matching dc:rights fields found" logfiles/*.log | \
+  grep "Starting replace_author_copyright_rights for MMS ID:" | \
+  awk '{print $NF}' | sort | uniq > missing_dc_rights.csv
+```
+
+### Processing the Missing Rights Records
+
+Once you have a CSV of MMS IDs for records without dc:rights:
+
+1. **Add CSV header**: Open the file and add `MMS_ID` as the first line
+2. **Load in CABB**: Use "Load MMS IDs from CSV" button
+3. **Run Function 6**: All records will now get the Public Domain rights element
+4. **Review results**: Check the summary - all should show as "added"
+
+**Expected Result:**
+```
+Batch complete (3255 records): 0 replaced, 3255 added, 0 duplicates removed, 0 no change, 0 errors
+```
+
+This indicates all 3,255 records that previously had NO dc:rights now have the proper Public Domain link.
+
+## Recent Updates
+
+### January 2026 Enhancement
+
+**New Capability**: Function 6 now adds Public Domain dc:rights to records that have NO dc:rights element.
+
+**Why This Matters**: 
+- Previous version only replaced existing outdated statements
+- Many records from legacy systems lack dc:rights metadata entirely
+- These "orphan" records were invisible to the old function
+- Now ensures ALL records have proper rights metadata, not just those with old formats
+
+**Impact**: In a recent test on 3,255 records:
+- All had "No matching dc:rights fields found" with the old logic
+- All would now receive the Public Domain rights statement with the new logic
+- This represents a significant improvement in metadata completeness
+
+**Reporting Enhancement**: The detailed outcome reporting lets you see exactly:
+- How many records had old formats replaced (`replaced`)
+- How many had NO rights and got them added (`added`)
+- How many were already correct (`no_change`)
+- This visibility helps with quality assurance and documentation
