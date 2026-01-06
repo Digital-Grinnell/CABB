@@ -1072,12 +1072,12 @@ class AlmaBibEditor:
         
         return row
     
-    def filter_csv_by_pre1931_dates(self, input_file: str = None, output_file: str = None) -> tuple[bool, str]:
+    def filter_csv_by_pre1930_dates(self, input_file: str = None, output_file: str = None) -> tuple[bool, str]:
         """
-        Function 4: Filter CSV export to only records with dates before 1931
+        Function 4: Filter CSV export to only records with dates before 1930
         
         Reads the most recent alma_export_*.csv file and filters records that have
-        non-empty date values before 1931 in any of these fields:
+        non-empty date values before 1930 in any of these fields:
         - dc:date
         - dcterms:created
         - dcterms:issued
@@ -1096,7 +1096,7 @@ class AlmaBibEditor:
         import re
         from datetime import datetime
         
-        self.log("Starting CSV filter for pre-1931 dates")
+        self.log("Starting CSV filter for pre-1930 dates")
         
         try:
             # Find most recent alma_export_*.csv if not specified
@@ -1110,7 +1110,7 @@ class AlmaBibEditor:
             # Generate output filename if not specified
             if output_file is None:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_file = f"pre1931_export_{timestamp}.csv"
+                output_file = f"pre1930_export_{timestamp}.csv"
             
             # Date fields to check
             date_fields = [
@@ -1135,12 +1135,12 @@ class AlmaBibEditor:
                         return None
                 return None
             
-            def has_pre1931_date(row: dict) -> bool:
-                """Check if any date field contains a year before 1931"""
+            def has_pre1930_date(row: dict) -> bool:
+                """Check if any date field contains a year before 1930"""
                 for field in date_fields:
                     date_value = row.get(field, "")
                     year = extract_year(date_value)
-                    if year is not None and year < 1931:
+                    if year is not None and year < 1930:
                         return True
                 return False
             
@@ -1154,7 +1154,7 @@ class AlmaBibEditor:
                 
                 for row in reader:
                     total_rows += 1
-                    if has_pre1931_date(row):
+                    if has_pre1930_date(row):
                         filtered_rows.append(row)
             
             # Write filtered results
@@ -1163,7 +1163,7 @@ class AlmaBibEditor:
                 writer.writeheader()
                 writer.writerows(filtered_rows)
             
-            message = f"Filtered {len(filtered_rows)} of {total_rows} records (pre-1931 dates) → {output_file}"
+            message = f"Filtered {len(filtered_rows)} of {total_rows} records (pre-1930 dates) → {output_file}"
             self.log(message)
             return True, message
             
@@ -2515,12 +2515,12 @@ def main(page: ft.Page):
             add_log_message(f"CSV export complete: {output_file}")
     
     def on_function_4_click(e):
-        """Handle Function 4 click - Filter CSV by pre-1931 dates"""
+        """Handle Function 4 click - Filter CSV by pre-1930 dates"""
         logger.info("Function 4 button clicked - Filter CSV")
-        storage.record_function_usage("function_4_filter_pre1931")
+        storage.record_function_usage("function_4_filter_pre1930")
         
-        add_log_message("Filtering latest CSV export for pre-1931 dates")
-        success, message = editor.filter_csv_by_pre1931_dates()
+        add_log_message("Filtering latest CSV export for pre-1930 dates")
+        success, message = editor.filter_csv_by_pre1930_dates()
         update_status(message, not success)
         if success:
             add_log_message("CSV filtering complete")
@@ -2867,11 +2867,11 @@ def main(page: ft.Page):
             "handler": on_function_3_click,
             "help_file": "FUNCTION_3_EXPORT_TO_CSV.md"
         },
-        "function_4_filter_pre1931": {
-            "label": "Filter CSV for Pre-1931 Dates",
+        "function_4_filter_pre1930": {
+            "label": "Filter CSV for Pre-1930 Dates",
             "icon": "🔎",
             "handler": on_function_4_click,
-            "help_file": "FUNCTION_4_FILTER_PRE1931_DATES.md"
+            "help_file": "FUNCTION_4_FILTER_PRE1930_DATES.md"
         },
         "function_5_iiif": {
             "label": "Get IIIF Manifest and Canvas",

@@ -1,7 +1,7 @@
-# Function 4: Filter CSV for Pre-1931 Dates
+# Function 4: Filter CSV for Pre-1930 Dates
 
 ## Overview
-Filters a CSV export to identify and isolate bibliographic records with dates **BEFORE 1931**. This is useful for identifying historical/older materials that may require special handling or metadata work in digital collection workflows.
+Filters a CSV export to identify and isolate bibliographic records with dates **BEFORE 1930**. This is useful for identifying historical/older materials that may require special handling or metadata work in digital collection workflows.
 
 ## What This Function Does
 
@@ -13,8 +13,8 @@ Filters a CSV export to identify and isolate bibliographic records with dates **
    - `dcterms:dateSubmitted`
    - `dcterms:dateAccepted`
 3. **Extracts** any 4-digit year found in those fields
-4. **Filters** to keep ONLY records where at least one date field contains a year **< 1931**
-5. **Outputs** a new timestamped CSV file (e.g., `pre1931_export_20240115_143022.csv`) containing only the pre-1931 records
+4. **Filters** to keep ONLY records where at least one date field contains a year **< 1930**
+5. **Outputs** a new timestamped CSV file (e.g., `pre1930_export_20240115_143022.csv`) containing only the pre-1930 records
 
 ## When to Use This Function
 
@@ -28,24 +28,24 @@ Filters a CSV export to identify and isolate bibliographic records with dates **
 
 ### Single File Processing
 1. Run **Function 3: Export Set to DCAP01 CSV** to create an `alma_export_*.csv` file
-2. Click **Function 4: Filter CSV for Pre-1931 Dates**
+2. Click **Function 4: Filter CSV for Pre-1930 Dates**
 3. The function automatically finds the most recent `alma_export_*.csv` file
-4. A new filtered CSV is created with filename: `pre1931_export_YYYYMMDD_HHMMSS.csv`
+4. A new filtered CSV is created with filename: `pre1930_export_YYYYMMDD_HHMMSS.csv`
 
 ### Output File Format
 - **Same columns** as the input CSV (all Dublin Core and custom fields preserved)
-- **Fewer rows** - only records with at least one date field containing a year < 1931
+- **Fewer rows** - only records with at least one date field containing a year < 1930
 - All original data is preserved; no fields are modified
 
 ## Example Results
 
 **Input:** `alma_export_20240115_100000.csv` (500 records)
-- Record A: dc:date = "1920" → **INCLUDED** (1920 < 1931)
-- Record B: dc:date = "1950" → **EXCLUDED** (1950 ≥ 1931)
-- Record C: dcterms:created = "1925-03-15" → **INCLUDED** (1925 < 1931)
+- Record A: dc:date = "1920" → **INCLUDED** (1920 < 1930)
+- Record B: dc:date = "1950" → **EXCLUDED** (1950 ≥ 1930)
+- Record C: dcterms:created = "1925-03-15" → **INCLUDED** (1925 < 1930)
 - Record D: dc:date = "" (empty) → **EXCLUDED** (no valid date)
 
-**Output:** `pre1931_export_20240115_140000.csv` (250 records with pre-1931 dates)
+**Output:** `pre1930_export_20240115_140000.csv` (250 records with pre-1930 dates)
 
 ## Date Field Processing
 
@@ -63,7 +63,7 @@ The function uses **regular expression matching** to extract years:
 ## Limitations
 
 - **Only filters by year** - The function extracts only the 4-digit year, not the full date
-- **Multiple dates** - If a record has multiple dates, the function checks if ANY are pre-1931 (inclusive OR logic)
+- **Multiple dates** - If a record has multiple dates, the function checks if ANY are pre-1930 (inclusive OR logic)
 - **Text dates** - Dates written as text (e.g., "January Nineteen-Twenty") will NOT be recognized
 - **Empty fields** - Records with empty date fields are automatically excluded
 - **File location** - The function looks for `alma_export_*.csv` files in the current working directory
