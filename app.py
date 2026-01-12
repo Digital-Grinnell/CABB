@@ -1074,15 +1074,18 @@ class AlmaBibEditor:
     
     def filter_csv_by_pre1930_dates(self, input_file: str = None, output_file: str = None) -> tuple[bool, str]:
         """
-        Function 4: Filter CSV export to only records with dates before 1930
+        Function 4: Filter CSV export to only records 95 years old or older
         
         Reads the most recent alma_export_*.csv file and filters records that have
-        non-empty date values before 1930 in any of these fields:
+        non-empty date values 95 years or older (rounded down to year) in any of these fields:
         - dc:date
         - dcterms:created
         - dcterms:issued
         - dcterms:dateSubmitted
         - dcterms:dateAccepted
+        
+        The cutoff year is calculated dynamically as: current_year - 95
+        Dates are rounded down to the year only when applying the age requirement.
         
         Args:
             input_file: Optional path to input CSV (if None, uses most recent alma_export_*.csv)
@@ -1096,7 +1099,11 @@ class AlmaBibEditor:
         import re
         from datetime import datetime
         
-        self.log("Starting CSV filter for pre-1930 dates")
+        # Calculate cutoff year (95 years ago)
+        current_year = datetime.now().year
+        cutoff_year = current_year - 95
+        
+        self.log(f"Starting CSV filter for records 95+ years old (cutoff year: {cutoff_year})")
         
         try:
             # Find most recent alma_export_*.csv if not specified
@@ -1110,7 +1117,7 @@ class AlmaBibEditor:
             # Generate output filename if not specified
             if output_file is None:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_file = f"pre1930_export_{timestamp}.csv"
+                output_file = f"historical_export_{timestamp}.csv"
             
             # Date fields to check
             date_fields = [
@@ -1135,12 +1142,12 @@ class AlmaBibEditor:
                         return None
                 return None
             
-            def has_pre1930_date(row: dict) -> bool:
-                """Check if any date field contains a year before 1930"""
+            def has_old_date(row: dict) -> bool:
+                """Check if any date field contains a year 95+ years old (year <= cutoff_year)"""
                 for field in date_fields:
                     date_value = row.get(field, "")
                     year = extract_year(date_value)
-                    if year is not None and year < 1930:
+                    if year is not None and year <= cutoff_year:
                         return True
                 return False
             
@@ -1154,7 +1161,7 @@ class AlmaBibEditor:
                 
                 for row in reader:
                     total_rows += 1
-                    if has_pre1930_date(row):
+                    if has_old_date(row):
                         filtered_rows.append(row)
             
             # Write filtered results
@@ -1163,7 +1170,7 @@ class AlmaBibEditor:
                 writer.writeheader()
                 writer.writerows(filtered_rows)
             
-            message = f"Filtered {len(filtered_rows)} of {total_rows} records (pre-1930 dates) → {output_file}"
+            message = f"Filtered {len(filtered_rows)} of {total_rows} records (95+ years old, ≤{cutoff_year}) → {output_file}"
             self.log(message)
             return True, message
             
@@ -1363,9 +1370,11 @@ class AlmaBibEditor:
     def replace_author_copyright_rights(self, mms_id: str) -> tuple[bool, str, str]:
         """
         Function 6: Replace dc:rights fields starting with "Copyright to this work is held by the author(s)"
+        or "Grinnell College Libraries does not own the copyright in these images..."
         with a rights statement URL and xml:lang attribute. Also adds new dc:rights for records with none.
         
         Finds dc:rights fields with value starting "Copyright to this work is held by the author(s)"
+        or "Grinnell College Libraries does not own the copyright in these images..."
         and replaces with dc:rights xml:lang="eng" value="https://rightsstatements.org/page/NoC-US/1.0/?language=en"
         For records with NO dc:rights elements, adds the new Public Domain rights element.
         Ensures no duplicate values are created.
@@ -1425,6 +1434,7 @@ class AlmaBibEditor:
             
             # Constants
             pattern_start = "Copyright to this work is held by the author(s)"
+            grinnell_pattern_start = "Grinnell College Libraries does not own the copyright in these images"
             new_value = '<a href="https://rightsstatements.org/page/NoC-US/1.0/?language=en" target="_blank">Public Domain in the United States</a>'
             url_pattern = "https://rightsstatements.org/page/NoC-US/1.0/?language=en"
             
@@ -1432,6 +1442,7 @@ class AlmaBibEditor:
             url_exists = False
             url_element = None
             author_copyright_elements = []
+            grinnell_copyright_elements = []
             old_link_elements = []  # Links without target attribute
             
             for rights_elem in rights_elements:
@@ -1443,14 +1454,17 @@ class AlmaBibEditor:
                     elif rights_elem.text.startswith(pattern_start):
                         author_copyright_elements.append(rights_elem)
                         self.log(f"Found author copyright field: {rights_elem.text[:80]}...")
+                    elif rights_elem.text.startswith(grinnell_pattern_start):
+                        grinnell_copyright_elements.append(rights_elem)
+                        self.log(f"Found Grinnell copyright field: {rights_elem.text[:80]}...")
                     elif url_pattern in rights_elem.text and 'target="_blank"' not in rights_elem.text:
                         # Found old link without target attribute
                         old_link_elements.append(rights_elem)
                         self.log(f"Found old link without target: {rights_elem.text[:80]}...")
             
-            # If URL with target already exists, remove any author copyright fields and old links
+            # If URL with target already exists, remove any author copyright fields, grinnell copyright fields, and old links
             if url_exists:
-                elements_to_remove = author_copyright_elements + old_link_elements
+                elements_to_remove = author_copyright_elements + grinnell_copyright_elements + old_link_elements
                 if elements_to_remove:
                     self.log(f"URL exists, removing {len(elements_to_remove)} old field(s)")
                     for rights_elem in elements_to_remove:
@@ -1467,33 +1481,53 @@ class AlmaBibEditor:
                     self.log("URL exists and no old fields to remove")
                     return True, "Rights statement URL already exists, no changes needed", "no_change"
             else:
-                # URL doesn't exist, replace author copyright fields or old links OR add new element
-                elements_to_replace = author_copyright_elements + old_link_elements
+                # URL doesn't exist, replace author copyright fields, grinnell copyright fields, or old links OR add new element
+                elements_to_replace = author_copyright_elements + grinnell_copyright_elements + old_link_elements
                 if not elements_to_replace:
                     # No dc:rights elements exist, add a new one
                     if len(rights_elements) == 0:
+                        warning_msg = f"WARNING: Record {mms_id} has NO dc:rights element - adding Public Domain rights statement"
+                        self.log(warning_msg, logging.WARNING)
                         self.log("No dc:rights elements found, adding new Public Domain rights element")
-                        # Find the record element to add dc:rights to
-                        # The structure is: <bib><record>...<metadata>...<dc:rights>
-                        metadata_elem = root.find('.//{http://purl.org/dc/elements/1.1/}metadata', {'dc': 'http://purl.org/dc/elements/1.1/'})
-                        if metadata_elem is None:
-                            # Try finding without namespace prefix
-                            for elem in root.iter():
-                                if elem.tag.endswith('metadata'):
-                                    metadata_elem = elem
+                        # Find where to add dc:rights
+                        # In Alma XML, Dublin Core elements are inside anies/any, not inside a "metadata" element
+                        # Look for any existing DC element to find the parent
+                        dc_parent = None
+                        
+                        # Try to find parent by looking for other dc: elements
+                        dc_test_tags = ['title', 'creator', 'subject', 'description', 'publisher', 'contributor', 'date', 'type', 'format', 'identifier', 'source', 'language', 'relation', 'coverage']
+                        for tag in dc_test_tags:
+                            test_elem = root.find(f'.//{{http://purl.org/dc/elements/1.1/}}{tag}', search_namespaces)
+                            if test_elem is not None:
+                                # Find this element's parent
+                                for parent in root.iter():
+                                    if test_elem in list(parent):
+                                        dc_parent = parent
+                                        self.log(f"Found DC parent element via dc:{tag}")
+                                        break
+                                if dc_parent is not None:
                                     break
                         
-                        if metadata_elem is not None:
+                        # If no DC elements found, try to find anies/any element
+                        if dc_parent is None:
+                            anies_elem = root.find('.//{http://com/exlibris/urm/general/xmlbeans}anies')
+                            if anies_elem is not None:
+                                any_elems = list(anies_elem)
+                                if any_elems:
+                                    dc_parent = any_elems[0]
+                                    self.log("Found DC parent element via anies/any")
+                        
+                        if dc_parent is not None:
                             # Create new dc:rights element
                             new_rights_elem = ET.Element('{http://purl.org/dc/elements/1.1/}rights')
                             new_rights_elem.text = new_value
-                            metadata_elem.append(new_rights_elem)
+                            dc_parent.append(new_rights_elem)
                             self.log(f"Added new dc:rights element: {new_value}")
                             changes_made = 1
                             outcome = "added"
                         else:
-                            self.log("Could not find metadata element to add dc:rights", logging.ERROR)
-                            return False, "Could not find metadata element to add dc:rights", "error"
+                            self.log("Could not find parent element to add dc:rights", logging.ERROR)
+                            return False, "Could not find parent element to add dc:rights", "error"
                     else:
                         self.log("No matching dc:rights fields found")
                         return True, "No matching dc:rights fields found", "no_change"
@@ -2549,11 +2583,13 @@ def main(page: ft.Page):
             add_log_message(f"CSV export complete: {output_file}")
     
     def on_function_4_click(e):
-        """Handle Function 4 click - Filter CSV by pre-1930 dates"""
+        """Handle Function 4 click - Filter CSV for records 95+ years old"""
         logger.info("Function 4 button clicked - Filter CSV")
         storage.record_function_usage("function_4_filter_pre1930")
         
-        add_log_message("Filtering latest CSV export for pre-1930 dates")
+        from datetime import datetime
+        cutoff_year = datetime.now().year - 95
+        add_log_message(f"Filtering latest CSV export for records 95+ years old (≤{cutoff_year})")
         success, message = editor.filter_csv_by_pre1930_dates()
         update_status(message, not success)
         if success:
@@ -2919,10 +2955,10 @@ def main(page: ft.Page):
             "help_file": "FUNCTION_3_EXPORT_TO_CSV.md"
         },
         "function_4_filter_pre1930": {
-            "label": "Filter CSV for Pre-1930 Dates",
+            "label": "Filter CSV for Records 95+ Years Old",
             "icon": "🔎",
             "handler": on_function_4_click,
-            "help_file": "FUNCTION_4_FILTER_PRE1930_DATES.md"
+            "help_file": "FUNCTION_4_FILTER_HISTORICAL_RECORDS.md"
         },
         "function_5_iiif": {
             "label": "Get IIIF Manifest and Canvas",

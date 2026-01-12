@@ -20,11 +20,15 @@ The function identifies and replaces the following types of `dc:rights` fields:
 1. **Author copyright statements**: Any `dc:rights` field with text starting with:
    - `"Copyright to this work is held by the author(s)"`
 
-2. **Old URL formats**: Any `dc:rights` field containing the rights statement URL but missing the `target="_blank"` attribute:
+2. **Grinnell copyright statements**: Any `dc:rights` field with text starting with:
+   - `"Grinnell College Libraries does not own the copyright in these images"`
+
+3. **Old URL formats**: Any `dc:rights` field containing the rights statement URL but missing the `target="_blank"` attribute:
    - Contains: `https://rightsstatements.org/page/NoC-US/1.0/?language=en`
    - Missing: `target="_blank"` attribute
 
-3. **Missing dc:rights**: **NEW** - Records with NO dc:rights element at all
+4. **Missing dc:rights**: **NEW** - Records with NO dc:rights element at all
+   - **Important**: A WARNING is logged identifying these records before adding the rights statement
 
 ### Replacement Value
 
@@ -46,7 +50,7 @@ This creates a clickable link that:
 The function handles five distinct scenarios:
 
 #### 1. New Link Already Exists + Old Fields Present
-- **Action**: Remove all old author copyright fields and old links
+- **Action**: Remove all old author copyright fields, Grinnell copyright fields, and old links
 - **Outcome**: `removed_duplicates`
 - **Result**: Clean record with only the proper Public Domain link
 
@@ -61,9 +65,10 @@ The function handles five distinct scenarios:
 - **Result**: Old fields converted to standardized link
 
 #### 4. **NEW** - NO dc:rights Elements Present
-- **Action**: Add new dc:rights element with Public Domain link
+- **Action**: Log WARNING, then add new dc:rights element with Public Domain link
 - **Outcome**: `added`
-- **Result**: Previously missing rights information now present
+- **Result**: Previously missing rights information now present, with warning logged for review
+- **Warning Message**: `"WARNING: Record {mms_id} has NO dc:rights element - adding Public Domain rights statement"`
 
 #### 5. Error Occurred
 - **Action**: Log error, skip record (in batch mode)
@@ -77,12 +82,13 @@ The function handles five distinct scenarios:
 3. **Categorize Fields**: Sorts rights elements into categories:
    - New links (with target attribute) ✓
    - Author copyright statements (to be replaced)
+   - Grinnell copyright statements (to be replaced)
    - Old links (without target attribute, to be replaced)
    - **NEW**: None found (needs new element added)
 4. **Determine Action**: 
    - If new link exists: remove old duplicates
    - If old fields exist: replace/remove them
-   - **NEW**: If NO dc:rights exists: add new element
+   - **NEW**: If NO dc:rights exists: log warning, then add new element
    - If already correct: report no change
 5. **Apply Changes**: Execute the appropriate modification
 6. **Update Alma**: Sends the modified XML back to Alma
@@ -226,7 +232,7 @@ Batch complete (3255 records): 1200 replaced, 850 added, 150 duplicates removed,
 
 This tells you:
 - 1200 records had old statements replaced
-- 850 records had NO dc:rights and now have the Public Domain link
+- 850 records had NO dc:rights and now have the Public Domain link (warnings logged for review)
 - 150 records had duplicates cleaned up
 - 1000 records were already correct
 - 55 records encountered errors
@@ -237,7 +243,7 @@ The function logs:
 - Start of operation with MMS ID
 - Number of `dc:rights` elements found (including 0 if none)
 - Each matching field identified
-- **NEW**: When adding element: "No dc:rights elements found, adding new Public Domain rights element"
+- **NEW**: When no dc:rights found: WARNING message identifying the record before adding rights
 - Replacement or removal actions taken
 - API request/response details (first 500 chars)
 - Success or failure for each record with outcome category
@@ -246,11 +252,12 @@ The function logs:
 **Sample Log Entries:**
 
 ```
-2026-01-06 14:39:34,663 - __main__ - INFO - Starting replace_author_copyright_rights for MMS ID: 991011688294904641
-2026-01-06 14:39:34,661 - __main__ - INFO - Found 0 dc:rights elements
-2026-01-06 14:39:34,663 - __main__ - INFO - No dc:rights elements found, adding new Public Domain rights element
-2026-01-06 14:39:34,664 - __main__ - INFO - Added new dc:rights element: <a href="..." target="_blank">Public Domain in the United States</a>
-2026-01-06 14:39:34,671 - __main__ - INFO - Successfully updated record 991011688294904641
+2026-01-12 14:39:34,663 - __main__ - INFO - Starting replace_author_copyright_rights for MMS ID: 991011688294904641
+2026-01-12 14:39:34,661 - __main__ - INFO - Found 0 dc:rights elements
+2026-01-12 14:39:34,663 - __main__ - WARNING - WARNING: Record 991011688294904641 has NO dc:rights element - adding Public Domain rights statement
+2026-01-12 14:39:34,663 - __main__ - INFO - No dc:rights elements found, adding new Public Domain rights element
+2026-01-12 14:39:34,664 - __main__ - INFO - Added new dc:rights element: <a href="..." target="_blank">Public Domain in the United States</a>
+2026-01-12 14:39:34,671 - __main__ - INFO - Successfully updated record 991011688294904641
 ```
 
 ### Status Updates
@@ -263,11 +270,11 @@ Real-time status updates show:
 
 ## Use Cases
 
-### 1. Bulk Rights Statement Updates for Pre-1931 Materials
+### 1. Bulk Rights Statement Updates for Historical Materials (95+ Years Old)
 
-Apply consistent Public Domain statements to a collection of materials:
+Apply consistent Public Domain statements to a collection of historical materials:
 
-1. Load set of pre-1931 materials (e.g., DCAP01 set)
+1. Load set of materials 95+ years old (e.g., DCAP01 set)
 2. Run Function 6 on the set
 3. Review summary to see breakdown of actions taken
 4. All records now have proper Public Domain rights statements
@@ -378,49 +385,81 @@ Understanding the batch summary helps with quality control:
 ## Related Functions
 
 - **Function 3**: Export Set to CSV - useful for identifying records needing updates
-- **Function 4**: Filter CSV for Pre-1931 Dates - commonly used before applying rights updates
+- **Function 4**: Filter CSV for Records 95+ Years Old - commonly used before applying rights updates
 - **Function 1**: Fetch and Display XML - verify record structure before/after changes
 
 ## Working with Records Missing dc:rights
 
-### Finding Records Without dc:rights
+### Finding Records That Had No dc:rights
 
-When you run Function 6 on a large set, the log file will show which records had no dc:rights elements. You can extract these:
+When you run Function 6 on a large set, records with NO dc:rights elements are logged with WARNING messages. You can identify these records:
 
 1. **Check the log file** in the `logfiles/` directory
-2. **Search for** the message: "No matching dc:rights fields found"
-3. **Extract MMS IDs** from the lines preceding this message
+2. **Search for** the WARNING message pattern
+3. **Extract MMS IDs** from the warning messages
 
 **Example using command line:**
 ```bash
-# Count occurrences
-grep -c "No matching dc:rights fields found" logfiles/cabb_20260106_143729.log
+# Count records that had no dc:rights
+grep -c "WARNING: Record .* has NO dc:rights element" logfiles/cabb_20260112_111300.log
 
-# Extract MMS IDs to CSV
-grep -B 5 "No matching dc:rights fields found" logfiles/*.log | \
-  grep "Starting replace_author_copyright_rights for MMS ID:" | \
-  awk '{print $NF}' | sort | uniq > missing_dc_rights.csv
+# Extract MMS IDs to a list
+grep "WARNING: Record .* has NO dc:rights element" logfiles/cabb_20260112_111300.log | \
+  grep -o "Record [0-9]*" | awk '{print $2}' | sort -u > records_with_no_dc_rights.txt
 ```
 
-### Processing the Missing Rights Records
+### Why Review These Records?
 
-Once you have a CSV of MMS IDs for records without dc:rights:
+Records that had no dc:rights element initially may indicate:
+- **Incomplete metadata migration** from legacy systems
+- **Different content types** that may require manual review
+- **Systematic metadata gaps** in certain collections
 
-1. **Add CSV header**: Open the file and add `MMS_ID` as the first line
-2. **Load in CABB**: Use "Load MMS IDs from CSV" button
-3. **Run Function 6**: All records will now get the Public Domain rights element
-4. **Review results**: Check the summary - all should show as "added"
+While Function 6 adds the Public Domain rights statement to these records, the WARNING allows you to:
+- Track which records lacked rights metadata
+- Verify the Public Domain designation is appropriate
+- Document metadata enhancement activities
+- Identify patterns in missing metadata
 
-**Expected Result:**
-```
-Batch complete (3255 records): 0 replaced, 3255 added, 0 duplicates removed, 0 no change, 0 errors
-```
-
-This indicates all 3,255 records that previously had NO dc:rights now have the proper Public Domain link.
+**Note**: The dc:rights element is successfully added to these records; the warning is purely informational for documentation and quality assurance purposes.
 
 ## Recent Updates
 
-### January 2026 Enhancement
+### January 2026 Enhancement - Warning for Missing dc:rights
+
+**New Capability**: Function 6 now logs a WARNING message when processing records with NO dc:rights element.
+
+**What Changed**:
+- Records with no dc:rights still get the Public Domain rights statement added
+- A WARNING message is now logged: `"WARNING: Record {mms_id} has NO dc:rights element - adding Public Domain rights statement"`
+- Allows tracking and review of records that lacked rights metadata
+
+**Why This Matters**:
+- Provides visibility into which records had missing metadata
+- Enables quality assurance and documentation
+- Helps identify systematic metadata gaps
+- Allows verification that Public Domain designation is appropriate for these records
+
+### January 2026 Enhancement - Grinnell Copyright Statements
+
+**New Capability**: Function 6 now also replaces dc:rights statements beginning with "Grinnell College Libraries does not own the copyright in these images...".
+
+**Why This Matters**:
+- Identified additional legacy copyright text that needs standardization
+- Ensures these records also get the proper Public Domain link
+- Creates consistency across all legacy rights statements
+
+**Targeted Text**: Any dc:rights beginning with:
+```
+Grinnell College Libraries does not own the copyright in these images...
+```
+
+Will now be replaced with:
+```html
+<a href="https://rightsstatements.org/page/NoC-US/1.0/?language=en" target="_blank">Public Domain in the United States</a>
+```
+
+### January 2026 Enhancement - Missing Rights
 
 **New Capability**: Function 6 now adds Public Domain dc:rights to records that have NO dc:rights element.
 
@@ -440,3 +479,8 @@ This indicates all 3,255 records that previously had NO dc:rights now have the p
 - How many had NO rights and got them added (`added`)
 - How many were already correct (`no_change`)
 - This visibility helps with quality assurance and documentation
+**Bug Fix (January 12, 2026)**: 
+- Fixed issue where adding dc:rights to records without any dc:rights element would fail
+- Previously searched for a non-existent "metadata" element in Alma XML structure
+- Now correctly identifies the parent element by finding other Dublin Core elements (dc:title, dc:creator, etc.) or the anies/any container
+- This resolves errors for 320 records that previously failed with "Could not find metadata element to add dc:rights"

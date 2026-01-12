@@ -442,7 +442,7 @@ Real-time status updates show:
 - Use CSV to identify records with `dg_` identifiers
 - Export after Function 7 to verify additions
 
-### Function 4: Filter CSV for Pre-1931 Dates
+### Function 4: Filter CSV for Records 95+ Years Old
 - Combine with Function 3 to identify subset of records
 - Apply Function 7 to filtered records
 

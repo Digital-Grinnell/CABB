@@ -238,7 +238,7 @@ Use exported data in:
 ### 4. Preparation for Function 4
 Export records, then filter for specific criteria:
 1. Function 3: Export full set
-2. Function 4: Filter for pre-1931 dates
+2. Function 4: Filter for records 95+ years old
 3. Result: Subset of public domain candidates
 
 ### 5. Documentation & Reporting
@@ -330,7 +330,7 @@ Example: `alma_export_20251119_154447.csv`
 - Export before bulk deletion for backup
 - Export after to verify results
 
-### Function 4: Filter CSV for Pre-1931 Dates
+### Function 4: Filter CSV for Records 95+ Years Old
 - Function 3 creates the input file
 - Function 4 filters it
 - Common workflow for rights review
