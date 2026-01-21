@@ -17,11 +17,13 @@ The application supports both **single record** and **batch processing** (via Al
 
 1. **Fetch and Display XML** - Preview the full XML structure of a bibliographic record
 2. **Clear dc:relation Collections Fields** - Removes all dc:relation fields having a value that begins with "alma:01GCL_INST/bibs/collections/"
-   - Supports batch processing across entire sets
-   - Provides progress tracking (X of Y processed)
-3. **Placeholder Function 3** - Reserved for future Alma-Digital record editing functionality
-4. **Placeholder Function 4** - Reserved for future Alma-Digital record editing functionality
-5. **Placeholder Function 5** - Reserved for future Alma-Digital record editing functionality
+3. **Export Set to DCAP01 CSV** - Export Dublin Core metadata from a set to CSV format
+4. **Filter CSV for Records 95+ Years Old** - Filter CSV records by publication date (pre-1930)
+5. **Get IIIF Manifest and Canvas** - Retrieve IIIF manifest and canvas information for digital objects
+6. **Replace old dc:rights with Public Domain link** - Update copyright statements to standardized Public Domain links
+7. **Add Grinnell: dc:identifier Field As Needed** - Add institution identifiers based on dg_* identifiers
+8. **Export dc:identifier CSV** - Export all identifier fields to CSV for analysis
+9. **Validate Handle URLs and Export Results** - Test Handle URLs and report HTTP status codes
 
 ### Set Processing
 
