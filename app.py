@@ -2117,6 +2117,162 @@ class AlmaBibEditor:
             self.log(error_msg, logging.ERROR)
             return False, error_msg
     
+    def export_for_review_csv(self, mms_ids: list, output_file: str, progress_callback=None) -> tuple[bool, str]:
+        """
+        Function 10: Export records for review with clickable Handle links
+        Creates a CSV with Handle (clickable), MMS ID, Title, dc:type, and empty review columns.
+        Useful for manual review of digital objects.
+        
+        Args:
+            mms_ids: List of MMS IDs to export
+            output_file: Path to output CSV file
+            progress_callback: Optional callback function(current, total) for progress updates
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        import csv
+        
+        self.log(f"Starting review export for {len(mms_ids)} records to {output_file}")
+        
+        # Define CSV column headings
+        column_headings = [
+            "MMS ID",
+            "Handle",
+            "Title",
+            "dc:type",
+            "dc:format",
+            "dcterms:format",
+            "Thumbnail?",
+            "File Opens?",
+            "Needs Attention?"
+        ]
+        
+        try:
+            # Collect all rows first before writing
+            all_rows = []
+            
+            success_count = 0
+            failed_count = 0
+            no_handle_count = 0
+            total = len(mms_ids)
+            batch_size = 100  # Alma API supports up to 100 MMS IDs per batch call
+            
+            # Calculate total number of API calls
+            total_batches = (total + batch_size - 1) // batch_size
+            self.log(f"Using batch API calls: {total_batches} calls for {total} records")
+            
+            # Process in batches
+            for batch_start in range(0, total, batch_size):
+                # Check kill switch
+                if self.kill_switch:
+                    self.log("Process stopped by user")
+                    break
+                
+                batch_end = min(batch_start + batch_size, total)
+                batch_ids = mms_ids[batch_start:batch_end]
+                batch_num = (batch_start // batch_size) + 1
+                
+                self.log(f"Processing batch {batch_num}/{total_batches}: records {batch_start+1}-{batch_end}")
+                
+                # Fetch batch of records
+                batch_records = self.fetch_bib_records_batch(batch_ids)
+                
+                # Process each record in the batch
+                for i in range(len(batch_ids)):
+                    # Check kill switch
+                    if self.kill_switch:
+                        self.log("Process stopped by user")
+                        break
+                    
+                    record_index = batch_start + i + 1
+                    mms_id = batch_ids[i]
+                    
+                    try:
+                        # Check if record was successfully fetched
+                        if mms_id in batch_records:
+                            # Set as current record for field extraction
+                            self.current_record = batch_records[mms_id]
+                            
+                            # Extract fields
+                            titles = self._extract_dc_field("title", "dc")
+                            title = titles[0] if titles else ""
+                            
+                            # Wrap title in quotes if not already quoted
+                            if title and not title.startswith('"'):
+                                title = f'"{title}"'
+                            
+                            identifiers = self._extract_dc_field("identifier", "dc")
+                            handle_url = ""
+                            for identifier in identifiers:
+                                if identifier.startswith("http://hdl.handle.net/"):
+                                    handle_url = identifier
+                                    break
+                            
+                            types = self._extract_dc_field("type", "dc")
+                            dc_type = "; ".join(types) if types else ""
+                            
+                            formats = self._extract_dc_field("format", "dc")
+                            dc_format = "; ".join(formats) if formats else ""
+                            
+                            dcterms_formats = self._extract_dc_field("format", "dcterms")
+                            dcterms_format = "; ".join(dcterms_formats) if dcterms_formats else ""
+                            
+                            # Create CSV row with empty review columns
+                            row = {
+                                "MMS ID": mms_id,
+                                "Handle": handle_url,
+                                "Title": title,
+                                "dc:type": dc_type,
+                                "dc:format": dc_format,
+                                "dcterms:format": dcterms_format,
+                                "Thumbnail?": "",
+                                "File Opens?": "",
+                                "Needs Attention?": ""
+                            }
+                            
+                            all_rows.append(row)
+                            
+                            if handle_url:
+                                success_count += 1
+                            else:
+                                no_handle_count += 1
+                                self.log(f"No Handle URL found for {mms_id}", logging.WARNING)
+                        else:
+                            self.log(f"Record not returned in batch: {mms_id}", logging.WARNING)
+                            failed_count += 1
+                        
+                        # Update progress
+                        if progress_callback:
+                            progress_callback(record_index, total)
+                        
+                        if record_index % 50 == 0:
+                            self.log(f"Exported {record_index}/{total} records")
+                            
+                    except Exception as e:
+                        self.log(f"Error exporting {mms_id}: {str(e)}", logging.ERROR)
+                        failed_count += 1
+            
+            # Sort rows by MMS ID
+            self.log("Sorting rows by MMS ID...")
+            all_rows.sort(key=lambda x: x["MMS ID"])
+            
+            # Write sorted rows to CSV
+            with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=column_headings)
+                writer.writeheader()
+                writer.writerows(all_rows)
+            
+            message = f"Review export complete: {success_count} with handles, {no_handle_count} without handles, {failed_count} failed. File: {output_file}"
+            self.log(message)
+            self.log(f"API efficiency: {total_batches} batch calls vs {total} individual calls (saved {total - total_batches} calls)")
+            return True, message
+                
+        except Exception as e:
+            error_msg = f"Error creating review CSV file: {str(e)}"
+            self.log(error_msg, logging.ERROR)
+            return False, error_msg
+    
     def _get_alma_domain(self) -> str:
         """
         Get the Alma domain for the institution.
@@ -2934,6 +3090,52 @@ def main(page: ft.Page):
             add_log_message("Handle validation complete")
             add_log_message("💡 Tip: Filter the CSV by 'HTTP Status Code' ≠ 200 to find problems")
     
+    def on_function_10_click(e):
+        """Handle Function 10: Export for Review"""
+        if not editor.set_members or len(editor.set_members) == 0:
+            update_status("Please load a set first", True)
+            return
+        
+        # Generate timestamped filename
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f"Exported_for_Review_{timestamp}.csv"
+        
+        add_log_message(f"Starting review export to {output_file}")
+        update_status(f"Exporting {len(editor.set_members)} records for review...", False)
+        
+        # Show progress bar
+        set_progress_bar.visible = True
+        set_progress_bar.value = 0
+        set_progress_text.visible = True
+        set_progress_text.value = f"Processing: 0/{len(editor.set_members)} records"
+        page.update()
+        
+        def progress_update(current, total):
+            progress = current / total
+            set_progress_bar.value = progress
+            set_progress_text.value = f"Processing: {current}/{total} records ({progress*100:.1f}%)"
+            status_text.value = f"Exporting for review: {current}/{total} records ({progress*100:.1f}%)"
+            page.update()
+        
+        # Export to CSV
+        storage.record_function_usage("function_10_export_review")
+        success, message = editor.export_for_review_csv(
+            editor.set_members,
+            output_file,
+            progress_callback=progress_update
+        )
+        
+        # Hide progress bar
+        set_progress_bar.visible = False
+        set_progress_text.visible = False
+        page.update()
+        
+        update_status(message, not success)
+        if success:
+            add_log_message(f"Review export complete: {output_file}")
+            add_log_message("💡 Tip: Open in Excel/Sheets - Handle column will be clickable")
+    
     # Function definitions with metadata
     functions = {
         "function_1_fetch_xml": {
@@ -2989,6 +3191,12 @@ def main(page: ft.Page):
             "icon": "🔗",
             "handler": on_function_9_click,
             "help_file": "FUNCTION_9_VALIDATE_HANDLES.md"
+        },
+        "function_10_export_review": {
+            "label": "Export for Review with Clickable Handles",
+            "icon": "📋",
+            "handler": on_function_10_click,
+            "help_file": "FUNCTION_10_EXPORT_REVIEW.md"
         }
     }
     

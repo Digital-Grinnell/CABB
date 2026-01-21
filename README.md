@@ -24,6 +24,7 @@ The application supports both **single record** and **batch processing** (via Al
 7. **Add Grinnell: dc:identifier Field As Needed** - Add institution identifiers based on dg_* identifiers
 8. **Export dc:identifier CSV** - Export all identifier fields to CSV for analysis
 9. **Validate Handle URLs and Export Results** - Test Handle URLs and report HTTP status codes
+10. **Export for Review with Clickable Handles** - Generate review spreadsheet with clickable Handle links and empty assessment columns
 
 ### Set Processing
 
