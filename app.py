@@ -3413,29 +3413,29 @@ def main(page: ft.Page):
             status_text.value = f"Analyzing representations: {current}/{total} records ({progress*100:.1f}%)"
             page.update()
         
-        # Identify single TIFF objects (and optionally create JPGs)
-        storage.record_function_usage("function_11_identify_single_tiff")
-        success, message = editor.identify_single_tiff_objects(
-            mms_ids,
-            output_file,
-            progress_callback=progress
+        # Identify single TIFF objects
         storage.record_function_usage("function_11_identify_single_tiff")
         success, message = editor.identify_single_tiff_objects(
             mms_ids,
             output_file,
             progress_callback=progress_update,
-            create_jpg=False = False
+            create_jpg=False
+        )
+        
+        # Hide progress bar
+        set_progress_bar.visible = False
+        set_progress_text.visible = False
         page.update()
         
         update_status(message, not success)
         if success:
             add_log_message(f"Single TIFF analysis complete: {output_file}")
-            if create_jpg:
-                add_log_message("💡 Review the 'JPG Created' and 'Status' columns in the CSV")
-            else:
-                add_log_message("💡 Tip: Enable 'Create JPG Derivatives' checkbox to automatically generate JPGs")
+            add_log_message("💡 Tip: Use Alma's derivative creation tools or download TIFFs manually for JPG conversion")
     
-    # Functiadd_log_message("💡 Tip: Use Alma's derivative creation tools or download TIFFs manually for JPG conversion
+    # Function definitions with metadata
+    # Active functions - frequently used
+    active_functions = [
+        "function_1_fetch_xml",
         "function_3_export_csv",
         "function_5_iiif",
         "function_8_export_identifiers",

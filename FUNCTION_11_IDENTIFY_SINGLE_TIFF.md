@@ -3,6 +3,8 @@
 ## Purpose
 Identifies digital objects in Alma that have only a single TIFF file as their representation. These objects typically need a JPG derivative created from the TIFF and added as the primary representation for better web display performance.
 
+**Note:** This function identifies objects that need JPG derivatives but does not automatically create them. The Alma API does not provide direct file download access for programmatic TIFF retrieval, so JPG creation must be done manually or through Alma's built-in derivative tools.
+
 ## What It Does
 
 1. **Analyzes Each Record** - For each record in the loaded set:
@@ -78,13 +80,52 @@ MMS ID,Title,Representation ID,TIFF Filename,File Size (MB),Recommended Action
 3. Prioritize based on:
    - File size (larger files = higher priority)
    - Collection importance
-   - Expected usage frequency
+   - ExpecteCreate JPG Derivatives
 
-### Step 4: Remediate
-For each identified object:
-1. Download the TIFF from Alma
-2. Create a JPG derivative (recommended: 2000px longest dimension, 80-90% quality)
-3. Upload JPG to Alma as new file in the same representation
+**Important:** Automatic JPG creation is not available through this function due to Alma API limitations. Use one of these manual workflows:
+
+#### Option A: Alma's Built-in Tools
+1. In Alma, navigate to the digital representation
+2. Use Alma's derivative generation tools
+3. Create JPG derivative (recommended: 2000px longest edge)
+4. Set JPG as primary display file
+
+###Limitations
+
+### Why Automatic JPG Creation Isn't Available
+
+The Alma API does not provide direct programmatic access to download digital file content. While the API can:
+- ✅ List files in representations
+- ✅ Retrieve file metadata (name, size, format)
+- ✅ Upload new files to representations
+
+It cannot:
+- ❌ Download file content directly via API endpoints
+- ❌ Provide authenticated delivery URLs for programmatic access
+- ❌ Stream file content for automated processing
+
+This means TIFF files cannot be automatically downloaded, converted to JPG, and re-uploaded through this function. The workflow requires manual intervention or institutional-specific solutions with direct repository access.
+
+## # Option B: Manual Download and Conversion
+1. Download TIFFs from Alma manually
+2. Use ImageMagick, Photoshop, or similar tools to create JPGs
+3. Upload JPG derivatives to Alma
+4. Set JPGs as primary display files
+
+**ImageMagick Batch Conversion Example:**
+```bash
+# Convert all TIFFs in current directory
+for file in *.tif; do
+    convert "$file" -resize 2000x2000\> -quality 85 -colorspace sRGB "${file%.tif}.jpg"
+done
+```
+
+#### Option C: Scripted Workflow (Advanced)
+For large batches, consider creating a custom script that:
+1. Uses Alma's delivery URLs (requires institutional access)
+2. Downloads TIFFs from your institution's digital repository
+3. Batch converts to JPG
+4. Uploads via Alma API's file upload endpointn the same representation
 4. Set JPG as the primary/display file
 5. Keep TIFF as preservation master
 
