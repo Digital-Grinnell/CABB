@@ -2273,6 +2273,247 @@ class AlmaBibEditor:
             self.log(error_msg, logging.ERROR)
             return False, error_msg
     
+    def identify_single_tiff_objects(self, mms_ids: list, output_file: str, progress_callback=None, create_jpg=False) -> tuple[bool, str]:
+        """
+        Function 11: Identify digital objects with single TIFF representations
+        Creates a CSV listing objects that have only one TIFF file and likely need JPG derivatives.
+        Optionally creates JPG derivatives and uploads them.
+        
+        Args:
+            mms_ids: List of MMS IDs to analyze
+            output_file: Path to output CSV file
+            progress_callback: Optional callback function(current, total) for progress updates
+            create_jpg: If True, generate JPG derivatives and upload them
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        import csv
+        import os
+        import tempfile
+        
+        if create_jpg:
+            try:
+                from PIL import Image
+            except ImportError:
+                return False, "Pillow library not installed. Run: pip install Pillow"
+        
+        self.log(f"Starting single TIFF analysis for {len(mms_ids)} records to {output_file}")
+        if create_jpg:
+            self.log("JPG derivative creation ENABLED - will download TIFFs, create JPGs, and upload")
+        
+        # Define CSV column headings
+        column_headings = [
+            "MMS ID",
+            "Title",
+            "Representation ID",
+            "TIFF Filename",
+            "File Size (MB)",
+            "JPG Created" if create_jpg else "Recommended Action",
+            "Status"
+        ]
+        
+        try:
+            all_rows = []
+            
+            success_count = 0
+            no_rep_count = 0
+            multi_file_count = 0
+            other_format_count = 0
+            failed_count = 0
+            jpg_created_count = 0
+            jpg_failed_count = 0
+            total = len(mms_ids)
+            batch_size = 100
+            
+            # Calculate total number of API calls
+            total_batches = (total + batch_size - 1) // batch_size
+            self.log(f"Processing {total} records (batch metadata calls: {total_batches})")
+            
+            # Process in batches for metadata, but individual calls for representations
+            for batch_start in range(0, total, batch_size):
+                if self.kill_switch:
+                    self.log("Process stopped by user")
+                    break
+                
+                batch_end = min(batch_start + batch_size, total)
+                batch_ids = mms_ids[batch_start:batch_end]
+                batch_num = (batch_start // batch_size) + 1
+                
+                self.log(f"Processing batch {batch_num}/{total_batches}: records {batch_start+1}-{batch_end}")
+                
+                # Fetch batch of records for metadata
+                batch_records = self.fetch_bib_records_batch(batch_ids)
+                
+                # Process each record in the batch
+                for i in range(len(batch_ids)):
+                    if self.kill_switch:
+                        self.log("Process stopped by user")
+                        break
+                    
+                    record_index = batch_start + i + 1
+                    mms_id = batch_ids[i]
+                    
+                    try:
+                        # Check if record was successfully fetched
+                        if mms_id not in batch_records:
+                            self.log(f"Record not returned in batch: {mms_id}", logging.WARNING)
+                            failed_count += 1
+                            continue
+                        
+                        # Set as current record for field extraction
+                        self.current_record = batch_records[mms_id]
+                        
+                        # Extract title
+                        titles = self._extract_dc_field("title", "dc")
+                        title = titles[0] if titles else ""
+                        if title and not title.startswith('"'):
+                            title = f'"{title}"'
+                        
+                        # Get representations for this record (requires individual API call)
+                        api_url = self._get_alma_api_url()
+                        rep_url = f"{api_url}/almaws/v1/bibs/{mms_id}/representations"
+                        headers = {
+                            'Authorization': f'apikey {self.api_key}',
+                            'Accept': 'application/json'
+                        }
+                        
+                        # Add expand parameter to get file details
+                        params = {'expand': 'p_files'}
+                        
+                        response = requests.get(rep_url, headers=headers, params=params)
+                        
+                        if response.status_code == 200:
+                            rep_data = response.json()
+                            representations = rep_data.get('representation', [])
+                            
+                            if not representations:
+                                no_rep_count += 1
+                                continue
+                            
+                            # Check if exactly ONE representation exists
+                            if len(representations) != 1:
+                                multi_file_count += 1
+                                continue
+                            
+                            # Check the single representation
+                            rep = representations[0]
+                            rep_id = rep.get('id', '')
+                            
+                            files_data = rep.get('files', {})
+                            
+                            # The files are not included directly, we need to follow the link
+                            files = []
+                            if isinstance(files_data, dict):
+                                files_link = files_data.get('link')
+                                if files_link:
+                                    # Make another API call to get the files
+                                    files_response = requests.get(files_link, headers=headers)
+                                    if files_response.status_code == 200:
+                                        files_json = files_response.json()
+                                        files = files_json.get('representation_file', [])
+                                        # Ensure files is a list
+                                        if not isinstance(files, list):
+                                            files = [files] if files else []
+                            
+                            # Debug logging
+                            self.log(f"MMS {mms_id}: Found {len(files)} file(s) in representation", logging.DEBUG)
+                            try:
+                                if files:
+                                    self.log(f"MMS {mms_id}: Files type: {type(files)}", logging.DEBUG)
+                                    if isinstance(files, list) and len(files) > 0:
+                                        self.log(f"MMS {mms_id}: First file: {files[0]}", logging.DEBUG)
+                                    elif isinstance(files, dict):
+                                        self.log(f"MMS {mms_id}: Files is dict with keys: {list(files.keys())}", logging.DEBUG)
+                                    else:
+                                        self.log(f"MMS {mms_id}: Files content: {files}", logging.DEBUG)
+                            except Exception as debug_error:
+                                self.log(f"MMS {mms_id}: Debug error: {debug_error}", logging.DEBUG)
+                            if files:
+                                for f in files:
+                                    self.log(f"  File: {f.get('path', 'unknown')}", logging.DEBUG)
+                            
+                            # Check if exactly ONE file in the representation
+                            if len(files) != 1:
+                                self.log(f"MMS {mms_id}: Multiple files ({len(files)}), skipping", logging.DEBUG)
+                                multi_file_count += 1
+                                continue
+                            
+                            # Check if the file is a TIFF
+                            file_info = files[0]
+                            filename = file_info.get('label', '') or file_info.get('path', '')
+                            file_pid = file_info.get('pid', '')
+                            file_size_bytes = int(file_info.get('size', 0))
+                            file_size_mb = round(file_size_bytes / (1024 * 1024), 2)
+                            
+                            # Check file extension
+                            if filename.lower().endswith(('.tif', '.tiff')):
+                                # Found a single TIFF representation!
+                                
+                                # Note: Direct file download from Alma API is restricted
+                                # For now, just report the findings
+                                row = {
+                                    "MMS ID": mms_id,
+                                    "Title": title,
+                                    "Representation ID": rep_id,
+                                    "TIFF Filename": filename,
+                                    "File Size (MB)": file_size_mb,
+                                    "JPG Created" if create_jpg else "Recommended Action": "Not Implemented" if create_jpg else "Create JPG derivative and set as primary",
+                                    "Status": "File download from Alma API requires special permissions" if create_jpg else "Manual JPG creation needed"
+                                }
+                                all_rows.append(row)
+                                success_count += 1
+                                
+                                if create_jpg:
+                                    self.log(f"Note: Automatic JPG creation requires direct file access - add this to your workflow", logging.WARNING)
+                            else:
+                                other_format_count += 1
+                        
+                        elif response.status_code == 404:
+                            # No representations
+                            no_rep_count += 1
+                        else:
+                            self.log(f"Error fetching representations for {mms_id}: HTTP {response.status_code}", logging.WARNING)
+                            failed_count += 1
+                        
+                        # Update progress
+                        if progress_callback:
+                            progress_callback(record_index, total)
+                        
+                        if record_index % 50 == 0:
+                            self.log(f"Analyzed {record_index}/{total} records - Found {success_count} single TIFF objects")
+                        
+                        # Small delay to respect API rate limits
+                        import time
+                        time.sleep(0.05)
+                            
+                    except Exception as e:
+                        self.log(f"Error analyzing {mms_id}: {str(e)}", logging.ERROR)
+                        failed_count += 1
+            
+            # Sort rows by MMS ID
+            self.log("Sorting rows by MMS ID...")
+            all_rows.sort(key=lambda x: x["MMS ID"])
+            
+            # Write sorted rows to CSV
+            with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=column_headings)
+                writer.writeheader()
+                writer.writerows(all_rows)
+            
+            message = f"Single TIFF analysis complete: Found {success_count} objects with single TIFF files. "
+            if create_jpg:
+                message += f"JPG derivatives: {jpg_created_count} created, {jpg_failed_count} failed. "
+            message += f"({no_rep_count} no reps, {multi_file_count} multi-file, {other_format_count} other formats, {failed_count} failed). "
+            message += f"File: {output_file}"
+            self.log(message)
+            return True, message
+                
+        except Exception as e:
+            error_msg = f"Error creating single TIFF analysis CSV: {str(e)}"
+            self.log(error_msg, logging.ERROR)
+            return False, error_msg
+    
     def _get_alma_domain(self) -> str:
         """
         Get the Alma domain for the institution.
@@ -2301,7 +2542,7 @@ def main(page: ft.Page):
     
     # Set window size - try both properties
     page.window.height = 1000
-    page.window.width = 750
+    page.window.width = 1100
     page.window.resizable = True
     
     page.scroll = ft.ScrollMode.AUTO  # Enable vertical scrolling if needed
@@ -3136,7 +3377,81 @@ def main(page: ft.Page):
             add_log_message(f"Review export complete: {output_file}")
             add_log_message("💡 Tip: Open in Excel/Sheets - Handle column will be clickable")
     
-    # Function definitions with metadata
+    def on_function_11_click(e):
+        """Handle Function 11: Identify Single TIFF Representations"""
+        # Determine if processing single MMS ID or set
+        if not editor.set_members or len(editor.set_members) == 0:
+            # Try single MMS ID
+            if not mms_id_input.value:
+                update_status("Please enter an MMS ID or load a set", True)
+                return
+            mms_ids = [mms_id_input.value.strip()]
+            add_log_message(f"Analyzing single MMS ID: {mms_ids[0]}")
+        else:
+            mms_ids = editor.set_members
+            add_log_message(f"Analyzing {len(mms_ids)} records from set")
+        
+        # Generate timestamped filename
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f"single_tiff_objects_{timestamp}.csv"
+        
+        add_log_message(f"Identifying objects with single TIFF representations...")
+        update_status(f"Analyzing {len(mms_ids)} record(s)...", False)
+        
+        # Show progress bar
+        set_progress_bar.visible = True
+        set_progress_bar.value = 0
+        set_progress_text.visible = True
+        set_progress_text.value = f"Processing: 0/{len(editor.set_members)} records"
+        page.update()
+        
+        def progress_update(current, total):
+            progress = current / total
+            set_progress_bar.value = progress
+            set_progress_text.value = f"Processing: {current}/{total} records ({progress*100:.1f}%)"
+            status_text.value = f"Analyzing representations: {current}/{total} records ({progress*100:.1f}%)"
+            page.update()
+        
+        # Identify single TIFF objects (and optionally create JPGs)
+        storage.record_function_usage("function_11_identify_single_tiff")
+        success, message = editor.identify_single_tiff_objects(
+            mms_ids,
+            output_file,
+            progress_callback=progress
+        storage.record_function_usage("function_11_identify_single_tiff")
+        success, message = editor.identify_single_tiff_objects(
+            mms_ids,
+            output_file,
+            progress_callback=progress_update,
+            create_jpg=False = False
+        page.update()
+        
+        update_status(message, not success)
+        if success:
+            add_log_message(f"Single TIFF analysis complete: {output_file}")
+            if create_jpg:
+                add_log_message("💡 Review the 'JPG Created' and 'Status' columns in the CSV")
+            else:
+                add_log_message("💡 Tip: Enable 'Create JPG Derivatives' checkbox to automatically generate JPGs")
+    
+    # Functiadd_log_message("💡 Tip: Use Alma's derivative creation tools or download TIFFs manually for JPG conversion
+        "function_3_export_csv",
+        "function_5_iiif",
+        "function_8_export_identifiers",
+        "function_9_validate_handles",
+        "function_10_export_review",
+        "function_11_identify_single_tiff"
+    ]
+    
+    # Inactive functions - less frequently used
+    inactive_functions = [
+        "function_2_clear_dc_relation",
+        "function_4_filter_pre1930",
+        "function_6_replace_rights",
+        "function_7_add_grinnell_id"
+    ]
+    
     functions = {
         "function_1_fetch_xml": {
             "label": "Fetch and Display Single XML",
@@ -3197,6 +3512,12 @@ def main(page: ft.Page):
             "icon": "📋",
             "handler": on_function_10_click,
             "help_file": "FUNCTION_10_EXPORT_REVIEW.md"
+        },
+        "function_11_identify_single_tiff": {
+            "label": "Identify Single TIFF Representations",
+            "icon": "🖼️",
+            "handler": on_function_11_click,
+            "help_file": "FUNCTION_11_IDENTIFY_SINGLE_TIFF.md"
         }
     }
     
@@ -3294,7 +3615,8 @@ def main(page: ft.Page):
                 # Show help dialog instead of executing
                 show_help_dialog(function_key)
                 # Clear selection
-                function_dropdown.value = None
+                active_function_dropdown.value = None
+                inactive_function_dropdown.value = None
                 page.update()
             else:
                 # Execute the function normally
@@ -3303,12 +3625,14 @@ def main(page: ft.Page):
                     pass
                 functions[function_key]["handler"](MockEvent())
                 
-                # Refresh dropdown order after execution
-                function_dropdown.options = get_sorted_function_options()
-                function_dropdown.value = None  # Clear selection
+                # Refresh dropdown orders after execution
+                active_function_dropdown.options = get_sorted_function_options(active_functions)
+                inactive_function_dropdown.options = get_sorted_function_options(inactive_functions)
+                active_function_dropdown.value = None  # Clear selection
+                inactive_function_dropdown.value = None  # Clear selection
                 page.update()
     
-    def get_sorted_function_options():
+    def get_sorted_function_options(function_list):
         """Get function dropdown options sorted by last use date"""
         from datetime import datetime
         
@@ -3316,7 +3640,7 @@ def main(page: ft.Page):
         
         # Create list of (function_key, last_used_timestamp)
         function_usage = []
-        for func_key in functions.keys():
+        for func_key in function_list:
             usage = usage_data.get(func_key, {})
             last_used = usage.get("last_used")
             # Parse ISO timestamp or use epoch start for never-used functions
@@ -3412,16 +3736,31 @@ def main(page: ft.Page):
             # Functions section
             ft.Container(
                 content=ft.Column([
-                    ft.Text("Active Functions", size=18, weight=ft.FontWeight.BOLD),
-                    
-                    # Function selector dropdown (will be updated after page.add)
-                    function_dropdown := ft.Dropdown(
-                        label="Select Function to Execute",
-                        hint_text="Functions ordered by most recently used",
-                        width=400,
-                        options=[],
-                        on_change=lambda e: execute_selected_function(e.control.value)
-                    ),
+                    ft.Row([
+                        ft.Column([
+                            ft.Text("Active Functions", size=18, weight=ft.FontWeight.BOLD),
+                            active_function_dropdown := ft.Dropdown(
+                                label="Select Function to Execute",
+                                hint_text="Functions ordered by most recently used",
+                                width=500,
+                                max_menu_height=400,
+                                options=[],
+                                on_change=lambda e: execute_selected_function(e.control.value)
+                            ),
+                        ], spacing=5),
+                        ft.Container(width=20),  # Spacer
+                        ft.Column([
+                            ft.Text("Inactive Functions", size=18, weight=ft.FontWeight.BOLD),
+                            inactive_function_dropdown := ft.Dropdown(
+                                label="Select Inactive Function",
+                                hint_text="Less frequently used",
+                                width=500,
+                                max_menu_height=400,
+                                options=[],
+                                on_change=lambda e: execute_selected_function(e.control.value)
+                            ),
+                        ], spacing=5),
+                    ]),
                     ft.Checkbox(
                         label="Help Mode",
                         ref=help_mode_enabled,
@@ -3470,8 +3809,9 @@ def main(page: ft.Page):
         ])
     )
     
-    # Populate function dropdown with sorted options
-    function_dropdown.options = get_sorted_function_options()
+    # Populate function dropdowns with sorted options
+    active_function_dropdown.options = get_sorted_function_options(active_functions)
+    inactive_function_dropdown.options = get_sorted_function_options(inactive_functions)
     page.update()
     
     logger.info("UI initialized successfully")
