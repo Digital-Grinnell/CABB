@@ -6,7 +6,7 @@ Function 3 exports bibliographic records from Alma to a CSV file containing comp
 
 ## What It Does
 
-This function takes a loaded set of bibliographic records (MMS IDs) and exports all their Dublin Core metadata to a timestamped CSV file. The export includes 62 different metadata fields, providing a complete snapshot of the records' descriptive metadata.
+This function takes a loaded set of bibliographic records (MMS IDs) and exports all their Dublin Core metadata to a timestamped CSV file. The export includes 50 different metadata fields, providing a complete snapshot of the records' descriptive metadata. Multi-valued fields are joined using pipe separators (` | `) for easy parsing and readability.
 
 ### Key Features
 
@@ -18,7 +18,7 @@ This function takes a loaded set of bibliographic records (MMS IDs) and exports 
 
 ## CSV Output Structure
 
-### Column Headings (62 fields)
+### Column Headings (50 fields)
 
 The exported CSV includes the following columns:
 
@@ -31,28 +31,28 @@ The exported CSV includes the following columns:
 
 #### Title Fields
 - `dc:title` - Primary title
-- `dcterms:alternative` - Alternative titles
+- `dcterms:alternative` - Alternative titles (pipe-separated if multiple)
 - `oldalttitle` - Legacy alternative title field
 
 #### Identifier Fields
-- `dc:identifier` - General identifiers (semicolon-separated if multiple)
+- `dc:identifier` - General identifiers (pipe-separated if multiple)
 - `dcterms:identifier.dcterms:URI` - URI/URL identifier
 
 #### Content Description
 - `dcterms:tableOfContents` - Table of contents
-- `dc:creator` - Creator/author
-- `dc:contributor` - Contributors
-- `dc:description` - General description
-- `dcterms:abstract` - Abstract/summary
-- `dcterms:provenance` - Provenance information
-- `dcterms:bibliographicCitation` - Citation information
+- `dc:creator` - Creator/author (pipe-separated if multiple)
+- `dc:contributor` - Contributors (pipe-separated if multiple)
+- `dc:description` - General description (pipe-separated if multiple)
+- `dcterms:abstract` - Abstract/summary (pipe-separated if multiple)
+- `dcterms:provenance` - Provenance information (pipe-separated if multiple)
+- `dcterms:bibliographicCitation` - Citation information (pipe-separated if multiple)
 
 #### Subject Fields
-- `dc:subject` - Primary subject
-- `dcterms:subject.dcterms:LCSH` (×12) - Library of Congress Subject Headings (up to 12)
+- `dc:subject` - General subjects (pipe-separated if multiple)
+- `dcterms:subject.dcterms:LCSH` - Library of Congress Subject Headings (pipe-separated if multiple)
 
 #### Publication Information
-- `dcterms:publisher` (×2) - Publisher information
+- `dcterms:publisher` - Publisher information (pipe-separated if multiple)
 - `dc:date` - General date
 - `dcterms:created` - Creation date
 - `dcterms:issued` - Issue/publication date
@@ -62,25 +62,25 @@ The exported CSV includes the following columns:
 #### Format & Type
 - `dc:type` - Resource type
 - `dc:format` - Format information
-- `dcterms:extent` (×2) - Physical extent/size
+- `dcterms:extent` - Physical extent/size (pipe-separated if multiple)
 - `dcterms:medium` - Physical medium
 - `dcterms:format.dcterms:IMT` - Internet Media Type
 - `dcterms:type.dcterms:DCMIType` - DCMI Type vocabulary
 
 #### Language & Relations
-- `dc:language` - Language(s)
-- `dc:relation` - Related resources
-- `dcterms:isPartOf` (×3) - Parent collections/series
+- `dc:language` - Language(s) (pipe-separated if multiple)
+- `dc:relation` - Related resources (pipe-separated if multiple)
+- `dcterms:isPartOf` - Parent collections/series (pipe-separated if multiple)
 
 #### Coverage
-- `dc:coverage` - General coverage
-- `dcterms:spatial` - Geographic coverage
+- `dc:coverage` - General coverage (pipe-separated if multiple)
+- `dcterms:spatial` - Geographic coverage (pipe-separated if multiple)
 - `dcterms:spatial.dcterms:Point` - Geographic point
-- `dcterms:temporal` - Temporal coverage
+- `dcterms:temporal` - Temporal coverage (pipe-separated if multiple)
 
 #### Rights & Source
-- `dc:rights` - Rights statements
-- `dc:source` - Source information
+- `dc:rights` - Rights statements (pipe-separated if multiple)
+- `dc:source` - Source information (pipe-separated if multiple)
 
 #### Custom Fields
 - `bib custom field` - General custom field
@@ -183,13 +183,14 @@ grinnell_ns = f"http://alma.exlibrisgroup.com/dc/{originating_system}"
 ### Multiple Value Handling
 
 When a field has multiple values:
-- Values are joined with `"; "` (semicolon-space separator)
-- Example: `"Subject 1; Subject 2; Subject 3"`
-
-For repeated column names (like `dcterms:subject.dcterms:LCSH`):
-- First value goes in first column
-- Subsequent values go in subsequent columns
-- Empty if no value available
+- Values are joined with ` | ` (space-pipe-space separator)
+- Example: `"Subject 1 | Subject 2 | Subject 3"`
+- This applies to all multi-valued fields including:
+  - `dcterms:subject.dcterms:LCSH` - All LCSH subjects in one column
+  - `dcterms:isPartOf` - All parent collections in one column
+  - `dcterms:publisher` - All publishers in one column
+  - `dc:identifier` - All identifiers in one column
+  - And all other repeatable metadata fields
 
 ### Performance Optimization
 
@@ -209,9 +210,9 @@ For repeated column names (like `dcterms:subject.dcterms:LCSH`):
 The CSV file will look like this:
 
 ```csv
-group_id,collection_id,mms_id,originating_system_id,compoundrelationship,dc:title,...
-,,991234567890104641,grinnell:12345,,Title of the Item,...
-,,991234567890204641,grinnell:12346,isPartOf:parent123,Another Title,...
+group_id,collection_id,mms_id,originating_system_id,compoundrelationship,dc:title,dcterms:subject.dcterms:LCSH,dcterms:isPartOf,...
+,,991234567890104641,grinnell:12345,,Title of the Item,"Subject 1 | Subject 2 | Subject 3","Collection A | Collection B",...
+,,991234567890204641,grinnell:12346,isPartOf:parent123,Another Title,"LCSH Term","Parent Collection",...
 ```
 
 ## Use Cases
@@ -344,9 +345,9 @@ Example: `alma_export_20251119_154447.csv`
 
 - **Read-only**: This function does not modify Alma records
 - **No representation data**: File fields currently not populated (placeholders for future)
-- **Subject limit**: Maximum 12 LCSH subject headings exported
-- **Flat structure**: Complex nested metadata flattened to CSV format
+- **Flat structure**: Complex nested metadata flattened to CSV format with pipe-separated multi-values
 - **No binary data**: Images, PDFs, etc. not included (metadata only)
+- **Pipe character**: If metadata contains literal pipe characters, they will appear in multi-valued fields
 
 ## Related Documentation
 

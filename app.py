@@ -759,24 +759,19 @@ class AlmaBibEditor:
         
         self.log(f"Starting CSV export for {len(mms_ids)} records to {output_file}")
         
-        # Define CSV column headings
+        # Define CSV column headings (no duplicates)
         column_headings = [
             "group_id", "collection_id", "mms_id", "originating_system_id", "compoundrelationship",
             "dc:title", "dcterms:alternative", "oldalttitle", "dc:identifier",
             "dcterms:identifier.dcterms:URI", "dcterms:tableOfContents", "dc:creator",
             "dc:contributor", "dc:subject", "dcterms:subject.dcterms:LCSH",
-            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
-            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
-            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
-            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
-            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
-            "dcterms:subject.dcterms:LCSH", "dc:description", "dcterms:provenance",
+            "dc:description", "dcterms:provenance",
             "dcterms:bibliographicCitation", "dcterms:abstract", "dcterms:publisher",
-            "dcterms:publisher", "dc:date", "dcterms:created", "dcterms:issued",
+            "dc:date", "dcterms:created", "dcterms:issued",
             "dcterms:dateSubmitted", "dcterms:dateAccepted", "dc:type", "dc:format",
-            "dcterms:extent", "dcterms:extent", "dcterms:medium",
+            "dcterms:extent", "dcterms:medium",
             "dcterms:format.dcterms:IMT", "dcterms:type.dcterms:DCMIType", "dc:language",
-            "dc:relation", "dcterms:isPartOf", "dcterms:isPartOf", "dcterms:isPartOf",
+            "dc:relation", "dcterms:isPartOf",
             "dc:coverage", "dcterms:spatial", "dcterms:spatial.dcterms:Point",
             "dcterms:temporal", "dc:rights", "dc:source", "bib custom field",
             "rep_label", "rep_public_note", "rep_access_rights", "rep_usage_type",
@@ -786,8 +781,8 @@ class AlmaBibEditor:
         
         try:
             with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=column_headings)
-                writer.writeheader()
+                writer = csv.writer(csvfile)
+                writer.writerow(column_headings)  # Write header
                 
                 success_count = 0
                 failed_count = 0
@@ -820,7 +815,7 @@ class AlmaBibEditor:
                                 # Set as current record for field extraction
                                 self.current_record = batch_records[mms_id]
                                 
-                                # Map record to CSV row
+                                # Map record to CSV row (returns list)
                                 row = self._map_bib_to_csv_row(self.current_record)
                                 writer.writerow(row)
                                 success_count += 1
@@ -848,6 +843,34 @@ class AlmaBibEditor:
             error_msg = f"Error creating CSV file: {str(e)}"
             self.log(error_msg, logging.ERROR)
             return False, error_msg
+    
+    def _extract_lcsh_subjects(self) -> list:
+        """Extract LCSH subjects (dcterms:subject with xsi:type='dcterms:LCSH')"""
+        try:
+            anies = self.current_record.get("anies", [])
+            if not anies:
+                return []
+            
+            dc_xml = anies[0] if isinstance(anies, list) else anies
+            root = ET.fromstring(dc_xml)
+            
+            namespaces = {
+                'dcterms': 'http://purl.org/dc/terms/',
+                'xsi': 'http://www.w3.org/2001/XMLSchema-instance'
+            }
+            
+            values = []
+            # Find all dcterms:subject elements
+            for elem in root.findall(".//{{{}}}subject".format(namespaces['dcterms'])):
+                # Check if it has xsi:type="dcterms:LCSH" attribute
+                xsi_type = elem.get("{{{0}}}type".format(namespaces['xsi']))
+                if xsi_type == "dcterms:LCSH" and elem.text and elem.text.strip():
+                    values.append(elem.text.strip())
+            
+            return values
+        except Exception as e:
+            self.log(f"Error extracting LCSH subjects: {str(e)}", logging.WARNING)
+            return []
     
     def _extract_dc_field(self, element: str, namespace: str = "dc") -> list:
         """Extract data from Dublin Core XML in the anies field"""
@@ -903,33 +926,20 @@ class AlmaBibEditor:
             self.log(f"Error extracting custom field {element}: {str(e)}", logging.WARNING)
             return []
     
-    def _map_bib_to_csv_row(self, bib: dict) -> dict:
-        """Map a bibliographic record to a CSV row using Dublin Core fields"""
-        column_headings = [
-            "group_id", "collection_id", "mms_id", "originating_system_id", "compoundrelationship",
-            "dc:title", "dcterms:alternative", "oldalttitle", "dc:identifier",
-            "dcterms:identifier.dcterms:URI", "dcterms:tableOfContents", "dc:creator",
-            "dc:contributor", "dc:subject", "dcterms:subject.dcterms:LCSH",
-            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
-            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
-            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
-            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
-            "dcterms:subject.dcterms:LCSH", "dcterms:subject.dcterms:LCSH",
-            "dcterms:subject.dcterms:LCSH", "dc:description", "dcterms:provenance",
-            "dcterms:bibliographicCitation", "dcterms:abstract", "dcterms:publisher",
-            "dcterms:publisher", "dc:date", "dcterms:created", "dcterms:issued",
-            "dcterms:dateSubmitted", "dcterms:dateAccepted", "dc:type", "dc:format",
-            "dcterms:extent", "dcterms:extent", "dcterms:medium",
-            "dcterms:format.dcterms:IMT", "dcterms:type.dcterms:DCMIType", "dc:language",
-            "dc:relation", "dcterms:isPartOf", "dcterms:isPartOf", "dcterms:isPartOf",
-            "dc:coverage", "dcterms:spatial", "dcterms:spatial.dcterms:Point",
-            "dcterms:temporal", "dc:rights", "dc:source", "bib custom field",
-            "rep_label", "rep_public_note", "rep_access_rights", "rep_usage_type",
-            "rep_library", "rep_note", "rep_custom field", "file_name_1", "file_label_1",
-            "file_name_2", "file_label_2", "googlesheetsource", "dginfo"
-        ]
-        
-        row = {heading: "" for heading in column_headings}
+    def _deduplicate_values(self, values: list) -> list:
+        """Remove duplicate values from a list while preserving order"""
+        seen = set()
+        result = []
+        for value in values:
+            if value not in seen:
+                seen.add(value)
+                result.append(value)
+        return result
+    
+    def _map_bib_to_csv_row(self, bib: dict) -> list:
+        """Map a bibliographic record to a CSV row using Dublin Core fields
+        Returns a list of values in the same order as column_headings
+        Multi-valued fields are joined with ' | ' separator"""
         
         # Extract the actual namespace from the XML record
         grinnell_ns = "http://alma.exlibrisgroup.com/dc/01GCL_INST"  # Default
@@ -945,130 +955,158 @@ class AlmaBibEditor:
         except Exception as e:
             self.log(f"Could not extract namespace from XML: {str(e)}", logging.DEBUG)
         
+        # Build row as list - must match column_headings order exactly
+        row = []
+        
         # Basic metadata
-        row["mms_id"] = bib.get("mms_id", "")
-        row["originating_system_id"] = bib.get("originating_system_id", "")
+        row.append("")  # group_id
+        row.append("")  # collection_id
+        row.append(bib.get("mms_id", ""))  # mms_id
+        row.append(bib.get("originating_system_id", ""))  # originating_system_id
+        
+        # compoundrelationship (custom field)
+        compound = self._extract_custom_field("compoundrelationship", grinnell_ns)
+        row.append(compound[0] if compound else "")
         
         # Extract Dublin Core fields
         titles = self._extract_dc_field("title", "dc")
-        row["dc:title"] = titles[0] if titles else bib.get("title", "")
+        row.append(titles[0] if titles else bib.get("title", ""))  # dc:title
         
         alt_titles = self._extract_dc_field("alternative", "dcterms")
-        row["dcterms:alternative"] = "; ".join(alt_titles) if alt_titles else ""
+        row.append(" | ".join(self._deduplicate_values(alt_titles)) if alt_titles else "")  # dcterms:alternative
+        
+        row.append("")  # oldalttitle
         
         identifiers = self._extract_dc_field("identifier", "dc")
-        row["dc:identifier"] = "; ".join(identifiers) if identifiers else ""
+        row.append(" | ".join(self._deduplicate_values(identifiers)) if identifiers else "")  # dc:identifier
         
+        # dcterms:identifier.dcterms:URI - extract URI from identifiers
+        uri = ""
         for identifier in identifiers:
             if identifier.startswith("http://") or identifier.startswith("https://"):
-                row["dcterms:identifier.dcterms:URI"] = identifier
+                uri = identifier
                 break
+        row.append(uri)
         
         toc = self._extract_dc_field("tableOfContents", "dcterms")
-        row["dcterms:tableOfContents"] = "; ".join(toc) if toc else ""
+        row.append(" | ".join(self._deduplicate_values(toc)) if toc else "")  # dcterms:tableOfContents
         
         creators = self._extract_dc_field("creator", "dc")
-        row["dc:creator"] = "; ".join(creators) if creators else bib.get("author", "")
+        row.append(" | ".join(self._deduplicate_values(creators)) if creators else bib.get("author", ""))  # dc:creator
         
         contributors = self._extract_dc_field("contributor", "dc")
-        row["dc:contributor"] = "; ".join(contributors) if contributors else ""
+        row.append(" | ".join(self._deduplicate_values(contributors)) if contributors else "")  # dc:contributor
         
-        subjects = self._extract_dc_field("subject", "dc") + self._extract_dc_field("subject", "dcterms")
-        if subjects:
-            row["dc:subject"] = subjects[0]
+        # dc:subject - all dc:subject values joined with pipe separator
+        dc_subjects = self._extract_dc_field("subject", "dc")
+        row.append(" | ".join(self._deduplicate_values(dc_subjects)) if dc_subjects else "")
+        
+        # Extract LCSH subjects - all joined in single column
+        lcsh_subjects = self._extract_lcsh_subjects()
+        row.append(" | ".join(self._deduplicate_values(lcsh_subjects)) if lcsh_subjects else "")
         
         descriptions = self._extract_dc_field("description", "dc")
-        row["dc:description"] = "; ".join(descriptions) if descriptions else ""
+        row.append(" | ".join(self._deduplicate_values(descriptions)) if descriptions else "")  # dc:description
         
         provenance = self._extract_dc_field("provenance", "dcterms")
-        row["dcterms:provenance"] = "; ".join(provenance) if provenance else ""
+        row.append(" | ".join(self._deduplicate_values(provenance)) if provenance else "")  # dcterms:provenance
         
         citation = self._extract_dc_field("bibliographicCitation", "dcterms")
-        row["dcterms:bibliographicCitation"] = "; ".join(citation) if citation else ""
+        row.append(" | ".join(self._deduplicate_values(citation)) if citation else "")  # dcterms:bibliographicCitation
         
         abstract = self._extract_dc_field("abstract", "dcterms")
-        row["dcterms:abstract"] = "; ".join(abstract) if abstract else ""
+        row.append(" | ".join(self._deduplicate_values(abstract)) if abstract else "")  # dcterms:abstract
         
+        # dcterms:publisher - all values joined
         publishers = self._extract_dc_field("publisher", "dcterms")
-        if publishers:
-            row["dcterms:publisher"] = publishers[0]
+        row.append(" | ".join(self._deduplicate_values(publishers)) if publishers else "")
         
         dates = self._extract_dc_field("date", "dc")
-        row["dc:date"] = dates[0] if dates else bib.get("date_of_publication", "")
+        row.append(dates[0] if dates else bib.get("date_of_publication", ""))  # dc:date
         
         created = self._extract_dc_field("created", "dcterms")
-        row["dcterms:created"] = created[0] if created else ""
+        row.append(created[0] if created else "")  # dcterms:created
         
         issued = self._extract_dc_field("issued", "dcterms")
-        row["dcterms:issued"] = issued[0] if issued else ""
+        row.append(issued[0] if issued else "")  # dcterms:issued
         
         submitted = self._extract_dc_field("dateSubmitted", "dcterms")
-        row["dcterms:dateSubmitted"] = submitted[0] if submitted else ""
+        row.append(submitted[0] if submitted else "")  # dcterms:dateSubmitted
         
         accepted = self._extract_dc_field("dateAccepted", "dcterms")
-        row["dcterms:dateAccepted"] = accepted[0] if accepted else ""
+        row.append(accepted[0] if accepted else "")  # dcterms:dateAccepted
         
         types = self._extract_dc_field("type", "dc")
-        row["dc:type"] = types[0] if types else ""
+        row.append(types[0] if types else "")  # dc:type
         
         formats = self._extract_dc_field("format", "dc")
-        row["dc:format"] = formats[0] if formats else ""
+        row.append(formats[0] if formats else "")  # dc:format
         
+        # dcterms:extent - all values joined
         extents = self._extract_dc_field("extent", "dcterms")
-        if extents:
-            row["dcterms:extent"] = extents[0]
+        row.append(" | ".join(self._deduplicate_values(extents)) if extents else "")
         
         medium = self._extract_dc_field("medium", "dcterms")
-        row["dcterms:medium"] = medium[0] if medium else ""
+        row.append(medium[0] if medium else "")  # dcterms:medium
+        
+        # dcterms:format.dcterms:IMT
+        imt_formats = self._extract_dc_field("format", "dcterms")
+        row.append(imt_formats[0] if imt_formats else "")
+        
+        # dcterms:type.dcterms:DCMIType  
+        dcmi_types = self._extract_dc_field("type", "dcterms")
+        row.append(dcmi_types[0] if dcmi_types else "")
         
         languages = self._extract_dc_field("language", "dc")
-        row["dc:language"] = "; ".join(languages) if languages else ""
+        row.append(" | ".join(self._deduplicate_values(languages)) if languages else "")  # dc:language
         
         relations = self._extract_dc_field("relation", "dc")
-        row["dc:relation"] = "; ".join(relations) if relations else ""
+        row.append(" | ".join(self._deduplicate_values(relations)) if relations else "")  # dc:relation
         
+        # dcterms:isPartOf - all values joined
         ispartof = self._extract_dc_field("isPartOf", "dcterms")
-        if ispartof:
-            row["dcterms:isPartOf"] = ispartof[0]
+        row.append(" | ".join(self._deduplicate_values(ispartof)) if ispartof else "")
         
         coverage = self._extract_dc_field("coverage", "dc")
-        row["dc:coverage"] = "; ".join(coverage) if coverage else ""
+        row.append(" | ".join(self._deduplicate_values(coverage)) if coverage else "")  # dc:coverage
         
         spatial = self._extract_dc_field("spatial", "dcterms")
-        row["dcterms:spatial"] = "; ".join(spatial) if spatial else ""
+        row.append(" | ".join(self._deduplicate_values(spatial)) if spatial else "")  # dcterms:spatial
+        
+        row.append("")  # dcterms:spatial.dcterms:Point
         
         temporal = self._extract_dc_field("temporal", "dcterms")
-        row["dcterms:temporal"] = "; ".join(temporal) if temporal else ""
+        row.append(" | ".join(self._deduplicate_values(temporal)) if temporal else "")  # dcterms:temporal
         
         rights = self._extract_dc_field("rights", "dc")
-        row["dc:rights"] = "; ".join(rights) if rights else ""
+        row.append(" | ".join(self._deduplicate_values(rights)) if rights else "")  # dc:rights
         
         sources = self._extract_dc_field("source", "dc")
-        row["dc:source"] = "; ".join(sources) if sources else ""
+        row.append(" | ".join(self._deduplicate_values(sources)) if sources else "")  # dc:source
         
-        # Custom fields - debug logging
-        self.log(f"Extracting custom fields for MMS ID {row['mms_id']}, namespace: {grinnell_ns}", logging.DEBUG)
+        row.append("")  # bib custom field
         
-        compound = self._extract_custom_field("compoundrelationship", grinnell_ns)
-        if compound:
-            self.log(f"Found compoundrelationship: {compound[0]}", logging.DEBUG)
-        row["compoundrelationship"] = compound[0] if compound else ""
+        # Representation fields (placeholders)
+        row.append("")  # rep_label
+        row.append("")  # rep_public_note
+        row.append("")  # rep_access_rights
+        row.append("")  # rep_usage_type
+        row.append("")  # rep_library
+        row.append("")  # rep_note
+        row.append("")  # rep_custom field
         
+        # File fields (placeholders)
+        row.append("")  # file_name_1
+        row.append("")  # file_label_1
+        row.append("")  # file_name_2
+        row.append("")  # file_label_2
+        
+        # Custom fields
         sheets = self._extract_custom_field("googlesheetsource", grinnell_ns)
-        if sheets:
-            self.log(f"Found googlesheetsource: {sheets[0]}", logging.DEBUG)
-        row["googlesheetsource"] = sheets[0] if sheets else ""
+        row.append(sheets[0] if sheets else "")  # googlesheetsource
         
         dginfo = self._extract_custom_field("dginfo", grinnell_ns)
-        if dginfo:
-            self.log(f"Found dginfo: {dginfo[0]}", logging.DEBUG)
-        row["dginfo"] = dginfo[0] if dginfo else ""
-        
-        # Debug: log the anies content for first record to see structure
-        if row['mms_id'] == "991011506418804641":
-            anies = bib.get("anies", [])
-            if anies:
-                self.log(f"DEBUG: anies content sample (first 500 chars): {str(anies[0])[:500]}", logging.INFO)
+        row.append(dginfo[0] if dginfo else "")  # dginfo
         
         return row
     
