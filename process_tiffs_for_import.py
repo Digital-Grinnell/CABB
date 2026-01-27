@@ -18,7 +18,7 @@ def process_tiffs():
     
     # Define paths
     csv_file = "all_single_tiffs_with_local_paths.csv"
-    alma_export_csv = "alma_export_20260127_155208.csv"
+    alma_export_csv = "alma_export_20260127_161511.csv"
     for_import_dir = Path("For-Import")
     
     # Create For-Import directory if it doesn't exist
@@ -45,9 +45,6 @@ def process_tiffs():
         reader = csv.DictReader(f)
         
         for row in reader:
-            if processed_count >= 5:
-                break
-            
             mms_id = row['MMS ID']
             local_path = row['Local Path']
             
