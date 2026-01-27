@@ -50,3 +50,6 @@ persistent.json
 
 # Generated CSV exports
 *_export_*.csv
+
+# The For-Import folder
+For-Import/
