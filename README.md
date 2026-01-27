@@ -152,15 +152,26 @@ python app.py
 3. **Enter a Set ID** in the "Batch Processing (Set)" input field
    - Example: `7071087320004641`
 
-4. **Click "Load Set Members"** to fetch all bibliographic records in the set
+4. **Optional: Set a limit** in the "Limit" field to process a subset of records:
+   - **0** (default) - Process all records in the set
+   - **Positive number** (e.g., `200`) - Process only the **first** N records
+   - **Negative number** (e.g., `-200`) - Process only the **last** N records
+   
+   **Use case for negative limits:**
+   - If a long-running process stops at 98%, you can resume by using a negative limit
+   - Example: Set had 12,000 records, stopped at 98% → Use `-240` to process the last 2%
+   - This applies to **all functions** - the limit is applied when loading the set
+
+5. **Click "Load Set Members"** to fetch all bibliographic records in the set
    - The app will display the set name and member count
    - First 20 members are shown for preview
+   - If a limit is set, the display will indicate which records were loaded (first/last N)
 
-5. **Select an editing function** to apply to all records in the set
+6. **Select an editing function** to apply to all records in the set
    - Progress will be shown as "Processing X/Y: [MMS_ID]"
    - A summary of successes/failures is displayed upon completion
 
-6. **Click "Clear Set"** when done to reset for single record or a different set
+7. **Click "Clear Set"** when done to reset for single record or a different set
 
 ### Viewing Logs
 

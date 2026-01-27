@@ -2308,14 +2308,13 @@ class AlmaBibEditor:
             "Title",
             "Representation ID",
             "TIFF Filename",
+            "S3 Path",
             "File Size (MB)",
             "JPG Created" if create_jpg else "Recommended Action",
             "Status"
         ]
         
         try:
-            all_rows = []
-            
             success_count = 0
             no_rep_count = 0
             multi_file_count = 0
@@ -2329,6 +2328,13 @@ class AlmaBibEditor:
             # Calculate total number of API calls
             total_batches = (total + batch_size - 1) // batch_size
             self.log(f"Processing {total} records (batch metadata calls: {total_batches})")
+            
+            # Open CSV file for writing immediately (write results as we go)
+            csvfile = open(output_file, 'w', newline='', encoding='utf-8')
+            writer = csv.DictWriter(csvfile, fieldnames=column_headings)
+            writer.writeheader()
+            csvfile.flush()  # Ensure header is written to disk
+            self.log(f"Created output file: {output_file}")
             
             # Process in batches for metadata, but individual calls for representations
             for batch_start in range(0, total, batch_size):
@@ -2381,7 +2387,38 @@ class AlmaBibEditor:
                         # Add expand parameter to get file details
                         params = {'expand': 'p_files'}
                         
-                        response = requests.get(rep_url, headers=headers, params=params)
+                        # Make API call with timeout and retry logic
+                        max_retries = 3
+                        retry_delay = 2
+                        response = None
+                        
+                        for attempt in range(max_retries):
+                            try:
+                                response = requests.get(rep_url, headers=headers, params=params, timeout=30)
+                                break  # Success, exit retry loop
+                            except requests.exceptions.Timeout:
+                                if attempt < max_retries - 1:
+                                    self.log(f"Timeout for {mms_id}, retrying ({attempt+1}/{max_retries})...", logging.WARNING)
+                                    import time
+                                    time.sleep(retry_delay)
+                                else:
+                                    self.log(f"Timeout for {mms_id} after {max_retries} attempts", logging.ERROR)
+                                    failed_count += 1
+                                    response = None
+                                    break
+                            except requests.exceptions.RequestException as req_err:
+                                if attempt < max_retries - 1:
+                                    self.log(f"Network error for {mms_id}: {req_err}, retrying ({attempt+1}/{max_retries})...", logging.WARNING)
+                                    import time
+                                    time.sleep(retry_delay)
+                                else:
+                                    self.log(f"Network error for {mms_id} after {max_retries} attempts: {req_err}", logging.ERROR)
+                                    failed_count += 1
+                                    response = None
+                                    break
+                        
+                        if response is None:
+                            continue
                         
                         if response.status_code == 200:
                             rep_data = response.json()
@@ -2407,6 +2444,39 @@ class AlmaBibEditor:
                             if isinstance(files_data, dict):
                                 files_link = files_data.get('link')
                                 if files_link:
+                                    # Make another API call to get the files with timeout and retry
+                                    files_response = None
+                                    for attempt in range(max_retries):
+                                        try:
+                                            files_response = requests.get(files_link, headers=headers, timeout=30)
+                                            break
+                                        except requests.exceptions.Timeout:
+                                            if attempt < max_retries - 1:
+                                                self.log(f"Timeout fetching files for {mms_id}, retrying ({attempt+1}/{max_retries})...", logging.WARNING)
+                                                import time
+                                                time.sleep(retry_delay)
+                                            else:
+                                                self.log(f"Timeout fetching files for {mms_id} after {max_retries} attempts", logging.ERROR)
+                                                failed_count += 1
+                                                files_response = None
+                                                break
+                                        except requests.exceptions.RequestException as req_err:
+                                            if attempt < max_retries - 1:
+                                                self.log(f"Network error fetching files for {mms_id}: {req_err}, retrying ({attempt+1}/{max_retries})...", logging.WARNING)
+                                                import time
+                                                time.sleep(retry_delay)
+                                            else:
+                                                self.log(f"Network error fetching files for {mms_id} after {max_retries} attempts: {req_err}", logging.ERROR)
+                                                failed_count += 1
+                                                files_response = None
+                                                break
+                                    
+                                    if files_response and files_response.status_code == 200:
+                                        files_json = files_response.json()
+                                        files = files_json.get('representation_file', [])
+                                        # Ensure files is a list
+                                        if not isinstance(files, list):
+                                            files = [files] if files else []
                                     # Make another API call to get the files
                                     files_response = requests.get(files_link, headers=headers)
                                     if files_response.status_code == 200:
@@ -2442,6 +2512,7 @@ class AlmaBibEditor:
                             # Check if the file is a TIFF
                             file_info = files[0]
                             filename = file_info.get('label', '') or file_info.get('path', '')
+                            s3_path = file_info.get('path', '')
                             file_pid = file_info.get('pid', '')
                             file_size_bytes = int(file_info.get('size', 0))
                             file_size_mb = round(file_size_bytes / (1024 * 1024), 2)
@@ -2450,18 +2521,19 @@ class AlmaBibEditor:
                             if filename.lower().endswith(('.tif', '.tiff')):
                                 # Found a single TIFF representation!
                                 
-                                # Note: Direct file download from Alma API is restricted
-                                # For now, just report the findings
+                                # Write result to CSV immediately (don't wait till end)
                                 row = {
                                     "MMS ID": mms_id,
                                     "Title": title,
                                     "Representation ID": rep_id,
                                     "TIFF Filename": filename,
+                                    "S3 Path": s3_path,
                                     "File Size (MB)": file_size_mb,
                                     "JPG Created" if create_jpg else "Recommended Action": "Not Implemented" if create_jpg else "Create JPG derivative and set as primary",
                                     "Status": "File download from Alma API requires special permissions" if create_jpg else "Manual JPG creation needed"
                                 }
-                                all_rows.append(row)
+                                writer.writerow(row)
+                                csvfile.flush()  # Ensure row is written to disk immediately
                                 success_count += 1
                                 
                                 if create_jpg:
@@ -2483,23 +2555,17 @@ class AlmaBibEditor:
                         if record_index % 50 == 0:
                             self.log(f"Analyzed {record_index}/{total} records - Found {success_count} single TIFF objects")
                         
-                        # Small delay to respect API rate limits
+                        # Small delay to respect API rate limits (0.1s = max 10 req/sec)
                         import time
-                        time.sleep(0.05)
+                        time.sleep(0.1)
                             
                     except Exception as e:
                         self.log(f"Error analyzing {mms_id}: {str(e)}", logging.ERROR)
                         failed_count += 1
             
-            # Sort rows by MMS ID
-            self.log("Sorting rows by MMS ID...")
-            all_rows.sort(key=lambda x: x["MMS ID"])
-            
-            # Write sorted rows to CSV
-            with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=column_headings)
-                writer.writeheader()
-                writer.writerows(all_rows)
+            # Close the CSV file
+            csvfile.close()
+            self.log(f"Closed output file: {output_file}")
             
             message = f"Single TIFF analysis complete: Found {success_count} objects with single TIFF files. "
             if create_jpg:
@@ -2512,6 +2578,11 @@ class AlmaBibEditor:
         except Exception as e:
             error_msg = f"Error creating single TIFF analysis CSV: {str(e)}"
             self.log(error_msg, logging.ERROR)
+            # Try to close the file if it was opened
+            try:
+                csvfile.close()
+            except:
+                pass
             return False, error_msg
     
     def _get_alma_domain(self) -> str:
@@ -2608,7 +2679,7 @@ def main(page: ft.Page):
         value=storage.get_ui_state("limit", "0"),
         width=100,
         keyboard_type=ft.KeyboardType.NUMBER,
-        tooltip="Enter 0 for no limit, or a number to process only first N records",
+        tooltip="Enter 0 for no limit, positive N for first N records, or negative -N for last N records",
         on_change=lambda e: storage.set_ui_state("limit", e.control.value)
     )
     
@@ -2695,16 +2766,22 @@ def main(page: ft.Page):
             # Get limit value
             try:
                 limit = int(limit_input.value) if limit_input.value else 0
-                if limit < 0:
-                    limit = 0
             except ValueError:
                 update_status("Invalid limit value - using 0 (no limit)", True)
                 limit = 0
             
             # Apply limit if set
             if limit > 0 and len(members) > limit:
+                # Positive limit: take first N records
                 editor.set_members = members[:limit]
-                set_info_text.controls = [ft.Text(f"CSV: {input_value.split('/')[-1]} ({limit} of {len(members)} IDs loaded - limited)", size=12, color=ft.Colors.GREY_700)]
+                set_info_text.controls = [ft.Text(f"CSV: {input_value.split('/')[-1]} (first {limit} of {len(members)} IDs loaded)", size=12, color=ft.Colors.GREY_700)]
+            elif limit < 0 and abs(limit) <= len(members):
+                # Negative limit: take last N records
+                editor.set_members = members[limit:]
+                set_info_text.controls = [ft.Text(f"CSV: {input_value.split('/')[-1]} (last {abs(limit)} of {len(members)} IDs loaded)", size=12, color=ft.Colors.GREY_700)]
+            elif limit < 0:
+                # Negative limit larger than total: take all records
+                set_info_text.controls = [ft.Text(f"CSV: {input_value.split('/')[-1]} ({len(members)} IDs - limit exceeds total)", size=12, color=ft.Colors.GREY_700)]
             else:
                 set_info_text.controls = [ft.Text(f"CSV: {input_value.split('/')[-1]} ({len(members)} IDs)", size=12, color=ft.Colors.GREY_700)]
             
@@ -2720,7 +2797,16 @@ def main(page: ft.Page):
                 update_status("Invalid limit value - using 0 (no limit)", True)
                 limit = 0
             
-            add_log_message(f"Loading set: {input_value} (limit: {limit if limit > 0 else 'none'})")
+            # For negative limits, we need to fetch ALL members then slice
+            # For positive limits, we can limit at the API level
+            original_limit = limit
+            if limit > 0:
+                api_limit = limit  # Positive: fetch only first N
+            else:
+                api_limit = 0  # Zero or negative: fetch all
+            
+            limit_msg = "none" if limit == 0 else (f"first {limit}" if limit > 0 else f"last {abs(limit)}")
+            add_log_message(f"Loading set: {input_value} (limit: {limit_msg})")
             
             # Show indeterminate progress bar while fetching set details
             set_progress_bar.visible = True
@@ -2747,7 +2833,7 @@ def main(page: ft.Page):
             success, member_msg, members = editor.fetch_set_members(
                 input_value, 
                 progress_callback=update_progress,
-                max_members=limit
+                max_members=api_limit
             )
             if not success:
                 set_progress_bar.visible = False
@@ -2755,11 +2841,18 @@ def main(page: ft.Page):
                 update_status(member_msg, True)
                 return
             
+            # Apply negative limit if specified (take last N records)
+            if original_limit < 0 and abs(original_limit) <= len(members):
+                editor.set_members = members[original_limit:]
+                members = editor.set_members
+            
             # Update set info display
             set_name = set_data.get('name', 'Unknown')
             member_count = len(members)
-            if limit > 0 and member_count >= limit:
-                set_info_text.controls = [ft.Text(f"Set: {set_name} ({member_count} of {limit} members loaded - limited)", size=12, color=ft.Colors.GREY_700)]
+            if original_limit > 0 and member_count >= original_limit:
+                set_info_text.controls = [ft.Text(f"Set: {set_name} (first {member_count} of {original_limit} members loaded)", size=12, color=ft.Colors.GREY_700)]
+            elif original_limit < 0:
+                set_info_text.controls = [ft.Text(f"Set: {set_name} (last {member_count} members loaded)", size=12, color=ft.Colors.GREY_700)]
             else:
                 set_info_text.controls = [ft.Text(f"Set: {set_name} ({member_count} members)", size=12, color=ft.Colors.GREY_700)]
             
