@@ -2623,6 +2623,472 @@ class AlmaBibEditor:
                 pass
             return False, error_msg
     
+    def add_jpg_representations_from_folder(self, mms_ids: list, jpg_folder: str = "For-Import", progress_callback=None) -> tuple[bool, str]:
+        """
+        Function 12: Add JPG representations to objects from For-Import folder
+        
+        For each MMS ID:
+        1. Fetch existing representation info from Alma
+        2. Get TIFF filename from representation
+        3. Derive JPG filename from TIFF basename
+        4. Check For-Import folder for matching JPG
+        5. If found, upload JPG as new representation
+        
+        Args:
+            mms_ids: List of MMS IDs to process
+            jpg_folder: Folder containing JPG files (default: "For-Import")
+            progress_callback: Optional callback function(current, total) for progress updates
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        from pathlib import Path
+        
+        self.log(f"Starting Function 12: Add JPG Representations from {jpg_folder}")
+        self.log(f"Processing {len(mms_ids)} MMS ID(s)")
+        
+        if not self.api_key:
+            return False, "API Key not configured"
+        
+        # Verify folder exists
+        folder_path = Path(jpg_folder)
+        if not folder_path.exists() or not folder_path.is_dir():
+            return False, f"Folder not found: {jpg_folder}"
+        
+        try:
+            # Process each MMS ID
+            success_count = 0
+            failed_count = 0
+            no_rep_count = 0
+            no_jpg_count = 0
+            total = len(mms_ids)
+            
+            for idx, mms_id in enumerate(mms_ids, 1):
+                if self.kill_switch:
+                    self.log("Operation cancelled by user", logging.WARNING)
+                    break
+                
+                if progress_callback:
+                    progress_callback(idx, total)
+                
+                self.log(f"\nProcessing {idx}/{total}: MMS {mms_id}")
+                
+                # Step 1: Get representations from Alma
+                api_url = self._get_alma_api_url()
+                rep_url = f"{api_url}/almaws/v1/bibs/{mms_id}/representations"
+                headers = {
+                    'Authorization': f'apikey {self.api_key}',
+                    'Accept': 'application/json'
+                }
+                
+                self.log(f"  Fetching representations from Alma...")
+                response = requests.get(rep_url, headers=headers)
+                
+                if response.status_code != 200:
+                    self.log(f"  ✗ Failed to fetch representations: HTTP {response.status_code}", logging.ERROR)
+                    failed_count += 1
+                    continue
+                
+                rep_data = response.json()
+                representations = rep_data.get('representation', [])
+                
+                if not representations:
+                    self.log(f"  ✗ No representations found", logging.WARNING)
+                    no_rep_count += 1
+                    continue
+                
+                # Step 2: Find TIFF file in representations
+                tiff_filename = None
+                for rep in representations:
+                    rep_id = rep.get('id', '')
+                    files_data = rep.get('files', {})
+                    
+                    # Get files link
+                    if isinstance(files_data, dict):
+                        files_link = files_data.get('link')
+                        if files_link:
+                            # Fetch files
+                            files_response = requests.get(files_link, headers=headers)
+                            if files_response.status_code == 200:
+                                files_json = files_response.json()
+                                files = files_json.get('representation_file', [])
+                                if not isinstance(files, list):
+                                    files = [files] if files else []
+                                
+                                # Look for TIFF file
+                                for file_info in files:
+                                    filename = file_info.get('label', '')
+                                    if filename.lower().endswith(('.tif', '.tiff')):
+                                        tiff_filename = filename
+                                        self.log(f"  Found TIFF in representation: {tiff_filename}")
+                                        break
+                    
+                    if tiff_filename:
+                        break
+                
+                if not tiff_filename:
+                    self.log(f"  ✗ No TIFF file found in representations", logging.WARNING)
+                    no_rep_count += 1
+                    continue
+                
+                # Step 3: Derive JPG filename from TIFF basename
+                tiff_path = Path(tiff_filename)
+                jpg_filename = tiff_path.stem + '.jpg'
+                jpg_path = folder_path / jpg_filename
+                
+                self.log(f"  TIFF file: {tiff_filename}")
+                self.log(f"  Looking for JPG: {jpg_filename}")
+                self.log(f"  JPG path: {jpg_path}")
+                
+                # Step 4: Check if JPG exists
+                if not jpg_path.exists():
+                    self.log(f"  ✗ JPG file not found in {jpg_folder}", logging.WARNING)
+                    no_jpg_count += 1
+                    continue
+                
+                file_size = jpg_path.stat().st_size
+                self.log(f"  ✓ Found JPG: {jpg_filename} ({file_size / 1024 / 1024:.2f} MB)")
+                
+                # Step 5: Upload JPG as new representation
+                upload_success, message = self._upload_jpg_representation(mms_id, str(jpg_path), jpg_filename)
+                
+                if upload_success:
+                    success_count += 1
+                    self.log(f"  ✓ Successfully added JPG representation")
+                else:
+                    failed_count += 1
+                    self.log(f"  ✗ Failed: {message}", logging.ERROR)
+            
+            result_msg = f"Function 12 complete: {success_count} JPG(s) added, {failed_count} failed, {no_rep_count} no TIFF found, {no_jpg_count} no JPG found"
+            self.log(result_msg)
+            return True, result_msg
+            
+        except Exception as e:
+            error_msg = f"Error in Function 12: {str(e)}"
+            self.log(error_msg, logging.ERROR)
+            import traceback
+            self.log(traceback.format_exc(), logging.ERROR)
+            return False, error_msg
+    
+    def _upload_jpg_representation(self, mms_id: str, jpg_path: str, filename: str) -> tuple[bool, str]:
+        """
+        Upload a JPG file as a new representation for a bib record.
+        
+        NOTE: The Alma Representations API requires multipart file upload.
+        This is a placeholder implementation - actual file upload requires
+        proper multipart/form-data handling.
+        
+        Args:
+            mms_id: The MMS ID of the bibliographic record
+            jpg_path: Full path to the JPG file
+            filename: Filename for the uploaded file
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        try:
+            self.log(f"Starting upload for MMS {mms_id}")
+            self.log(f"  File: {filename}")
+            self.log(f"  Path: {jpg_path}")
+            
+            # Verify file exists before attempting upload
+            from pathlib import Path
+            if not Path(jpg_path).exists():
+                return False, f"File not found: {jpg_path}"
+            
+            file_size = Path(jpg_path).stat().st_size
+            self.log(f"  File size: {file_size} bytes ({file_size / 1024 / 1024:.2f} MB)")
+            
+            api_url = self._get_alma_api_url()
+            self.log(f"  API URL: {api_url}")
+            
+            # Step 1: Create a new representation
+            # POST /almaws/v1/bibs/{mms_id}/representations
+            rep_url = f"{api_url}/almaws/v1/bibs/{mms_id}/representations"
+            
+            # Representation metadata
+            rep_data = {
+                "label": f"JPG derivative - {filename}",
+                "usage_type": {"value": "DERIVATIVE_COPY"},
+                "library": {"value": "MAIN"},  # Adjust as needed
+                "public_note": "JPG derivative created from TIFF"
+            }
+            
+            headers = {
+                'Authorization': f'apikey {self.api_key}',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+            
+            self.log(f"Creating representation for {mms_id}")
+            self.log(f"  POST to: {rep_url}")
+            response = requests.post(rep_url, headers=headers, json=rep_data)
+            
+            self.log(f"  Response status: {response.status_code}")
+            if response.status_code not in [200, 201]:
+                self.log(f"  Response body: {response.text}", logging.ERROR)
+                return False, f"Failed to create representation: HTTP {response.status_code} - {response.text}"
+            
+            rep_response = response.json()
+            rep_id = rep_response.get('id')
+            self.log(f"Created representation ID: {rep_id}")
+            
+            # Step 2: Upload the JPG file to the representation
+            # POST /almaws/v1/bibs/{mms_id}/representations/{rep_id}/files
+            # Alma requires files to be uploaded via a specific path format
+            files_url = f"{api_url}/almaws/v1/bibs/{mms_id}/representations/{rep_id}/files"
+            
+            self.log(f"Uploading file {filename} to representation {rep_id}")
+            self.log(f"  POST to: {files_url}")
+            
+            # Get institution code from environment
+            institution_code = self._get_institution_code()
+            if not institution_code:
+                # Try to extract from API URL or use default
+                institution_code = "01GCL_INST"  # Default for Grinnell
+            
+            self.log(f"  Institution code: {institution_code}")
+            
+            # Read the file content
+            with open(jpg_path, 'rb') as f:
+                file_content = f.read()
+            
+            file_size_mb = len(file_content) / 1024 / 1024
+            self.log(f"  File size: {len(file_content)} bytes ({file_size_mb:.2f} MB)")
+            
+            # Alma's file upload requires multipart/form-data with specific fields
+            # The 'path' field must start with institution_code/upload/
+            upload_path = f"{institution_code}/upload/{filename}"
+            
+            self.log(f"  Upload path: {upload_path}")
+            
+            # Prepare multipart form data
+            files_data = {
+                'file': (filename, file_content, 'image/jpeg')
+            }
+            
+            data = {
+                'path': upload_path
+            }
+            
+            headers_upload = {
+                'Authorization': f'apikey {self.api_key}',
+                'Accept': 'application/json'
+            }
+            
+            upload_response = requests.post(files_url, headers=headers_upload, files=files_data, data=data)
+            
+            self.log(f"  Upload response status: {upload_response.status_code}")
+            if upload_response.status_code not in [200, 201]:
+                self.log(f"  Upload response body: {upload_response.text}", logging.ERROR)
+                return False, f"Failed to upload file: HTTP {upload_response.status_code} - {upload_response.text}"
+            
+            self.log(f"Successfully uploaded {filename} as representation {rep_id}")
+            return True, f"JPG representation added successfully (Rep ID: {rep_id})"
+            
+        except Exception as e:
+            self.log(f"Exception in _upload_jpg_representation: {str(e)}", logging.ERROR)
+            import traceback
+            self.log(traceback.format_exc(), logging.ERROR)
+            return False, f"Error uploading JPG: {str(e)}"
+    
+    def process_tiffs_for_import(self, mms_ids: list, tiff_csv: str = "all_single_tiffs_with_local_paths.csv", 
+                                  alma_export_csv: str = None, for_import_dir: str = "For-Import",
+                                  progress_callback=None) -> tuple[bool, str]:
+        """
+        Function 12: Process TIFF files for import
+        
+        For each MMS ID:
+        1. Look up Local Path in tiff_csv
+        2. Copy TIFF to For-Import directory
+        3. Create JPG derivative
+        4. Update alma_export CSV with filenames
+        
+        Args:
+            mms_ids: List of MMS IDs to process
+            tiff_csv: CSV file with MMS ID and Local Path columns (default: "all_single_tiffs_with_local_paths.csv")
+            alma_export_csv: CSV to update with file names (if None, generates timestamped filename)
+            for_import_dir: Directory for output files (default: "For-Import")
+            progress_callback: Optional callback function(current, total) for progress updates
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        import csv
+        import shutil
+        from pathlib import Path
+        from datetime import datetime
+        
+        self.log(f"Starting Function 12: Process TIFFs for Import")
+        self.log(f"Processing {len(mms_ids)} MMS ID(s)")
+        
+        # Check if Pillow is available
+        try:
+            from PIL import Image
+        except ImportError:
+            return False, "Pillow library not installed. Run: pip install Pillow"
+        
+        # Verify tiff_csv exists
+        if not Path(tiff_csv).exists():
+            return False, f"TIFF CSV not found: {tiff_csv}"
+        
+        # Generate alma_export_csv filename if not provided
+        if not alma_export_csv:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            alma_export_csv = f"alma_export_{timestamp}.csv"
+            self.log(f"Generated output filename: {alma_export_csv}")
+        
+        # Create For-Import directory
+        import_path = Path(for_import_dir)
+        import_path.mkdir(exist_ok=True)
+        self.log(f"Created/verified directory: {import_path}")
+        
+        try:
+            # Read tiff_csv to get local paths
+            self.log(f"Reading TIFF paths from {tiff_csv}")
+            tiff_paths = {}
+            with open(tiff_csv, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    mms_id = row.get('MMS ID', '').strip()
+                    local_path = row.get('Local Path', '').strip()
+                    if mms_id and local_path:
+                        tiff_paths[mms_id] = local_path
+            
+            self.log(f"Found {len(tiff_paths)} records with local paths")
+            
+            # Read or create alma_export CSV
+            alma_rows = []
+            alma_fieldnames = []
+            
+            if Path(alma_export_csv).exists():
+                self.log(f"Reading existing {alma_export_csv}")
+                with open(alma_export_csv, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    alma_fieldnames = list(reader.fieldnames)
+                    alma_rows = list(reader)
+            else:
+                # Create new CSV structure
+                self.log(f"Creating new {alma_export_csv}")
+                # Use column headings from export function
+                alma_fieldnames = ['mms_id', 'file_name_1', 'file_name_2']
+            
+            # Create MMS ID to row index mapping
+            mms_to_index = {row.get('mms_id', ''): idx for idx, row in enumerate(alma_rows)}
+            
+            # Process each MMS ID
+            processed_count = 0
+            updated_count = 0
+            failed_count = 0
+            no_path_count = 0
+            total = len(mms_ids)
+            
+            for idx, mms_id in enumerate(mms_ids, 1):
+                if self.kill_switch:
+                    self.log("Operation cancelled by user", logging.WARNING)
+                    break
+                
+                if progress_callback:
+                    progress_callback(idx, total)
+                
+                self.log(f"\nProcessing {idx}/{total}: MMS {mms_id}")
+                
+                # Check if we have a local path for this MMS ID
+                if mms_id not in tiff_paths:
+                    self.log(f"  ✗ No local path found in {tiff_csv}", logging.WARNING)
+                    no_path_count += 1
+                    continue
+                
+                local_path = tiff_paths[mms_id]
+                source_tiff = Path(local_path)
+                
+                # Check if source file exists
+                if not source_tiff.exists():
+                    self.log(f"  ✗ File not found: {local_path}", logging.ERROR)
+                    failed_count += 1
+                    continue
+                
+                # Get filenames
+                tiff_filename = source_tiff.name
+                jpg_filename = tiff_filename.replace('.tiff', '.jpg').replace('.tif', '.jpg')
+                
+                dest_tiff = import_path / tiff_filename
+                dest_jpg = import_path / jpg_filename
+                
+                # Copy TIFF file
+                self.log(f"  Copying TIFF: {tiff_filename}")
+                try:
+                    shutil.copy2(source_tiff, dest_tiff)
+                    self.log(f"    ✓ Copied to {dest_tiff}")
+                except (OSError, IOError) as e:
+                    self.log(f"    ✗ Copy failed: {str(e)}", logging.ERROR)
+                    failed_count += 1
+                    continue
+                
+                # Create JPG derivative
+                self.log(f"  Creating JPG: {jpg_filename}")
+                try:
+                    with Image.open(source_tiff) as img:
+                        # Convert to RGB if necessary
+                        if img.mode in ('RGBA', 'LA', 'P'):
+                            rgb_img = Image.new('RGB', img.size, (255, 255, 255))
+                            if img.mode == 'P':
+                                img = img.convert('RGBA')
+                            rgb_img.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
+                            img = rgb_img
+                        elif img.mode != 'RGB':
+                            img = img.convert('RGB')
+                        
+                        # Save as JPG with high quality
+                        img.save(dest_jpg, 'JPEG', quality=95, optimize=True)
+                        self.log(f"    ✓ Created JPG at {dest_jpg}")
+                except Exception as e:
+                    self.log(f"    ✗ JPG creation failed: {str(e)}", logging.ERROR)
+                    failed_count += 1
+                    continue
+                
+                # Update or create alma_export row
+                if mms_id in mms_to_index:
+                    # Update existing row
+                    row_idx = mms_to_index[mms_id]
+                    alma_rows[row_idx]['file_name_1'] = jpg_filename
+                    alma_rows[row_idx]['file_name_2'] = tiff_filename
+                    self.log(f"  Updated existing CSV row")
+                else:
+                    # Create new row
+                    new_row = {field: '' for field in alma_fieldnames}
+                    new_row['mms_id'] = mms_id
+                    new_row['file_name_1'] = jpg_filename
+                    new_row['file_name_2'] = tiff_filename
+                    alma_rows.append(new_row)
+                    mms_to_index[mms_id] = len(alma_rows) - 1
+                    self.log(f"  Created new CSV row")
+                
+                updated_count += 1
+                processed_count += 1
+            
+            # Write updated alma_export CSV
+            if updated_count > 0:
+                self.log(f"Writing updated {alma_export_csv}...")
+                with open(alma_export_csv, 'w', encoding='utf-8', newline='') as f:
+                    writer = csv.DictWriter(f, fieldnames=alma_fieldnames)
+                    writer.writeheader()
+                    writer.writerows(alma_rows)
+                self.log(f"✓ Updated {updated_count} records in {alma_export_csv}")
+            
+            result_msg = f"Function 12 complete: {processed_count} TIFFs processed, {updated_count} CSVs updated, {failed_count} failed, {no_path_count} no path"
+            self.log(result_msg)
+            self.log(f"Files saved to: {import_path.absolute()}")
+            
+            return True, result_msg
+            
+        except Exception as e:
+            error_msg = f"Error in Function 12: {str(e)}"
+            self.log(error_msg, logging.ERROR)
+            import traceback
+            self.log(traceback.format_exc(), logging.ERROR)
+            return False, error_msg
+    
     def _get_alma_domain(self) -> str:
         """
         Get the Alma domain for the institution.
@@ -3563,6 +4029,59 @@ def main(page: ft.Page):
             add_log_message(f"Single TIFF analysis complete: {output_file}")
             add_log_message("💡 Tip: Use Alma's derivative creation tools or download TIFFs manually for JPG conversion")
     
+    def on_function_12_click(e):
+        """Handle Function 12: Process TIFFs for Import"""
+        # Determine if processing single MMS ID or set
+        if not editor.set_members or len(editor.set_members) == 0:
+            # Try single MMS ID mode
+            if not mms_id_input.value:
+                update_status("Please enter an MMS ID or load a set", True)
+                return
+            mms_ids = [mms_id_input.value.strip()]
+            add_log_message(f"Processing single MMS ID: {mms_ids[0]}")
+        else:
+            mms_ids = editor.set_members
+            add_log_message(f"Processing {len(mms_ids)} records from set")
+        
+        # Get optional CSV path from Set ID field
+        alma_export_csv = set_id_input.value.strip() if set_id_input.value else None
+        
+        add_log_message(f"Function 12: Processing TIFFs for Import...")
+        update_status(f"Processing {len(mms_ids)} record(s)...", False)
+        
+        # Show progress bar
+        set_progress_bar.visible = True
+        set_progress_bar.value = 0
+        set_progress_text.visible = True
+        set_progress_text.value = f"Processing: 0/{len(mms_ids)} records"
+        page.update()
+        
+        def progress_update(current, total):
+            progress = current / total
+            set_progress_bar.value = progress
+            set_progress_text.value = f"Processing: {current}/{total} records ({progress*100:.1f}%)"
+            status_text.value = f"Processing TIFFs: {current}/{total} records ({progress*100:.1f}%)"
+            page.update()
+        
+        # Process TIFFs
+        storage.record_function_usage("function_12_process_tiffs")
+        success, message = editor.process_tiffs_for_import(
+            mms_ids,
+            tiff_csv="all_single_tiffs_with_local_paths.csv",
+            alma_export_csv=alma_export_csv,
+            for_import_dir="For-Import",
+            progress_callback=progress_update
+        )
+        
+        # Hide progress bar
+        set_progress_bar.visible = False
+        set_progress_text.visible = False
+        page.update()
+        
+        update_status(message, not success)
+        if success:
+            add_log_message("Function 12 complete: TIFFs processed and JPGs created")
+    
     # Function definitions with metadata
     # Active functions - frequently used
     active_functions = [
@@ -3572,7 +4091,8 @@ def main(page: ft.Page):
         "function_8_export_identifiers",
         "function_9_validate_handles",
         "function_10_export_review",
-        "function_11_identify_single_tiff"
+        "function_11_identify_single_tiff",
+        "function_12_process_tiffs"
     ]
     
     # Inactive functions - less frequently used
@@ -3649,6 +4169,12 @@ def main(page: ft.Page):
             "icon": "🖼️",
             "handler": on_function_11_click,
             "help_file": "FUNCTION_11_IDENTIFY_SINGLE_TIFF.md"
+        },
+        "function_12_process_tiffs": {
+            "label": "Process TIFFs & Create JPG Derivatives",
+            "icon": "📸",
+            "handler": on_function_12_click,
+            "help_file": "FUNCTION_12_PROCESS_TIFFS.md"
         }
     }
     

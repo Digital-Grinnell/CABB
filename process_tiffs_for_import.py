@@ -37,9 +37,11 @@ def process_tiffs():
     # Create a mapping of mms_id to row index for quick lookup
     mms_to_index = {row['mms_id']: idx for idx, row in enumerate(alma_rows)}
     
-    # Read CSV and process first 5 data rows
+    # Read CSV and process all rows
     processed_count = 0
     updated_mms_ids = []
+    failed_files = []
+    skipped_files = []
     
     with open(csv_file, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
@@ -49,14 +51,14 @@ def process_tiffs():
             local_path = row['Local Path']
             
             if not local_path:
-                print(f"Skipping MMS ID {mms_id}: No local path")
+                skipped_files.append({'mms_id': mms_id, 'reason': 'No local path'})
                 continue
             
             source_tiff = Path(local_path)
             
             # Check if source file exists
             if not source_tiff.exists():
-                print(f"WARNING: File not found: {source_tiff}")
+                failed_files.append({'mms_id': mms_id, 'path': local_path, 'reason': 'File not found'})
                 continue
             
             # Get filename
@@ -70,8 +72,14 @@ def process_tiffs():
             # Copy TIFF file
             print(f"\nProcessing MMS ID {mms_id}:")
             print(f"  Copying TIFF: {tiff_filename}")
-            shutil.copy2(source_tiff, dest_tiff)
-            print(f"    ✓ Copied to {dest_tiff}")
+            try:
+                shutil.copy2(source_tiff, dest_tiff)
+                print(f"    ✓ Copied to {dest_tiff}")
+            except (OSError, IOError) as e:
+                error_msg = f"Copy failed: {str(e)}"
+                print(f"    ✗ ERROR: {error_msg}")
+                failed_files.append({'mms_id': mms_id, 'path': str(source_tiff), 'reason': error_msg})
+                continue
             
             # Create JPG derivative
             print(f"  Creating JPG: {jpg_filename}")
@@ -92,7 +100,9 @@ def process_tiffs():
                     print(f"    ✓ Created JPG at {dest_jpg}")
                     
             except Exception as e:
-                print(f"    ✗ ERROR creating JPG: {e}")
+                error_msg = f"JPG creation failed: {str(e)}"
+                print(f"    ✗ ERROR: {error_msg}")
+                failed_files.append({'mms_id': mms_id, 'path': str(source_tiff), 'reason': error_msg})
                 continue
             
             # Update alma_export CSV with file names
@@ -119,9 +129,29 @@ def process_tiffs():
             writer.writerows(alma_rows)
         print(f"✓ Updated {len(updated_mms_ids)} records in {alma_export_csv}")
     
+    # Write failed files report
+    if failed_files:
+        failed_csv = "process_tiffs_failures.csv"
+        print(f"\n{'='*60}")
+        print(f"Writing failed files report to {failed_csv}...")
+        with open(failed_csv, 'w', encoding='utf-8', newline='') as f:
+            fieldnames = ['mms_id', 'path', 'reason']
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(failed_files)
+        print(f"✓ Logged {len(failed_files)} failed files")
+    
+    # Print summary report
     print(f"\n{'='*60}")
-    print(f"Processed {processed_count} files successfully")
-    print(f"Files saved to: {for_import_dir.absolute()}")
+    print(f"PROCESSING SUMMARY:")
+    print(f"{'='*60}")
+    print(f"Successfully processed: {processed_count} files")
+    print(f"Failed:                 {len(failed_files)} files")
+    print(f"Skipped (no path):      {len(skipped_files)} files")
+    print(f"Total records:          {processed_count + len(failed_files) + len(skipped_files)}")
+    print(f"\nFiles saved to: {for_import_dir.absolute()}")
+    if failed_files:
+        print(f"Failed files logged to: process_tiffs_failures.csv")
 
 if __name__ == "__main__":
     process_tiffs()
