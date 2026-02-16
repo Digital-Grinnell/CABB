@@ -63,3 +63,35 @@ The function shows:
 - Original TIFF files are not modified, only copied
 - Network volume disconnections may cause failures; check `process_tiffs_failures.csv`
 - Progress is saved incrementally to the CSV file
+
+## Recent Fixes (February 2026)
+
+### 16-bit TIFF Conversion Fix
+**Problem**: JPG derivatives were being created with correct dimensions but blank/white content when source TIFFs were 16-bit grayscale images.
+
+**Root Cause**: 16-bit images (mode `I;16`) have pixel values ranging from 0-65,535. Direct conversion to 8-bit RGB was not properly scaling these values down to the 0-255 range required by JPG format, resulting in blank images.
+
+**Solution**: Added proper bit-depth scaling for 16-bit images:
+```python
+if img.mode in ('I', 'I;16', 'I;16B', 'I;16L', 'I;16N'):
+    # Properly scale 16-bit to 8-bit by dividing by 256
+    img = img.point(lambda x: x / 256).convert('L').convert('RGB')
+```
+
+This divides pixel values by 256 (65,535 / 256 ≈ 255) before converting to 8-bit grayscale, then to RGB.
+
+**Files Updated**:
+- `app.py` (lines ~3032)
+- `process_tiffs_for_import.py` (lines ~90)
+
+### Status Message Improvements
+**Changes**:
+1. Changed "CSVs updated" to "CSV rows updated" for clarity (updating rows in one CSV, not multiple CSVs)
+2. Added CSV filename to status message: `"100 CSV rows updated in alma_export_20260216_143052.csv"`
+3. Fixed Set ID field being incorrectly interpreted as CSV filename when it contains an Alma set ID number
+   - Now only treats Set ID field as CSV path if it contains `.csv`, `/`, or `\` characters
+   - Otherwise generates timestamped filename automatically
+
+**Example Status Messages**:
+- Before: `"Function 12 complete: 100 TIFFs processed, 100 CSVs updated, 0 failed, 0 no path"`
+- After: `"Function 12 complete: 100 TIFFs processed, 100 CSV rows updated in alma_export_20260216_143052.csv, 0 failed, 0 no path"`

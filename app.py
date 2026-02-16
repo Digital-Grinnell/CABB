@@ -3029,13 +3029,20 @@ class AlmaBibEditor:
                 self.log(f"  Creating JPG: {jpg_filename}")
                 try:
                     with Image.open(source_tiff) as img:
+                        # Handle 16-bit images (I, I;16, I;16B) - convert to 8-bit first
+                        if img.mode in ('I', 'I;16', 'I;16B', 'I;16L', 'I;16N'):
+                            # Properly scale 16-bit to 8-bit by dividing by 256
+                            img = img.point(lambda x: x / 256).convert('L').convert('RGB')
                         # Convert to RGB if necessary
-                        if img.mode in ('RGBA', 'LA', 'P'):
+                        elif img.mode in ('RGBA', 'LA', 'P'):
                             rgb_img = Image.new('RGB', img.size, (255, 255, 255))
                             if img.mode == 'P':
                                 img = img.convert('RGBA')
                             rgb_img.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
                             img = rgb_img
+                        elif img.mode == 'L':
+                            # Grayscale to RGB
+                            img = img.convert('RGB')
                         elif img.mode != 'RGB':
                             img = img.convert('RGB')
                         
@@ -3076,7 +3083,7 @@ class AlmaBibEditor:
                     writer.writerows(alma_rows)
                 self.log(f"✓ Updated {updated_count} records in {alma_export_csv}")
             
-            result_msg = f"Function 12 complete: {processed_count} TIFFs processed, {updated_count} CSVs updated, {failed_count} failed, {no_path_count} no path"
+            result_msg = f"Function 12 complete: {processed_count} TIFFs processed, {updated_count} CSV rows updated in {alma_export_csv}, {failed_count} failed, {no_path_count} no path"
             self.log(result_msg)
             self.log(f"Files saved to: {import_path.absolute()}")
             
@@ -4043,8 +4050,13 @@ def main(page: ft.Page):
             mms_ids = editor.set_members
             add_log_message(f"Processing {len(mms_ids)} records from set")
         
-        # Get optional CSV path from Set ID field
-        alma_export_csv = set_id_input.value.strip() if set_id_input.value else None
+        # Get optional CSV path from Set ID field (only if it looks like a file path)
+        alma_export_csv = None
+        if set_id_input.value:
+            value = set_id_input.value.strip()
+            # Only use as CSV path if it has .csv extension or contains path separators
+            if '.csv' in value.lower() or '/' in value or '\\' in value:
+                alma_export_csv = value
         
         add_log_message(f"Function 12: Processing TIFFs for Import...")
         update_status(f"Processing {len(mms_ids)} record(s)...", False)

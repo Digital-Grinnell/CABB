@@ -85,13 +85,20 @@ def process_tiffs():
             print(f"  Creating JPG: {jpg_filename}")
             try:
                 with Image.open(source_tiff) as img:
+                    # Handle 16-bit images (I, I;16, I;16B) - convert to 8-bit first
+                    if img.mode in ('I', 'I;16', 'I;16B', 'I;16L', 'I;16N'):
+                        # Properly scale 16-bit to 8-bit by dividing by 256
+                        img = img.point(lambda x: x / 256).convert('L').convert('RGB')
                     # Convert to RGB if necessary (TIFF might have alpha channel or be in different mode)
-                    if img.mode in ('RGBA', 'LA', 'P'):
+                    elif img.mode in ('RGBA', 'LA', 'P'):
                         rgb_img = Image.new('RGB', img.size, (255, 255, 255))
                         if img.mode == 'P':
                             img = img.convert('RGBA')
                         rgb_img.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
                         img = rgb_img
+                    elif img.mode == 'L':
+                        # Grayscale to RGB
+                        img = img.convert('RGB')
                     elif img.mode != 'RGB':
                         img = img.convert('RGB')
                     
