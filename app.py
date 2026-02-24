@@ -2623,6 +2623,172 @@ class AlmaBibEditor:
                 pass
             return False, error_msg
     
+    def analyze_sound_records_by_decade(self, mms_ids: list, output_file: str, progress_callback=None) -> tuple[bool, str]:
+        """
+        Function 13: Analyze sound recordings by decade
+        Examines records where dc:type is "sound", extracts dc:date or dcterms:created (year), 
+        determines the decade, and exports to CSV grouped by decade.
+        
+        Args:
+            mms_ids: List of MMS IDs to analyze
+            output_file: Path to output CSV file
+            progress_callback: Optional callback function(current, total) for progress updates
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        import csv
+        import re
+        
+        self.log(f"Starting sound records decade analysis for {len(mms_ids)} records to {output_file}")
+        
+        # Define CSV column headings
+        column_headings = [
+            "MMS ID",
+            "Title",
+            "dc:type",
+            "dc:date",
+            "dcterms:created",
+            "Year",
+            "Decade"
+        ]
+        
+        try:
+            with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(column_headings)
+                
+                sound_count = 0
+                non_sound_count = 0
+                no_date_count = 0
+                failed_count = 0
+                total = len(mms_ids)
+                batch_size = 100
+                
+                # Calculate total number of API calls
+                total_batches = (total + batch_size - 1) // batch_size
+                self.log(f"Using batch API calls: {total_batches} calls for {total} records")
+                
+                # Process in batches
+                for batch_start in range(0, total, batch_size):
+                    # Check kill switch
+                    if self.kill_switch:
+                        self.log("Process stopped by user")
+                        break
+                    
+                    batch_end = min(batch_start + batch_size, total)
+                    batch_ids = mms_ids[batch_start:batch_end]
+                    batch_num = (batch_start // batch_size) + 1
+                    
+                    self.log(f"Processing batch {batch_num}/{total_batches}: records {batch_start+1}-{batch_end}")
+                    
+                    # Fetch batch of records
+                    batch_records = self.fetch_bib_records_batch(batch_ids)
+                    
+                    # Process each record in the batch
+                    for i in range(len(batch_ids)):
+                        # Check kill switch
+                        if self.kill_switch:
+                            self.log("Process stopped by user")
+                            break
+                        
+                        record_index = batch_start + i + 1
+                        mms_id = batch_ids[i]
+                        
+                        try:
+                            # Check if record was successfully fetched
+                            if mms_id in batch_records:
+                                # Set as current record for field extraction
+                                self.current_record = batch_records[mms_id]
+                                
+                                # Extract dc:type field
+                                types = self._extract_dc_field("type", "dc")
+                                dc_type = types[0] if types else ""
+                                
+                                # Check if dc:type is "sound"
+                                if dc_type.lower() == "sound":
+                                    # Extract title
+                                    titles = self._extract_dc_field("title", "dc")
+                                    title = titles[0] if titles else self.current_record.get("title", "")
+                                    
+                                    # Extract dc:date
+                                    dates = self._extract_dc_field("date", "dc")
+                                    dc_date = dates[0] if dates else ""
+                                    
+                                    # Extract dcterms:created
+                                    created = self._extract_dc_field("created", "dcterms")
+                                    dcterms_created = created[0] if created else ""
+                                    
+                                    # Try to extract year from dc:date first, then dcterms:created
+                                    year = None
+                                    decade = ""
+                                    date_source = ""
+                                    
+                                    # Try dc:date first
+                                    if dc_date:
+                                        # Try to find a 4-digit year in the date string
+                                        year_match = re.search(r'\b(1[0-9]{3}|20[0-9]{2})\b', dc_date)
+                                        if year_match:
+                                            year = int(year_match.group(1))
+                                            date_source = "dc:date"
+                                    
+                                    # If no year from dc:date, try dcterms:created
+                                    if not year and dcterms_created:
+                                        year_match = re.search(r'\b(1[0-9]{3}|20[0-9]{2})\b', dcterms_created)
+                                        if year_match:
+                                            year = int(year_match.group(1))
+                                            date_source = "dcterms:created"
+                                    
+                                    # Calculate decade if we found a year
+                                    if year:
+                                        decade_start = (year // 10) * 10
+                                        decade = f"{decade_start}s"
+                                    else:
+                                        if not dc_date and not dcterms_created:
+                                            self.log(f"No dc:date or dcterms:created found for {mms_id}", logging.WARNING)
+                                        else:
+                                            self.log(f"Could not extract year from date fields for {mms_id} (dc:date='{dc_date}', dcterms:created='{dcterms_created}')", logging.WARNING)
+                                        no_date_count += 1
+                                    
+                                    # Write row to CSV
+                                    row = [
+                                        mms_id,
+                                        title,
+                                        dc_type,
+                                        dc_date,
+                                        dcterms_created,
+                                        year if year else "",
+                                        decade
+                                    ]
+                                    writer.writerow(row)
+                                    sound_count += 1
+                                else:
+                                    non_sound_count += 1
+                            else:
+                                self.log(f"Record not returned in batch: {mms_id}", logging.WARNING)
+                                failed_count += 1
+                            
+                            # Update progress
+                            if progress_callback:
+                                progress_callback(record_index, total)
+                            
+                            if record_index % 50 == 0:
+                                self.log(f"Analyzed {record_index}/{total} records - Found {sound_count} sound recordings")
+                                
+                        except Exception as e:
+                            self.log(f"Error analyzing {mms_id}: {str(e)}", logging.ERROR)
+                            failed_count += 1
+                
+                message = f"Sound records analysis complete: {sound_count} sound recordings found, {non_sound_count} non-sound, {no_date_count} missing/invalid dates, {failed_count} failed. File: {output_file}"
+                self.log(message)
+                self.log(f"API efficiency: {total_batches} batch calls vs {total} individual calls (saved {total - total_batches} calls)")
+                return True, message
+                
+        except Exception as e:
+            error_msg = f"Error creating sound records analysis CSV: {str(e)}"
+            self.log(error_msg, logging.ERROR)
+            return False, error_msg
+    
     def add_jpg_representations_from_folder(self, mms_ids: list, jpg_folder: str = "For-Import", progress_callback=None) -> tuple[bool, str]:
         """
         Function 12: Add JPG representations to objects from For-Import folder
@@ -4094,6 +4260,52 @@ def main(page: ft.Page):
         if success:
             add_log_message("Function 12 complete: TIFFs processed and JPGs created")
     
+    def on_function_13_click(e):
+        """Handle Function 13: Analyze Sound Records by Decade"""
+        if not editor.set_members or len(editor.set_members) == 0:
+            update_status("Please load a set first", True)
+            return
+        
+        # Generate timestamped filename
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f"sound_records_by_decade_{timestamp}.csv"
+        
+        add_log_message(f"Starting sound records decade analysis to {output_file}")
+        update_status(f"Analyzing {len(editor.set_members)} records for sound recordings...", False)
+        
+        # Show progress bar
+        set_progress_bar.visible = True
+        set_progress_bar.value = 0
+        set_progress_text.visible = True
+        set_progress_text.value = f"Processing: 0/{len(editor.set_members)} records"
+        page.update()
+        
+        def progress_update(current, total):
+            progress = current / total
+            set_progress_bar.value = progress
+            set_progress_text.value = f"Processing: {current}/{total} records ({progress*100:.1f}%)"
+            status_text.value = f"Analyzing sound records: {current}/{total} records ({progress*100:.1f}%)"
+            page.update()
+        
+        # Analyze sound records by decade
+        storage.record_function_usage("function_13_sound_by_decade")
+        success, message = editor.analyze_sound_records_by_decade(
+            editor.set_members,
+            output_file,
+            progress_callback=progress_update
+        )
+        
+        # Hide progress bar
+        set_progress_bar.visible = False
+        set_progress_text.visible = False
+        page.update()
+        
+        update_status(message, not success)
+        if success:
+            add_log_message(f"Sound records decade analysis complete: {output_file}")
+            add_log_message("💡 Tip: Sort by Decade column to group records for sub-collection distribution")
+    
     # Function definitions with metadata
     # Active functions - frequently used
     active_functions = [
@@ -4104,7 +4316,8 @@ def main(page: ft.Page):
         "function_9_validate_handles",
         "function_10_export_review",
         "function_11_identify_single_tiff",
-        "function_12_process_tiffs"
+        "function_12_process_tiffs",
+        "function_13_sound_by_decade"
     ]
     
     # Inactive functions - less frequently used
@@ -4187,6 +4400,12 @@ def main(page: ft.Page):
             "icon": "📸",
             "handler": on_function_12_click,
             "help_file": "FUNCTION_12_PROCESS_TIFFS.md"
+        },
+        "function_13_sound_by_decade": {
+            "label": "Analyze Sound Records by Decade",
+            "icon": "🎵",
+            "handler": on_function_13_click,
+            "help_file": "FUNCTION_13_SOUND_BY_DECADE.md"
         }
     }
     
