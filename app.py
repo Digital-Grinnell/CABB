@@ -3956,6 +3956,32 @@ class AlmaBibEditor:
                 # Give user time to log in via SSO + DUO
                 time.sleep(60)
                 
+                # Debug: Log current page info
+                current_url = driver.current_url
+                self.log(f"\nCurrent URL: {current_url}")
+                
+                # Save page source for inspection
+                page_source = driver.page_source
+                debug_file = Path.home() / "Downloads" / f"alma_page_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                with open(debug_file, 'w', encoding='utf-8') as f:
+                    f.write(page_source)
+                self.log(f"📄 Page HTML saved to: {debug_file}")
+                self.log("")
+                self.log("=" * 70)
+                self.log("⚠️  ELEMENT SELECTORS ARE PLACEHOLDERS - NEED UPDATING")
+                self.log("=" * 70)
+                self.log("To find the correct selectors:")
+                self.log("1. In the Firefox window, press F12 to open DevTools")
+                self.log("2. Click the Inspector/Select Element tool (arrow icon)")
+                self.log("3. Click on the search bar dropdown (search type)")
+                self.log("4. Note the 'id' or 'name' attribute in DevTools")
+                self.log("5. Update app.py with the correct selectors")
+                self.log("")
+                self.log(f"Or use the helper script:")
+                self.log(f"  python inspect_alma_page.py {debug_file}")
+                self.log("=" * 70)
+                self.log("")
+                
                 self.log("Starting automated uploads...")
             except Exception as e:
                 return False, f"Could not start Firefox: {str(e)}. Please ensure GeckoDriver is installed (brew install geckodriver).", 0, 0
@@ -4049,15 +4075,28 @@ class AlmaBibEditor:
                         
                         # Step 2: Enter representation ID and search
                         self.log(f"  Step 2: Searching for representation {rep_id}...")
-                        search_input = WebDriverWait(driver, 10).until(
-                            EC.presence_of_element_located((By.ID, "searchInput"))  # TODO: Adjust this selector
-                        )
-                        search_input.clear()
-                        search_input.send_keys(rep_id)
+                        try:
+                            search_input = WebDriverWait(driver, 10).until(
+                                EC.presence_of_element_located((By.ID, "searchInput"))  # TODO: Adjust this selector
+                            )
+                            search_input.clear()
+                            search_input.send_keys(rep_id)
+                            self.log("    ✓ Entered representation ID in search field")
+                        except TimeoutException:
+                            self.log("    ✗ Could not find search input field with id='searchInput'", logging.ERROR)
+                            self.log("    → You need to inspect the page and update the selector in app.py", logging.ERROR)
+                            self.log("    → Check the saved HTML file in ~/Downloads/alma_page_debug_*.html", logging.ERROR)
+                            raise
                         
                         # Click search button (magnifying glass)
-                        search_button = driver.find_element(By.ID, "searchButton")  # TODO: Adjust this selector
-                        search_button.click()
+                        try:
+                            search_button = driver.find_element(By.ID, "searchButton")  # TODO: Adjust this selector
+                            search_button.click()
+                            self.log("    ✓ Clicked search button")
+                        except NoSuchElementException:
+                            self.log("    ✗ Could not find search button with id='searchButton'", logging.ERROR)
+                            self.log("    → You need to inspect the page and update the selector in app.py", logging.ERROR)
+                            raise
                         self.log("    ✓ Search initiated")
                         
                         # Wait for results
