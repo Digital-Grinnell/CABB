@@ -3945,14 +3945,16 @@ class AlmaBibEditor:
                 self.log("⏸️  PLEASE LOG INTO ALMA NOW (via Grinnell SSO)")
                 self.log("=" * 70)
                 self.log("1. Complete the SSO login process in the Firefox window")
-                self.log("2. Wait for the Alma home page to fully load")
-                self.log("3. Automation will begin automatically in 45 seconds...")
+                self.log("2. Complete DUO authentication if prompted")
+                self.log("3. Wait for the Alma home page to fully load")
+                self.log("4. Automation will begin automatically in 60 seconds...")
                 self.log("")
-                self.log("(If you need more time, use the Kill Switch and restart Function 14b)")
+                self.log("(If you need more time, the system will pause for 30 more seconds)")
+                self.log("(Or use the Kill Switch and restart Function 14b)")
                 self.log("")
                 
-                # Give user time to log in via SSO
-                time.sleep(45)
+                # Give user time to log in via SSO + DUO
+                time.sleep(60)
                 
                 self.log("Starting automated uploads...")
             except Exception as e:
@@ -3998,18 +4000,40 @@ class AlmaBibEditor:
                         # 4. Update the selectors below accordingly
                         
                         # Wait for page to be ready
-                        WebDriverWait(driver, 10).until(
-                            EC.presence_of_element_located((By.TAG_NAME, "body"))
-                        )
+                        try:
+                            WebDriverWait(driver, 10).until(
+                                EC.presence_of_element_located((By.TAG_NAME, "body"))
+                            )
+                        except TimeoutException:
+                            # If page not ready, user might still be logging in
+                            self.log("    ⏸️  Page not ready yet - waiting 30 more seconds for login...")
+                            time.sleep(30)
+                            # Try again
+                            WebDriverWait(driver, 10).until(
+                                EC.presence_of_element_located((By.TAG_NAME, "body"))
+                            )
                         
                         # Find search type dropdown and set to "Digital titles"
                         # This will need to be adjusted based on actual DOM structure
                         try:
-                            search_type_select = Select(WebDriverWait(driver, 5).until(
+                            search_type_select = Select(WebDriverWait(driver, 10).until(
                                 EC.presence_of_element_located((By.ID, "searchType"))  # TODO: Adjust this selector
                             ))
                             search_type_select.select_by_visible_text("Digital titles")
                             self.log("    ✓ Set search type to 'Digital titles'")
+                        except TimeoutException:
+                            # First UI element not found - user might still be completing DUO
+                            self.log("    ⏸️  Search bar not found - waiting 30 more seconds for login completion...")
+                            time.sleep(30)
+                            # Retry finding search type
+                            try:
+                                search_type_select = Select(WebDriverWait(driver, 10).until(
+                                    EC.presence_of_element_located((By.ID, "searchType"))  # TODO: Adjust this selector
+                                ))
+                                search_type_select.select_by_visible_text("Digital titles")
+                                self.log("    ✓ Set search type to 'Digital titles'")
+                            except:
+                                self.log("    ⚠️ Could not find search type dropdown - attempting to continue", logging.WARNING)
                         except:
                             self.log("    ⚠️ Could not find search type dropdown - attempting to continue", logging.WARNING)
                         
@@ -5656,8 +5680,9 @@ def main(page: ft.Page):
                         "How it works:\n\n"
                         "1. Click Proceed below\n\n"
                         "2. Selenium will launch a NEW Firefox window\n\n"
-                        "3. You'll have 45 seconds to log into Alma via Grinnell SSO\n\n"
-                        "4. Automation begins automatically\n\n"
+                        "3. You'll have 60 seconds to log into Alma via Grinnell SSO + DUO\n\n"
+                        "4. If you need more time, automation will pause 30 additional seconds\n\n"
+                        "5. Automation begins automatically\n\n"
                         "Do not interact with Firefox during uploads.\n\n"
                         "Note: Selenium cannot use your existing Firefox session—\n"
                         "it must launch its own window.",

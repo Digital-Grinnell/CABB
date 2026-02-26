@@ -150,7 +150,8 @@ Function 14b uses Selenium browser automation to upload thumbnail files via the 
 2. **How it works**:
    - Function 14b launches a NEW Firefox window automatically
    - Browser navigates to Alma SSO login page
-   - You get 45 seconds to log into Alma via Grinnell SSO
+   - You get 60 seconds to log into Alma via Grinnell SSO + DUO
+   - If you need more time, automation pauses 30 additional seconds
    - Automation begins after login
    - Do not interact with Firefox during uploads
 

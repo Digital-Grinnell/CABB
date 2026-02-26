@@ -38,11 +38,12 @@
 2. Enter the CSV file path in the "Set ID" field
 3. Click Proceed in the warning dialog
 4. **Selenium launches a NEW Firefox window**
-5. **You have 45 seconds to log into Alma via Grinnell SSO**
-6. Automation begins automatically
-7. Do not interact with Firefox during uploads
+5. **You have 60 seconds to log into Alma via Grinnell SSO + DUO**
+6. **If you need more time, automation pauses 30 additional seconds**
+7. Automation begins automatically
+8. Do not interact with Firefox during uploads
 
-**Note**: Selenium **cannot** attach to your existing Firefox session—it must launch its own window. This is a Selenium/GeckoDriver limitation. The browser navigates to the SSO login page automatically (`https://grinnell.alma.exlibrisgroup.com/SAML`).
+**Note**: Selenium **cannot** attach to your existing Firefox session—it must launch its own window. This is a Selenium/GeckoDriver limitation. The browser navigates to the SSO login page automatically (`https://grinnell.alma.exlibrisgroup.com/SAML`). The automation intelligently waits if you're still completing DUO authentication.
 
 ## How It Works
 
