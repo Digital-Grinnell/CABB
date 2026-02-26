@@ -3914,49 +3914,49 @@ class AlmaBibEditor:
             
             self.log(f"Loaded {len(records)} record(s) from CSV")
             
-            # Connect to existing Firefox session
-            self.log("Connecting to existing Firefox browser...")
-            self.log("⚠️ IMPORTANT: Firefox must be started with remote debugging enabled:")
-            self.log("   Close Firefox completely, then start it with:")
-            self.log("   ./start_firefox_for_selenium.sh")
+            # Launch Firefox via GeckoDriver for automation
+            self.log("Starting Firefox browser for automation...")
+            self.log("Note: Selenium will launch a NEW Firefox window (cannot attach to existing sessions)")
             self.log("")
-            self.log("   Or manually: open -a Firefox --args --marionette")
-            self.log("")
-            self.log("   Then log into Alma before running this function.")
             
-            # Try to connect to existing Firefox instance via Marionette
+            # Configure Firefox options
             try:
-                # Connect to Firefox on default Marionette port (2828)
-                # This assumes Firefox was started with --marionette flag
-                self.log("Attempting to connect to Firefox on port 2828...")
+                from selenium.webdriver.firefox.service import Service
                 
-                # Use Remote WebDriver to connect to existing Firefox session
-                # The --marionette flag makes Firefox listen on localhost:2828
-                driver = webdriver.Remote(
-                    command_executor='http://127.0.0.1:2828',
-                    options=webdriver.FirefoxOptions()
-                )
-                self.log("✓ Successfully connected to existing Firefox session")
+                options = webdriver.FirefoxOptions()
+                # Keep browser open after automation for review
+                options.set_preference("browser.sessionstore.resume_from_crash", False)
                 
-                # Check if already on Alma page
-                current_url = driver.current_url
-                self.log(f"Current URL: {current_url}")
+                # Create GeckoDriver service
+                service = Service()
                 
-                # Navigate to Alma if not already there
-                target_url = "https://grinnell.alma.exlibrisgroup.com/ng;u=%2Fmng%2Faction%2Fhome.do%3FngHome%3Dtrue"
-                if "alma.exlibrisgroup.com" not in current_url:
-                    self.log("Navigating to Alma...")
-                    driver.get(target_url)
-                    self.log("⏸️  Please log into Alma in the Firefox window if needed...")
-                    self.log("   The automation will begin in 10 seconds...")
-                    time.sleep(10)
-                else:
-                    self.log("Already on Alma - proceeding with automation")
-                    time.sleep(2)  # Brief pause before starting
+                # Launch Firefox
+                self.log("Launching Firefox via GeckoDriver...")
+                driver = webdriver.Firefox(service=service, options=options)
+                self.log("✓ Firefox launched successfully")
+                
+                # Navigate to Alma SAML/SSO login page
+                target_url = "https://grinnell.alma.exlibrisgroup.com/SAML"
+                self.log("Navigating to Alma SSO login page...")
+                driver.get(target_url)
+                
+                self.log("")
+                self.log("=" * 70)
+                self.log("⏸️  PLEASE LOG INTO ALMA NOW (via Grinnell SSO)")
+                self.log("=" * 70)
+                self.log("1. Complete the SSO login process in the Firefox window")
+                self.log("2. Wait for the Alma home page to fully load")
+                self.log("3. Automation will begin automatically in 45 seconds...")
+                self.log("")
+                self.log("(If you need more time, use the Kill Switch and restart Function 14b)")
+                self.log("")
+                
+                # Give user time to log in via SSO
+                time.sleep(45)
                 
                 self.log("Starting automated uploads...")
             except Exception as e:
-                return False, f"Could not connect to Firefox: {str(e)}. Please ensure Firefox is open with --marionette flag and GeckoDriver is installed.", 0, 0
+                return False, f"Could not start Firefox: {str(e)}. Please ensure GeckoDriver is installed (brew install geckodriver).", 0, 0
             
             success_count = 0
             failed_count = 0
@@ -5653,14 +5653,14 @@ def main(page: ft.Page):
                     ),
                     ft.Container(height=10),
                     ft.Text(
-                        "IMPORTANT - Do this NOW before clicking Proceed:\n\n"
-                        "1. Open a terminal and run:\n"
-                        "   ./start_firefox_for_selenium.sh\n\n"
-                        "   Or manually: open -a Firefox --args --marionette\n\n"
-                        "2. In Firefox, log into Alma\n\n"
-                        "3. Then click Proceed below\n\n"
-                        "Selenium will connect to your Firefox session.\n"
-                        "Do not interact with Firefox during uploads.",
+                        "How it works:\n\n"
+                        "1. Click Proceed below\n\n"
+                        "2. Selenium will launch a NEW Firefox window\n\n"
+                        "3. You'll have 45 seconds to log into Alma via Grinnell SSO\n\n"
+                        "4. Automation begins automatically\n\n"
+                        "Do not interact with Firefox during uploads.\n\n"
+                        "Note: Selenium cannot use your existing Firefox session—\n"
+                        "it must launch its own window.",
                         size=13
                     ),
                     ft.Container(height=10),

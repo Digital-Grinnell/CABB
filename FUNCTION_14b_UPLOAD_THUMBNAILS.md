@@ -32,30 +32,17 @@
 
 ### Workflow
 
-**Option 1: Start Firefox Before Running Function 14b (Recommended)**
-
-1. Launch CABB normally
-2. **Before clicking "14b - Upload Thumbnails"**, open a terminal and run:
-   ```bash
-   ./start_firefox_for_selenium.sh
-   ```
-   Or manually:
-   ```bash
-   open -a Firefox --args --marionette
-   ```
-3. **Log into Alma** in the Firefox window
-4. Back in CABB, click "14b - Upload Thumbnails"
-5. Enter the CSV file path in the "Set ID" field
-6. Click Proceed
-
-**Option 2: Start Firefox After Clicking Button**
+**Simple Process:**
 
 1. Click "14b - Upload Thumbnails" in CABB
-2. When the confirmation dialog appears, open a terminal and run the script
-3. Log into Alma
-4. Click "Proceed" in CABB
+2. Enter the CSV file path in the "Set ID" field
+3. Click Proceed in the warning dialog
+4. **Selenium launches a NEW Firefox window**
+5. **You have 45 seconds to log into Alma via Grinnell SSO**
+6. Automation begins automatically
+7. Do not interact with Firefox during uploads
 
-**Important**: Firefox MUST be started with the `--marionette` flag for Selenium to connect to your existing session. The helper script `start_firefox_for_selenium.sh` handles this automatically. This allows Selenium to control your already-authenticated Firefox window instead of launching a new one.
+**Note**: Selenium **cannot** attach to your existing Firefox session—it must launch its own window. This is a Selenium/GeckoDriver limitation. The browser navigates to the SSO login page automatically (`https://grinnell.alma.exlibrisgroup.com/SAML`).
 
 ## How It Works
 
@@ -114,7 +101,7 @@ For each record in the CSV file:
 3. **Log into Alma** in the Firefox window
 4. **Navigate to the Alma home page**:
    ```
-   https://grinnell.alma.exlibrisgroup.com/ng;u=%2Fmng%2Faction%2Fhome.do%3FngHome%3Dtrue
+   https://grinnell.alma.exlibrisgroup.com/SAML
    ```
 5. **Leave Firefox open** - Selenium will connect to this window
 
@@ -232,22 +219,21 @@ If uploads fail:
 
 ## Troubleshooting
 
-### "CABB opens a NEW Firefox window instead of using my existing one"
-- **Cause**: This was a bug in earlier versions - now fixed!
-- **How it works now**: CABB connects to your existing Firefox on port 2828 (Marionette)
-- **Requirements**: 
-  1. Firefox MUST be started with `--marionette` flag
-  2. Use the helper script: `./start_firefox_for_selenium.sh`
-  3. Or manually: `open -a Firefox --args --marionette`
-- **Why this matters**: The `--marionette` flag makes Firefox listen on port 2828, allowing Selenium to connect to your authenticated session
-
-### "Could not connect to Firefox"
-- **Cause**: Firefox not started with `--marionette` flag
+### "Could not start Firefox"
+- **Cause**: GeckoDriver not installed or not in PATH
 - **Solution**: 
-  1. Close Firefox completely
-  2. Restart with: `open -a Firefox --args --marionette`
-  3. Log into Alma
-  4. Try Function 14b again
+  ```bash
+  brew install geckodriver
+  ```
+- **Verify**:
+  ```bash
+  geckodriver --version
+  ```
+
+### "Connection aborted" or "BadStatusLine" error
+- **Cause**: This was a previous approach that tried to connect to existing Firefox (doesn't work)
+- **Solution**: Updated code now launches a NEW Firefox window automatically
+- **What changed**: Selenium can't attach to existing sessions, so we simplified the workflow
 
 ### "Connection refused" or "Unable to connect"
 - **Cause**: Firefox not running or marionette not enabled

@@ -18,7 +18,7 @@ echo "🦊 Starting Firefox with Marionette enabled for Selenium..."
 echo ""
 echo "After Firefox opens:"
 echo "  1. Log into Alma"
-echo "  2. Navigate to: https://grinnell.alma.exlibrisgroup.com/ng;u=%2Fmng%2Faction%2Fhome.do%3FngHome%3Dtrue"
+echo "  2. Navigate to: https://grinnell.alma.exlibrisgroup.com/SAML"
 echo "  3. Run Function 14b in CABB"
 echo ""
 

@@ -143,28 +143,18 @@ Function 14b uses Selenium browser automation to upload thumbnail files via the 
    # macOS (via Homebrew)
    brew install geckodriver
    
-   # Or download from: https://github.com/mozilla/geckodriver/releases
+   # Verify installation
+   geckodriver --version
    ```
 
-2. **Start Firefox with Marionette enabled**:
-   
-   Use the provided helper script:
-   ```bash
-   ./start_firefox_for_selenium.sh
-   ```
-   
-   Or start Firefox manually:
-   ```bash
-   # macOS
-   open -a Firefox --args --marionette
-   
-   # Linux
-   firefox --marionette &
-   ```
+2. **How it works**:
+   - Function 14b launches a NEW Firefox window automatically
+   - Browser navigates to Alma SSO login page
+   - You get 45 seconds to log into Alma via Grinnell SSO
+   - Automation begins after login
+   - Do not interact with Firefox during uploads
 
-3. **Log into Alma** in the Firefox window before running Function 14b
-
-4. **Keep Firefox open** - Selenium will connect to this existing session
+**Note**: Selenium cannot attach to an existing Firefox session—it must launch its own window. This is a Selenium/GeckoDriver design limitation.
 
 See [FUNCTION_14b_UPLOAD_THUMBNAILS.md](FUNCTION_14b_UPLOAD_THUMBNAILS.md) for detailed instructions.
 
