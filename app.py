@@ -3865,7 +3865,7 @@ class AlmaBibEditor:
                     pass
             return False, f"Error preparing thumbnail: {str(e)}"
     
-    def upload_thumbnails_selenium(self, csv_file_path: str, progress_callback=None) -> tuple[bool, str]:
+    def upload_thumbnails_selenium(self, csv_file_path: str, progress_callback=None) -> tuple[bool, str, int, int]:
         """
         Function 14b: Upload thumbnail files to Alma representations using Selenium
         
@@ -3882,7 +3882,7 @@ class AlmaBibEditor:
             progress_callback: Optional callback function(current, total) for progress updates
             
         Returns:
-            tuple: (success: bool, message: str)
+            tuple: (success: bool, message: str, success_count: int, failed_count: int)
         """
         import csv
         from pathlib import Path
@@ -3901,7 +3901,7 @@ class AlmaBibEditor:
             # Read CSV file
             csv_path = Path(csv_file_path)
             if not csv_path.exists():
-                return False, f"CSV file not found: {csv_file_path}"
+                return False, f"CSV file not found: {csv_file_path}", 0, 0
             
             records = []
             with open(csv_path, 'r', encoding='utf-8') as f:
@@ -3910,7 +3910,7 @@ class AlmaBibEditor:
                     records.append(row)
             
             if not records:
-                return False, "No records found in CSV file"
+                return False, "No records found in CSV file", 0, 0
             
             self.log(f"Loaded {len(records)} record(s) from CSV")
             
@@ -3918,27 +3918,25 @@ class AlmaBibEditor:
             self.log("Connecting to existing Firefox browser...")
             self.log("⚠️ IMPORTANT: Firefox must be started with remote debugging enabled:")
             self.log("   Close Firefox completely, then start it with:")
-            self.log("   /Applications/Firefox.app/Contents/MacOS/firefox --marionette")
+            self.log("   ./start_firefox_for_selenium.sh")
             self.log("")
-            self.log("   Or on macOS, use this terminal command:")
-            self.log("   open -a Firefox --args --marionette")
+            self.log("   Or manually: open -a Firefox --args --marionette")
             self.log("")
             self.log("   Then log into Alma before running this function.")
             
-            # Configure Firefox options to connect to existing session
-            options = webdriver.FirefoxOptions()
-            
-            # Try to connect to existing Firefox instance
+            # Try to connect to existing Firefox instance via Marionette
             try:
                 # Connect to Firefox on default Marionette port (2828)
                 # This assumes Firefox was started with --marionette flag
-                from selenium.webdriver.firefox.service import Service
+                self.log("Attempting to connect to Firefox on port 2828...")
                 
-                # Use default service (connects to existing marionette session)
-                service = Service()
-                
-                driver = webdriver.Firefox(options=options, service=service)
-                self.log("✓ Connected to existing Firefox session")
+                # Use Remote WebDriver to connect to existing Firefox session
+                # The --marionette flag makes Firefox listen on localhost:2828
+                driver = webdriver.Remote(
+                    command_executor='http://127.0.0.1:2828',
+                    options=webdriver.FirefoxOptions()
+                )
+                self.log("✓ Successfully connected to existing Firefox session")
                 
                 # Check if already on Alma page
                 current_url = driver.current_url
@@ -3958,7 +3956,7 @@ class AlmaBibEditor:
                 
                 self.log("Starting automated uploads...")
             except Exception as e:
-                return False, f"Could not connect to Firefox: {str(e)}. Please ensure Firefox is open and GeckoDriver is installed."
+                return False, f"Could not connect to Firefox: {str(e)}. Please ensure Firefox is open with --marionette flag and GeckoDriver is installed.", 0, 0
             
             success_count = 0
             failed_count = 0
@@ -4111,14 +4109,14 @@ class AlmaBibEditor:
             if failed_count > 0:
                 self.log(f"⚠️ {failed_count} upload(s) failed - check logs for details", logging.WARNING)
             
-            return True, message
+            return True, message, success_count, failed_count
             
         except Exception as e:
             error_msg = f"Error in selenium upload: {str(e)}"
             self.log(error_msg, logging.ERROR)
             import traceback
             self.log(traceback.format_exc(), logging.ERROR)
-            return False, error_msg
+            return False, error_msg, 0, 0
     
     def process_tiffs_for_import(self, mms_ids: list, tiff_csv: str = "all_single_tiffs_with_local_paths.csv",
                                   alma_export_csv: str = None, for_import_dir: str = "For-Import",
@@ -5527,7 +5525,7 @@ def main(page: ft.Page):
             
             # Upload via Selenium
             storage.record_function_usage("function_14b_upload_thumbnails")
-            success, message = editor.upload_thumbnails_selenium(
+            success, message, success_count, failed_count = editor.upload_thumbnails_selenium(
                 csv_path,
                 progress_callback=progress_update
             )
@@ -5543,6 +5541,90 @@ def main(page: ft.Page):
                 add_log_message("💡 Firefox has been left open for your review")
             else:
                 add_log_message(f"Upload failed or incomplete - check logs for details")
+            
+            # Show completion dialog
+            from pathlib import Path as PathLib
+            csv_path_obj = PathLib(csv_path)
+            temp_dir = csv_path_obj.parent
+            
+            def close_completion_dialog(e):
+                completion_dialog.open = False
+                page.update()
+            
+            def delete_temp_directory(e):
+                """Delete the temporary directory after user confirmation"""
+                import shutil
+                try:
+                    shutil.rmtree(temp_dir)
+                    add_log_message(f"✓ Deleted temporary directory: {temp_dir}")
+                    update_status(f"Temporary directory deleted: {temp_dir}", False)
+                except Exception as delete_error:
+                    add_log_message(f"✗ Error deleting directory: {str(delete_error)}", logging.ERROR)
+                    update_status(f"Error deleting directory: {str(delete_error)}", True)
+                finally:
+                    completion_dialog.open = False
+                    page.update()
+            
+            # Build completion dialog content
+            completion_content = [
+                ft.Text(
+                    "Upload Process Complete",
+                    size=16,
+                    weight=ft.FontWeight.BOLD
+                ),
+                ft.Container(height=10),
+                ft.Text(f"✓ Successfully uploaded: {success_count}", color=ft.Colors.GREEN_700),
+                ft.Text(f"✗ Failed uploads: {failed_count}", 
+                        color=ft.Colors.RED_700 if failed_count > 0 else ft.Colors.GREY_600),
+                ft.Container(height=10),
+                ft.Text(f"Temporary directory:", weight=ft.FontWeight.BOLD),
+                ft.Text(str(temp_dir), size=12, italic=True),
+            ]
+            
+            # Add delete option only if no errors
+            completion_actions = [
+                ft.TextButton("Close", on_click=close_completion_dialog)
+            ]
+            
+            if failed_count == 0 and success_count > 0:
+                completion_content.append(ft.Container(height=10))
+                completion_content.append(
+                    ft.Text(
+                        "Since all uploads were successful, would you like to delete the temporary directory?",
+                        size=13,
+                        italic=True
+                    )
+                )
+                completion_actions.insert(0, ft.TextButton(
+                    "Delete Temp Directory",
+                    on_click=delete_temp_directory,
+                    style=ft.ButtonStyle(
+                        color=ft.Colors.WHITE,
+                        bgcolor=ft.Colors.ORANGE_700
+                    )
+                ))
+            else:
+                completion_content.append(ft.Container(height=10))
+                completion_content.append(
+                    ft.Text(
+                        "⚠️ Some uploads failed. The temporary directory has been preserved for review.",
+                        size=12,
+                        color=ft.Colors.ORANGE_700
+                    )
+                )
+            
+            completion_dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("🎉 Upload Complete", weight=ft.FontWeight.BOLD),
+                content=ft.Container(
+                    content=ft.Column(completion_content),
+                    padding=20
+                ),
+                actions=completion_actions,
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+            
+            page.open(completion_dialog)
         
         def cancel_upload(e):
             warning_dialog.open = False

@@ -152,6 +152,22 @@ For each record in the CSV file:
 - Check the log for any failures
 - Manually verify uploads in Alma if needed
 
+### Step 5: Completion Dialog
+After all uploads complete, a dialog will appear showing:
+- **Number of successful uploads** (✓)
+- **Number of failed uploads** (✗)
+- **Temporary directory location**
+
+**If all uploads were successful (no errors):**
+- You'll see a "Delete Temp Directory" button
+- Click it to automatically clean up the temporary files
+- This removes the `~/Downloads/CABB_thumbnail_prep_*` directory
+
+**If some uploads failed:**
+- The temporary directory is **preserved** for review
+- You can manually check the files and retry failed uploads
+- Delete the directory manually when you're done
+
 ## Output
 
 ### Log Messages
@@ -215,6 +231,15 @@ If uploads fail:
 - Consider running in smaller batches (50-100 records)
 
 ## Troubleshooting
+
+### "CABB opens a NEW Firefox window instead of using my existing one"
+- **Cause**: This was a bug in earlier versions - now fixed!
+- **How it works now**: CABB connects to your existing Firefox on port 2828 (Marionette)
+- **Requirements**: 
+  1. Firefox MUST be started with `--marionette` flag
+  2. Use the helper script: `./start_firefox_for_selenium.sh`
+  3. Or manually: `open -a Firefox --args --marionette`
+- **Why this matters**: The `--marionette` flag makes Firefox listen on port 2828, allowing Selenium to connect to your authenticated session
 
 ### "Could not connect to Firefox"
 - **Cause**: Firefox not started with `--marionette` flag
