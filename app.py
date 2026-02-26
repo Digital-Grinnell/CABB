@@ -2789,6 +2789,209 @@ class AlmaBibEditor:
             self.log(error_msg, logging.ERROR)
             return False, error_msg
     
+    def upload_clientthumb_thumbnails(self, mms_ids: list, thumbnail_folder: str = None, progress_callback=None) -> tuple[bool, str]:
+        """
+        Function 14a: Prepare .clientThumb thumbnails for Alma (Create representations & process files)
+        
+        For each MMS ID:
+        1. Fetch the bib record from Alma
+        2. Extract all dc:identifier values
+        3. Search for thumbnail files matching pattern: *grinnell_<ID>*.clientThumb* or *grinnell_<ID>*.jpg
+           (also supports dg_<ID> patterns)
+        4. Create thumbnail representation in Alma
+        5. Process file (PNG->JPEG conversion, optimization)
+        6. Save processed file to timestamped output directory
+        7. Create CSV mapping MMS IDs to representation IDs
+        
+        Args:
+            mms_ids: List of MMS IDs to process
+            thumbnail_folder: Folder containing .clientThumb files (default: from THUMBNAIL_FOLDER_PATH env var)
+            progress_callback: Optional callback function(current, total) for progress updates
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        from pathlib import Path
+        import re
+        from datetime import datetime
+        import csv
+        import shutil
+        
+        # Get thumbnail folder from environment variable if not provided
+        if thumbnail_folder is None:
+            thumbnail_folder = os.getenv('THUMBNAIL_FOLDER_PATH', '/Volumes/DGIngest/Migration-to-Alma/exports/alumni-oral-histories/OBJ')
+        
+        # Create timestamped output directory in Downloads folder (absolute path)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        downloads_dir = Path.home() / "Downloads"
+        output_dir = downloads_dir / f"CABB_thumbnail_prep_{timestamp}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.log(f"Starting Function 14a: Prepare .clientThumb Thumbnails")
+        self.log(f"Processing {len(mms_ids)} MMS ID(s)")
+        self.log(f"Thumbnail folder: {thumbnail_folder}")
+        self.log(f"Output directory: {output_dir.absolute()}")
+        
+        if not self.api_key:
+            return False, "API Key not configured"
+        
+        # Verify folder exists
+        folder_path = Path(thumbnail_folder)
+        if not folder_path.exists() or not folder_path.is_dir():
+            return False, f"Thumbnail folder not found: {thumbnail_folder}"
+        
+        try:
+            # Initialize CSV data collection
+            csv_data = []
+            
+            # Process each MMS ID
+            success_count = 0
+            failed_count = 0
+            no_identifier_count = 0
+            no_thumbnail_count = 0
+            total = len(mms_ids)
+            
+            for idx, mms_id in enumerate(mms_ids, 1):
+                if self.kill_switch:
+                    self.log("Operation cancelled by user", logging.WARNING)
+                    break
+                
+                if progress_callback:
+                    progress_callback(idx, total)
+                
+                self.log(f"\nProcessing {idx}/{total}: MMS {mms_id}")
+                
+                # Step 1: Fetch bib record to get dc:identifier
+                success, message = self.fetch_bib_record(mms_id)
+                if not success:
+                    self.log(f"  ✗ Failed to fetch record: {message}", logging.ERROR)
+                    failed_count += 1
+                    continue
+                
+                # Step 2: Extract all dc:identifier values
+                identifiers = self._extract_dc_field("identifier", "dc")
+                
+                if not identifiers:
+                    self.log(f"  ⊘ No dc:identifier found", logging.WARNING)
+                    no_identifier_count += 1
+                    continue
+                
+                # Step 3: Extract ID numbers from identifiers (grinnell:XXXXX or dg_XXXXX)
+                # and search for matching thumbnail files
+                id_patterns = []
+                for identifier in identifiers:
+                    # Pattern 1: grinnell:12205 → grinnell_12205
+                    if identifier.startswith("grinnell:"):
+                        id_num = identifier.replace("grinnell:", "")
+                        id_patterns.append(("grinnell_" + id_num, identifier))
+                    # Pattern 2: dg_12205 → dg_12205
+                    elif identifier.startswith("dg_"):
+                        id_patterns.append((identifier, identifier))
+                
+                if not id_patterns:
+                    self.log(f"  ⊘ No grinnell: or dg_ identifier found", logging.WARNING)
+                    self.log(f"  Available identifiers: {', '.join(identifiers)}", logging.DEBUG)
+                    no_identifier_count += 1
+                    continue
+                
+                # Step 4: Search for thumbnail file using glob patterns
+                thumbnail_file = None
+                matched_id = None
+                
+                self.log(f"  Searching for thumbnails matching: {', '.join([p[0] for p in id_patterns])}")
+                
+                for id_pattern, original_id in id_patterns:
+                    # Try various glob patterns:
+                    # 1. *grinnell_12205*.clientThumb (files ending in .clientThumb, no extension)
+                    # 2. *grinnell_12205*.clientThumb.jpg (files with .clientThumb.jpg extension)
+                    # 3. *grinnell_12205*.jpg (files ending in .jpg that contain the ID)
+                    
+                    search_patterns = [
+                        f"*{id_pattern}*.clientThumb",
+                        f"*{id_pattern}*.clientThumb.jpg",
+                        f"*{id_pattern}*.jpg"
+                    ]
+                    
+                    for pattern in search_patterns:
+                        matches = list(folder_path.glob(pattern))
+                        if matches:
+                            # Take the first match
+                            thumbnail_file = matches[0]
+                            matched_id = original_id
+                            self.log(f"  Pattern '{pattern}' matched: {thumbnail_file.name}")
+                            break
+                    
+                    if thumbnail_file:
+                        break
+                
+                if not thumbnail_file:
+                    self.log(f"  ⊘ No thumbnail file found - skipping (this is normal for some records)", logging.INFO)
+                    self.log(f"    Searched patterns: {', '.join([f'*{p[0]}*' for p in id_patterns])}", logging.DEBUG)
+                    no_thumbnail_count += 1
+                    continue
+                
+                file_size = thumbnail_file.stat().st_size
+                self.log(f"  ✓ Found thumbnail: {thumbnail_file.name} ({file_size / 1024:.2f} KB)")
+                
+                # Step 5: Create representation and prepare thumbnail file
+                # Pass the id_pattern to create a clean filename
+                prep_success, prep_result = self._prepare_thumbnail_representation(
+                    mms_id, 
+                    str(thumbnail_file), 
+                    thumbnail_file.name,
+                    id_pattern,  # Pass the clean identifier for filename
+                    output_dir  # Output directory for processed files
+                )
+                
+                if prep_success:
+                    # prep_result is a dict with rep_id, processed_file, message
+                    rep_id = prep_result['rep_id']
+                    processed_file = prep_result['processed_file']
+                    
+                    self.log(f"  ✓ {prep_result['message']}")
+                    self.log(f"    Rep ID: {rep_id}")
+                    self.log(f"    Processed file: {processed_file}")
+                    
+                    # Add to CSV data with full paths
+                    csv_data.append({
+                        'mms_id': mms_id,
+                        'rep_id': rep_id,
+                        'filename': str(output_dir / processed_file),  # Full path to processed file
+                        'original_file': str(thumbnail_file)  # Full path to original file
+                    })
+                    
+                    success_count += 1
+                else:
+                    self.log(f"  ✗ {prep_result}", logging.ERROR)
+                    failed_count += 1
+            
+            # Write CSV file with results
+            if csv_data:
+                csv_file = output_dir / f"thumbnail_representations_{timestamp}.csv"
+                with open(csv_file, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.DictWriter(f, fieldnames=['mms_id', 'rep_id', 'filename', 'original_file'])
+                    writer.writeheader()
+                    writer.writerows(csv_data)
+                
+                self.log(f"\n✓ Created CSV file: {csv_file}")
+                self.log(f"  Contains {len(csv_data)} entries")
+            
+            # Final summary
+            message = f"Thumbnail preparation complete: {success_count} prepared, {failed_count} failed, "
+            message += f"{no_identifier_count} no identifier, {no_thumbnail_count} no thumbnail (normal)"
+            message += f"\nOutput directory: {output_dir.absolute()}"
+            self.log(message)
+            if no_thumbnail_count > 0:
+                self.log(f"Note: {no_thumbnail_count} record(s) had no matching thumbnail files - this is expected for some records", logging.INFO)
+            return True, message
+            
+        except Exception as e:
+            error_msg = f"Error preparing thumbnails: {str(e)}"
+            self.log(error_msg, logging.ERROR)
+            import traceback
+            self.log(traceback.format_exc(), logging.DEBUG)
+            return False, error_msg
+    
     def add_jpg_representations_from_folder(self, mms_ids: list, jpg_folder: str = "For-Import", progress_callback=None) -> tuple[bool, str]:
         """
         Function 12: Add JPG representations to objects from For-Import folder
@@ -3058,7 +3261,866 @@ class AlmaBibEditor:
             self.log(traceback.format_exc(), logging.ERROR)
             return False, f"Error uploading JPG: {str(e)}"
     
-    def process_tiffs_for_import(self, mms_ids: list, tiff_csv: str = "all_single_tiffs_with_local_paths.csv", 
+    def _upload_thumbnail_representation(self, mms_id: str, thumbnail_path: str, filename: str, identifier: str = None) -> tuple[bool, str]:
+        """
+        Upload a thumbnail image file as a new representation for a bib record.
+        
+        This creates a representation with usage_type AUXILIARY and uploads the clientThumb image file.
+        
+        Args:
+            mms_id: The MMS ID of the bibliographic record
+            thumbnail_path: Full path to the thumbnail file
+            filename: Original filename (for logging only)
+            identifier: Clean identifier like 'grinnell_12205' or 'dg_12205' (for creating clean upload filename)
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        temp_file_path = None  # Initialize temp file tracking
+        
+        # Create a clean upload filename from identifier
+        # Example: grinnell_12205 -> grinnell_12205_thumbnail.jpg
+        if identifier:
+            clean_upload_name = f"{identifier}_thumbnail.jpg"
+        else:
+            # Fallback to sanitized version of original filename
+            clean_upload_name = filename.replace('.mp3', '').replace('.clientThumb', '_thumbnail')
+            if not clean_upload_name.endswith('.jpg'):
+                clean_upload_name += '.jpg'
+        
+        try:
+            self.log(f"Starting thumbnail upload for MMS {mms_id}")
+            self.log(f"  File: {filename}")
+            self.log(f"  Path: {thumbnail_path}")
+            
+            # Verify file exists before attempting upload
+            from pathlib import Path
+            if not Path(thumbnail_path).exists():
+                return False, f"File not found: {thumbnail_path}"
+            
+            file_size = Path(thumbnail_path).stat().st_size
+            self.log(f"  File size: {file_size} bytes ({file_size / 1024:.2f} KB)")
+            
+            # Determine actual MIME type by reading file magic bytes (not extension)
+            # Many .jpg files are actually PNG format
+            mime_type = 'image/jpeg'  # default
+            try:
+                with open(thumbnail_path, 'rb') as f:
+                    header = f.read(8)
+                    # Check for PNG signature: 89 50 4E 47 0D 0A 1A 0A
+                    if header[:4] == b'\x89PNG':
+                        mime_type = 'image/png'
+                    # Check for JPEG signature: FF D8 FF
+                    elif header[:3] == b'\xff\xd8\xff':
+                        mime_type = 'image/jpeg'
+                    else:
+                        # Fall back to extension-based detection
+                        import mimetypes
+                        detected_type, _ = mimetypes.guess_type(thumbnail_path)
+                        if detected_type:
+                            mime_type = detected_type
+            except Exception as e:
+                self.log(f"  Warning: Could not detect file type from magic bytes: {e}", logging.WARNING)
+                # Fall back to extension
+                import mimetypes
+                detected_type, _ = mimetypes.guess_type(thumbnail_path)
+                if detected_type:
+                    mime_type = detected_type
+            
+            self.log(f"  Detected MIME type: {mime_type}")
+            
+            # Step 1a: Convert PNG to JPEG if needed (Alma may require JPEG for thumbnails)
+            file_to_upload = thumbnail_path
+            upload_filename = clean_upload_name  # Use the clean filename from start
+            
+            if mime_type == 'image/png':
+                try:
+                    from PIL import Image
+                    import tempfile
+                    
+                    self.log(f"  PNG detected - converting to JPEG for Alma compatibility")
+                    
+                    # Open PNG and convert to RGB (remove alpha channel if present)
+                    img = Image.open(thumbnail_path)
+                    if img.mode in ('RGBA', 'LA', 'P'):
+                        # Convert RGBA/LA/P to RGB by creating white background
+                        background = Image.new('RGB', img.size, (255, 255, 255))
+                        if img.mode == 'P':
+                            img = img.convert('RGBA')
+                        background.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
+                        img = background
+                    elif img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    
+                    # Create temporary JPEG file
+                    temp_fd, temp_file_path = tempfile.mkstemp(suffix='.jpg', prefix='thumb_')
+                    os.close(temp_fd)  # Close the file descriptor
+                    
+                    # Save as JPEG with high quality
+                    img.save(temp_file_path, 'JPEG', quality=95, optimize=True)
+                    
+                    # Update file reference and MIME type
+                    file_to_upload = temp_file_path
+                    mime_type = 'image/jpeg'
+                    # upload_filename already set to clean name above
+                    
+                    converted_size = Path(temp_file_path).stat().st_size
+                    self.log(f"  ✓ Converted to JPEG: {converted_size} bytes ({converted_size / 1024:.2f} KB)")
+                    
+                except ImportError:
+                    self.log(f"  Warning: Pillow library not available - uploading PNG as-is", logging.WARNING)
+                    self.log(f"  Install Pillow with: pip install Pillow", logging.INFO)
+                except Exception as e:
+                    self.log(f"  Warning: PNG to JPEG conversion failed: {e}", logging.WARNING)
+                    self.log(f"  Uploading original PNG file", logging.INFO)
+                    import traceback
+                    self.log(traceback.format_exc(), logging.DEBUG)
+            
+            # Step 1b: Ensure file size is under 100KB (Alma thumbnail size limit)
+            MAX_SIZE = 100 * 1024  # 100KB in bytes
+            current_size = Path(file_to_upload).stat().st_size
+            
+            if current_size > MAX_SIZE:
+                try:
+                    from PIL import Image
+                    import tempfile
+                    
+                    self.log(f"  File size ({current_size / 1024:.2f} KB) exceeds 100KB limit - optimizing")
+                    
+                    # Remember which file currently has the image data
+                    source_image = file_to_upload
+                    
+                    # If we haven't already created a temp file, create one now
+                    if temp_file_path is None:
+                        temp_fd, temp_file_path = tempfile.mkstemp(suffix='.jpg', prefix='thumb_')
+                        os.close(temp_fd)
+                        file_to_upload = temp_file_path
+                    
+                    # Open the source image
+                    img = Image.open(source_image)
+                    
+                    # Convert to RGB if needed
+                    if img.mode in ('RGBA', 'LA', 'P'):
+                        background = Image.new('RGB', img.size, (255, 255, 255))
+                        if img.mode == 'P':
+                            img = img.convert('RGBA')
+                        background.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
+                        img = background
+                    elif img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    
+                    # Try reducing quality first
+                    quality_attempts = [85, 75, 65, 55]
+                    optimized = False
+                    
+                    for quality in quality_attempts:
+                        img.save(temp_file_path, 'JPEG', quality=quality, optimize=True)
+                        new_size = Path(temp_file_path).stat().st_size
+                        self.log(f"    Trying quality={quality}: {new_size / 1024:.2f} KB")
+                        
+                        if new_size <= MAX_SIZE:
+                            self.log(f"  ✓ Optimized to {new_size / 1024:.2f} KB (quality={quality})")
+                            optimized = True
+                            mime_type = 'image/jpeg'
+                            # upload_filename already set to clean name above
+                            break
+                    
+                    # If quality reduction wasn't enough, try resizing
+                    if not optimized:
+                        self.log(f"    Quality reduction insufficient - resizing image")
+                        original_width, original_height = img.size
+                        
+                        # Try reducing size by 10% increments
+                        for scale in [0.9, 0.8, 0.7, 0.6, 0.5]:
+                            new_width = int(original_width * scale)
+                            new_height = int(original_height * scale)
+                            resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                            
+                            resized.save(temp_file_path, 'JPEG', quality=65, optimize=True)
+                            new_size = Path(temp_file_path).stat().st_size
+                            self.log(f"    Trying {new_width}x{new_height} (scale={scale}): {new_size / 1024:.2f} KB")
+                            
+                            if new_size <= MAX_SIZE:
+                                self.log(f"  ✓ Resized to {new_width}x{new_height}: {new_size / 1024:.2f} KB")
+                                optimized = True
+                                mime_type = 'image/jpeg'
+                                # upload_filename already set to clean name above
+                                break
+                    
+                    if not optimized:
+                        self.log(f"  Warning: Could not reduce file size below 100KB - uploading as-is", logging.WARNING)
+                
+                except ImportError:
+                    self.log(f"  Warning: Pillow library not available - cannot optimize file size", logging.WARNING)
+                    self.log(f"  File will be uploaded as-is ({current_size / 1024:.2f} KB)", logging.INFO)
+                except Exception as e:
+                    self.log(f"  Warning: File size optimization failed: {e}", logging.WARNING)
+                    self.log(f"  Uploading file as-is", logging.INFO)
+                    import traceback
+                    self.log(traceback.format_exc(), logging.DEBUG)
+            
+            api_url = self._get_alma_api_url()
+            self.log(f"  API URL: {api_url}")
+            
+            # Step 1: Create a new representation with usage_type DERIVATIVE_COPY (for thumbnail)
+            # POST /almaws/v1/bibs/{mms_id}/representations
+            # Note: AUXILIARY and THUMBNAIL usage_types have issues with file uploads
+            # DERIVATIVE_COPY is the most appropriate for thumbnail images
+            rep_url = f"{api_url}/almaws/v1/bibs/{mms_id}/representations"
+            
+            # Representation metadata (use upload_filename in case of PNG->JPEG conversion)
+            rep_data = {
+                "label": f"Thumbnail - {upload_filename}",
+                "usage_type": {"value": "DERIVATIVE_COPY"},
+                "library": {"value": "MAIN"},  # Adjust as needed
+                "public_note": "Thumbnail image from Digital Grinnell migration"
+            }
+            
+            headers = {
+                'Authorization': f'apikey {self.api_key}',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+            
+            self.log(f"Creating thumbnail representation for {mms_id}")
+            self.log(f"  POST to: {rep_url}")
+            response = requests.post(rep_url, headers=headers, json=rep_data)
+            
+            self.log(f"  Response status: {response.status_code}")
+            if response.status_code not in [200, 201]:
+                self.log(f"  Response body: {response.text}", logging.ERROR)
+                # Clean up temp file if it exists
+                if temp_file_path and os.path.exists(temp_file_path):
+                    try:
+                        os.remove(temp_file_path)
+                    except:
+                        pass
+                return False, f"Failed to create representation: HTTP {response.status_code} - {response.text}"
+            
+            rep_response = response.json()
+            rep_id = rep_response.get('id')
+            self.log(f"Created thumbnail representation ID: {rep_id}")
+            
+            # Step 2: Upload the thumbnail file to the representation
+            # POST /almaws/v1/bibs/{mms_id}/representations/{rep_id}/files
+            files_url = f"{api_url}/almaws/v1/bibs/{mms_id}/representations/{rep_id}/files"
+            
+            self.log(f"Uploading file {upload_filename} to representation {rep_id}")
+            self.log(f"  POST to: {files_url}")
+            
+            # Get institution code from environment
+            institution_code = self._get_institution_code()
+            if not institution_code:
+                # Try to extract from API URL or use default
+                institution_code = "01GCL_INST"  # Default for Grinnell
+            
+            self.log(f"  Institution code: {institution_code}")
+            
+            # Alma's file upload requires multipart/form-data with specific fields
+            # The 'path' field must start with institution_code/upload/
+            upload_path = f"{institution_code}/upload/{upload_filename}"
+            
+            self.log(f"  Upload path: {upload_path}")
+            self.log(f"  Using MIME type: {mime_type}")
+            
+            # Read file content into memory (matches pattern used in _upload_jpg_representation)
+            try:
+                with open(file_to_upload, 'rb') as f:
+                    file_content = f.read()
+                
+                file_size_kb = len(file_content) / 1024
+                self.log(f"  Upload file size: {len(file_content)} bytes ({file_size_kb:.2f} KB)")
+                
+                # Prepare multipart form data
+                files_data = {
+                    'file': (upload_filename, file_content, mime_type)
+                }
+                
+                data = {
+                    'path': upload_path
+                }
+                
+                headers_upload = {
+                    'Authorization': f'apikey {self.api_key}',
+                    'Accept': 'application/json'
+                }
+                
+                upload_response = requests.post(files_url, headers=headers_upload, files=files_data, data=data)
+                
+                self.log(f"  Upload response status: {upload_response.status_code}")
+                if upload_response.status_code not in [200, 201]:
+                    self.log(f"  Upload response body: {upload_response.text}", logging.ERROR)
+                    return False, f"Failed to upload file: HTTP {upload_response.status_code} - {upload_response.text}"
+                
+                self.log(f"Successfully uploaded {upload_filename} as thumbnail representation {rep_id}")
+                return True, f"Thumbnail uploaded successfully (Rep ID: {rep_id})"
+            
+            finally:
+                # Clean up temporary JPEG file if it was created
+                if temp_file_path and os.path.exists(temp_file_path):
+                    try:
+                        os.remove(temp_file_path)
+                        self.log(f"  Cleaned up temporary file: {temp_file_path}", logging.DEBUG)
+                    except Exception as cleanup_error:
+                        self.log(f"  Warning: Could not delete temporary file {temp_file_path}: {cleanup_error}", logging.WARNING)
+            
+        except Exception as e:
+            self.log(f"Exception in _upload_thumbnail_representation: {str(e)}", logging.ERROR)
+            import traceback
+            self.log(traceback.format_exc(), logging.ERROR)
+            # Clean up temp file if it exists
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.remove(temp_file_path)
+                except:
+                    pass
+            return False, f"Error uploading thumbnail: {str(e)}"
+    
+    def _prepare_thumbnail_representation(self, mms_id: str, thumbnail_path: str, filename: str, identifier: str, output_dir) -> tuple[bool, dict]:
+        """
+        Create a thumbnail representation and prepare the file (without uploading).
+        
+        This creates a representation with usage_type DERIVATIVE_COPY, processes the thumbnail
+        (PNG->JPEG conversion, optimization), and saves it to the output directory.
+        
+        Args:
+            mms_id: The MMS ID of the bibliographic record
+            thumbnail_path: Full path to the thumbnail file
+            filename: Original filename (for logging only)
+            identifier: Clean identifier like 'grinnell_12205' or 'dg_12205'
+            output_dir: Path object for output directory
+            
+        Returns:
+            tuple: (success: bool, result: dict or error_message: str)
+                   result dict contains: {'rep_id': str, 'processed_file': str, 'message': str}
+        """
+        from pathlib import Path
+        temp_file_path = None  # Initialize temp file tracking
+        
+        # Create a clean upload filename from identifier
+        # Example: grinnell_12205 -> grinnell_12205_thumbnail.jpg
+        if identifier:
+            clean_upload_name = f"{identifier}_thumbnail.jpg"
+        else:
+            # Fallback to sanitized version of original filename
+            clean_upload_name = filename.replace('.mp3', '').replace('.clientThumb', '_thumbnail')
+            if not clean_upload_name.endswith('.jpg'):
+                clean_upload_name += '.jpg'
+        
+        try:
+            self.log(f"Starting thumbnail preparation for MMS {mms_id}")
+            self.log(f"  Source file: {filename}")
+            self.log(f"  Path: {thumbnail_path}")
+            
+            # Verify file exists before attempting processing
+            if not Path(thumbnail_path).exists():
+                return False, f"File not found: {thumbnail_path}"
+            
+            file_size = Path(thumbnail_path).stat().st_size
+            self.log(f"  File size: {file_size} bytes ({file_size / 1024:.2f} KB)")
+            
+            # Determine actual MIME type by reading file magic bytes (not extension)
+            mime_type = 'image/jpeg'  # default
+            try:
+                with open(thumbnail_path, 'rb') as f:
+                    header = f.read(8)
+                    if header[:4] == b'\\x89PNG':
+                        mime_type = 'image/png'
+                    elif header[:3] == b'\\xff\\xd8\\xff':
+                        mime_type = 'image/jpeg'
+                    else:
+                        import mimetypes
+                        detected_type, _ = mimetypes.guess_type(thumbnail_path)
+                        if detected_type:
+                            mime_type = detected_type
+            except Exception as e:
+                self.log(f"  Warning: Could not detect file type from magic bytes: {e}", logging.WARNING)
+            
+            self.log(f"  Detected MIME type: {mime_type}")
+            
+            # Step 1: Convert PNG to JPEG if needed
+            file_to_process = thumbnail_path
+            
+            if mime_type == 'image/png':
+                try:
+                    from PIL import Image
+                    import tempfile
+                    
+                    self.log(f"  PNG detected - converting to JPEG")
+                    
+                    img = Image.open(thumbnail_path)
+                    if img.mode in ('RGBA', 'LA', 'P'):
+                        background = Image.new('RGB', img.size, (255, 255, 255))
+                        if img.mode == 'P':
+                            img = img.convert('RGBA')
+                        background.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
+                        img = background
+                    elif img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    
+                    temp_fd, temp_file_path = tempfile.mkstemp(suffix='.jpg', prefix='thumb_')
+                    os.close(temp_fd)
+                    
+                    img.save(temp_file_path, 'JPEG', quality=95, optimize=True)
+                    file_to_process = temp_file_path
+                    mime_type = 'image/jpeg'
+                    
+                    converted_size = Path(temp_file_path).stat().st_size
+                    self.log(f"  ✓ Converted to JPEG: {converted_size} bytes ({converted_size / 1024:.2f} KB)")
+                    
+                except ImportError:
+                    self.log(f"  Warning: Pillow library not available", logging.WARNING)
+                except Exception as e:
+                    self.log(f"  Warning: PNG to JPEG conversion failed: {e}", logging.WARNING)
+            
+            # Step 2: Optimize file size (ensure under 100KB)
+            MAX_SIZE = 100 * 1024  # 100KB
+            current_size = Path(file_to_process).stat().st_size
+            
+            if current_size > MAX_SIZE:
+                try:
+                    from PIL import Image
+                    import tempfile
+                    
+                    self.log(f"  File size ({current_size / 1024:.2f} KB) exceeds 100KB limit - optimizing")
+                    
+                    source_image = file_to_process
+                    if temp_file_path is None:
+                        temp_fd, temp_file_path = tempfile.mkstemp(suffix='.jpg', prefix='thumb_')
+                        os.close(temp_fd)
+                        file_to_process = temp_file_path
+                    
+                    img = Image.open(source_image)
+                    
+                    if img.mode in ('RGBA', 'LA', 'P'):
+                        background = Image.new('RGB', img.size, (255, 255, 255))
+                        if img.mode == 'P':
+                            img = img.convert('RGBA')
+                        background.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
+                        img = background
+                    elif img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    
+                    # Try quality reduction first
+                    quality_attempts = [85, 75, 65, 55]
+                    optimized = False
+                    
+                    for quality in quality_attempts:
+                        img.save(temp_file_path, 'JPEG', quality=quality, optimize=True)
+                        new_size = Path(temp_file_path).stat().st_size
+                        if new_size <= MAX_SIZE:
+                            self.log(f"  ✓ Optimized to {new_size / 1024:.2f} KB (quality={quality})")
+                            optimized = True
+                            break
+                    
+                    # Try resizing if quality reduction wasn't enough
+                    if not optimized:
+                        self.log(f"    Quality reduction insufficient - resizing image")
+                        original_width, original_height = img.size
+                        
+                        for scale in [0.9, 0.8, 0.7, 0.6, 0.5]:
+                            new_width = int(original_width * scale)
+                            new_height = int(original_height * scale)
+                            resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                            
+                            resized.save(temp_file_path, 'JPEG', quality=65, optimize=True)
+                            new_size = Path(temp_file_path).stat().st_size
+                            
+                            if new_size <= MAX_SIZE:
+                                self.log(f"  ✓ Resized to {new_width}x{new_height}: {new_size / 1024:.2f} KB")
+                                optimized = True
+                                break
+                    
+                    if not optimized:
+                        self.log(f"  Warning: Could not reduce file size below 100KB", logging.WARNING)
+                
+                except Exception as e:
+                    self.log(f"  Warning: File size optimization failed: {e}", logging.WARNING)
+            
+            # Step 3: Check for existing thumbnail representation
+            api_url = self._get_alma_api_url()
+            rep_url = f"{api_url}/almaws/v1/bibs/{mms_id}/representations"
+            
+            headers = {
+                'Authorization': f'apikey {self.api_key}',
+                'Accept': 'application/json'
+            }
+            
+            # Fetch existing representations
+            self.log(f"Checking for existing thumbnail representation for {mms_id}")
+            response = requests.get(rep_url, headers=headers)
+            
+            existing_rep_id = None
+            thumbnail_position = None
+            total_reps = 0
+            
+            if response.status_code == 200:
+                reps_data = response.json()
+                representations = reps_data.get('representation', [])
+                total_reps = len(representations)
+                
+                # Look for existing DERIVATIVE_COPY representation with "Thumbnail" in label
+                for idx, rep in enumerate(representations):
+                    label = rep.get('label', '')
+                    usage_type = rep.get('usage_type', {}).get('value', '')
+                    
+                    if usage_type == 'DERIVATIVE_COPY' and 'Thumbnail' in label:
+                        # Check if this representation has files
+                        files = rep.get('files', {})
+                        # If files is empty dict or has no file list, consider it empty
+                        has_files = False
+                        if isinstance(files, dict):
+                            file_list = files.get('representation_file', [])
+                            if file_list:
+                                has_files = True
+                        
+                        if not has_files:
+                            existing_rep_id = rep.get('id')
+                            thumbnail_position = idx  # Track position (0-based)
+                            self.log(f"  Found existing empty thumbnail representation: {existing_rep_id}")
+                            self.log(f"  Position: {idx + 1} of {total_reps} representations")
+                            break
+            
+            # Step 4: Create representation only if one doesn't already exist
+            if existing_rep_id:
+                rep_id = existing_rep_id
+                self.log(f"Reusing existing representation ID: {rep_id}")
+                
+                # Check position
+                if thumbnail_position is not None:
+                    if thumbnail_position == 0:
+                        self.log(f"  ✓ Thumbnail representation is in first position", logging.INFO)
+                    else:
+                        self.log(f"  ⚠️ WARNING: Thumbnail representation is at position {thumbnail_position + 1}, not first!", logging.WARNING)
+                        self.log(f"  Alma may not use this as the primary thumbnail.", logging.WARNING)
+                        self.log(f"  Consider manually reordering representations in Alma UI.", logging.WARNING)
+            else:
+                # Warn if creating new representation when others already exist
+                if total_reps > 0:
+                    self.log(f"  ⚠️ NOTE: Creating new thumbnail representation, but {total_reps} representation(s) already exist", logging.WARNING)
+                    self.log(f"  The new thumbnail will be placed at the end (position {total_reps + 1})", logging.WARNING)
+                    self.log(f"  Alma may not use this as the primary thumbnail.", logging.WARNING)
+                    self.log(f"  Consider manually reordering representations in Alma UI after upload.", logging.WARNING)
+                
+                rep_data = {
+                    "label": f"Thumbnail - {clean_upload_name}",
+                    "usage_type": {"value": "DERIVATIVE_COPY"},
+                    "library": {"value": "MAIN"},
+                    "public_note": "Thumbnail image from Digital Grinnell migration (prepared for upload)"
+                }
+                
+                headers_create = {
+                    'Authorization': f'apikey {self.api_key}',
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                }
+                
+                self.log(f"Creating new thumbnail representation for {mms_id}")
+                response = requests.post(rep_url, headers=headers_create, json=rep_data)
+                
+                if response.status_code not in [200, 201]:
+                    self.log(f"  Response body: {response.text}", logging.ERROR)
+                    if temp_file_path and os.path.exists(temp_file_path):
+                        try:
+                            os.remove(temp_file_path)
+                        except:
+                            pass
+                    return False, f"Failed to create representation: HTTP {response.status_code}"
+                
+                rep_response = response.json()
+                rep_id = rep_response.get('id')
+                self.log(f"Created representation ID: {rep_id}")
+                
+                # Confirm positioning
+                if total_reps == 0:
+                    self.log(f"  ✓ Thumbnail representation created as first (and only) representation", logging.INFO)
+            
+            # Step 4: Copy processed file to output directory
+            import shutil
+            output_file = output_dir / clean_upload_name
+            shutil.copy2(file_to_process, output_file)
+            self.log(f"Saved processed file to: {output_file}")
+            
+            # Clean up temp file if it exists
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.remove(temp_file_path)
+                except:
+                    pass
+            
+            return True, {
+                'rep_id': rep_id,
+                'processed_file': clean_upload_name,
+                'message': f"{'Reused existing' if existing_rep_id else 'Created'} representation and file prepared (Rep ID: {rep_id})"
+            }
+            
+        except Exception as e:
+            self.log(f"Exception in _prepare_thumbnail_representation: {str(e)}", logging.ERROR)
+            import traceback
+            self.log(traceback.format_exc(), logging.ERROR)
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.remove(temp_file_path)
+                except:
+                    pass
+            return False, f"Error preparing thumbnail: {str(e)}"
+    
+    def upload_thumbnails_selenium(self, csv_file_path: str, progress_callback=None) -> tuple[bool, str]:
+        """
+        Function 14b: Upload thumbnail files to Alma representations using Selenium
+        
+        This function reads a CSV file (from Function 14a) containing:
+        - mms_id: The MMS ID
+        - rep_id: The representation ID
+        - filename: Full path to processed thumbnail file
+        - original_file: Full path to original file (for reference)
+        
+        It then uses Selenium to control Firefox and upload each file via the Alma UI.
+        
+        Args:
+            csv_file_path: Path to CSV file from Function 14a
+            progress_callback: Optional callback function(current, total) for progress updates
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        import csv
+        from pathlib import Path
+        from selenium import webdriver
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.support.ui import Select
+        from selenium.common.exceptions import TimeoutException, NoSuchElementException
+        import time
+        
+        try:
+            self.log(f"Starting Function 14b: Upload Thumbnails via Selenium")
+            self.log(f"Reading CSV file: {csv_file_path}")
+            
+            # Read CSV file
+            csv_path = Path(csv_file_path)
+            if not csv_path.exists():
+                return False, f"CSV file not found: {csv_file_path}"
+            
+            records = []
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    records.append(row)
+            
+            if not records:
+                return False, "No records found in CSV file"
+            
+            self.log(f"Loaded {len(records)} record(s) from CSV")
+            
+            # Connect to existing Firefox session
+            self.log("Connecting to existing Firefox browser...")
+            self.log("⚠️ IMPORTANT: Firefox must be started with remote debugging enabled:")
+            self.log("   Close Firefox completely, then start it with:")
+            self.log("   /Applications/Firefox.app/Contents/MacOS/firefox --marionette")
+            self.log("")
+            self.log("   Or on macOS, use this terminal command:")
+            self.log("   open -a Firefox --args --marionette")
+            self.log("")
+            self.log("   Then log into Alma before running this function.")
+            
+            # Configure Firefox options to connect to existing session
+            options = webdriver.FirefoxOptions()
+            
+            # Try to connect to existing Firefox instance
+            try:
+                # Connect to Firefox on default Marionette port (2828)
+                # This assumes Firefox was started with --marionette flag
+                from selenium.webdriver.firefox.service import Service
+                
+                # Use default service (connects to existing marionette session)
+                service = Service()
+                
+                driver = webdriver.Firefox(options=options, service=service)
+                self.log("✓ Connected to existing Firefox session")
+                
+                # Check if already on Alma page
+                current_url = driver.current_url
+                self.log(f"Current URL: {current_url}")
+                
+                # Navigate to Alma if not already there
+                target_url = "https://grinnell.alma.exlibrisgroup.com/ng;u=%2Fmng%2Faction%2Fhome.do%3FngHome%3Dtrue"
+                if "alma.exlibrisgroup.com" not in current_url:
+                    self.log("Navigating to Alma...")
+                    driver.get(target_url)
+                    self.log("⏸️  Please log into Alma in the Firefox window if needed...")
+                    self.log("   The automation will begin in 10 seconds...")
+                    time.sleep(10)
+                else:
+                    self.log("Already on Alma - proceeding with automation")
+                    time.sleep(2)  # Brief pause before starting
+                
+                self.log("Starting automated uploads...")
+            except Exception as e:
+                return False, f"Could not connect to Firefox: {str(e)}. Please ensure Firefox is open and GeckoDriver is installed."
+            
+            success_count = 0
+            failed_count = 0
+            
+            try:
+                for idx, record in enumerate(records):
+                    if self.kill_switch:
+                        self.log("Kill switch activated - stopping processing", logging.WARNING)
+                        break
+                    
+                    current = idx + 1
+                    if progress_callback:
+                        progress_callback(current, len(records))
+                    
+                    mms_id = record['mms_id']
+                    rep_id = record['rep_id']
+                    filename = record['filename']
+                    
+                    self.log(f"\n[{current}/{len(records)}] Processing MMS ID: {mms_id}")
+                    self.log(f"  Rep ID: {rep_id}")
+                    self.log(f"  File: {filename}")
+                    
+                    # Verify file exists
+                    file_path = Path(filename)
+                    if not file_path.exists():
+                        self.log(f"  ✗ File not found: {filename}", logging.ERROR)
+                        failed_count += 1
+                        continue
+                    
+                    try:
+                        # Step 1: Find and configure search bar
+                        self.log("  Step 1: Configuring search bar...")
+                        
+                        # NOTE: The element selectors below are PLACEHOLDERS and will need to be
+                        # updated based on the actual Alma UI structure. To find the correct selectors:
+                        # 1. Open Firefox DevTools (F12)
+                        # 2. Use the Inspector to examine the search bar elements
+                        # 3. Look for id, name, or class attributes
+                        # 4. Update the selectors below accordingly
+                        
+                        # Wait for page to be ready
+                        WebDriverWait(driver, 10).until(
+                            EC.presence_of_element_located((By.TAG_NAME, "body"))
+                        )
+                        
+                        # Find search type dropdown and set to "Digital titles"
+                        # This will need to be adjusted based on actual DOM structure
+                        try:
+                            search_type_select = Select(WebDriverWait(driver, 5).until(
+                                EC.presence_of_element_located((By.ID, "searchType"))  # TODO: Adjust this selector
+                            ))
+                            search_type_select.select_by_visible_text("Digital titles")
+                            self.log("    ✓ Set search type to 'Digital titles'")
+                        except:
+                            self.log("    ⚠️ Could not find search type dropdown - attempting to continue", logging.WARNING)
+                        
+                        # Find search field dropdown and set to "Representation PID"
+                        try:
+                            search_field_select = Select(WebDriverWait(driver, 5).until(
+                                EC.presence_of_element_located((By.ID, "searchField"))  # TODO: Adjust this selector
+                            ))
+                            search_field_select.select_by_visible_text("Representation PID")
+                            self.log("    ✓ Set search field to 'Representation PID'")
+                        except:
+                            self.log("    ⚠️ Could not find search field dropdown - attempting to continue", logging.WARNING)
+                        
+                        # Step 2: Enter representation ID and search
+                        self.log(f"  Step 2: Searching for representation {rep_id}...")
+                        search_input = WebDriverWait(driver, 10).until(
+                            EC.presence_of_element_located((By.ID, "searchInput"))  # TODO: Adjust this selector
+                        )
+                        search_input.clear()
+                        search_input.send_keys(rep_id)
+                        
+                        # Click search button (magnifying glass)
+                        search_button = driver.find_element(By.ID, "searchButton")  # TODO: Adjust this selector
+                        search_button.click()
+                        self.log("    ✓ Search initiated")
+                        
+                        # Wait for results
+                        time.sleep(2)
+                        
+                        # Step 3: Click on "Digital Representations (X)" link
+                        self.log("  Step 3: Opening Digital Representations...")
+                        digital_reps_link = WebDriverWait(driver, 10).until(
+                            EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Digital Representations"))
+                        )
+                        digital_reps_link.click()
+                        self.log("    ✓ Opened Digital Representations")
+                        
+                        # Wait for modal/window to appear
+                        time.sleep(1)
+                        
+                        # Step 4: Click on the specific representation ID link
+                        self.log(f"  Step 4: Opening representation {rep_id}...")
+                        rep_link = WebDriverWait(driver, 10).until(
+                            EC.element_to_be_clickable((By.LINK_TEXT, rep_id))
+                        )
+                        rep_link.click()
+                        self.log("    ✓ Opened representation")
+                        
+                        # Wait for representation page to load
+                        time.sleep(1)
+                        
+                        # Step 5: Click "Thumbnail Upload" file selector
+                        self.log("  Step 5: Uploading thumbnail file...")
+                        file_input = WebDriverWait(driver, 10).until(
+                            EC.presence_of_element_located((By.ID, "thumbnailUpload"))  # TODO: Adjust this selector
+                        )
+                        file_input.send_keys(str(file_path.absolute()))
+                        self.log(f"    ✓ Selected file: {file_path.name}")
+                        
+                        # Wait for file to be processed
+                        time.sleep(2)
+                        
+                        # Step 6: Click Save button
+                        save_button = WebDriverWait(driver, 10).until(
+                            EC.element_to_be_clickable((By.ID, "saveButton"))  # TODO: Adjust this selector
+                        )
+                        save_button.click()
+                        self.log("    ✓ Clicked Save")
+                        
+                        # Wait for save to complete
+                        time.sleep(2)
+                        
+                        self.log(f"  ✓ Successfully uploaded thumbnail for {mms_id}")
+                        success_count += 1
+                        
+                    except TimeoutException as e:
+                        self.log(f"  ✗ Timeout waiting for page element: {str(e)}", logging.ERROR)
+                        self.log(f"    This may indicate the page structure has changed or the page didn't load in time", logging.ERROR)
+                        failed_count += 1
+                    except NoSuchElementException as e:
+                        self.log(f"  ✗ Could not find required element: {str(e)}", logging.ERROR)
+                        failed_count += 1
+                    except Exception as e:
+                        self.log(f"  ✗ Error uploading thumbnail: {str(e)}", logging.ERROR)
+                        import traceback
+                        self.log(traceback.format_exc(), logging.DEBUG)
+                        failed_count += 1
+                
+            finally:
+                # Note: We don't close the driver since we're using an existing session
+                self.log("\n⚠️ NOTE: Firefox browser has been left open for your review")
+                self.log("You can manually close Firefox when done reviewing the results")
+            
+            message = f"Thumbnail upload complete: {success_count} uploaded, {failed_count} failed"
+            self.log(message)
+            
+            if failed_count > 0:
+                self.log(f"⚠️ {failed_count} upload(s) failed - check logs for details", logging.WARNING)
+            
+            return True, message
+            
+        except Exception as e:
+            error_msg = f"Error in selenium upload: {str(e)}"
+            self.log(error_msg, logging.ERROR)
+            import traceback
+            self.log(traceback.format_exc(), logging.ERROR)
+            return False, error_msg
+    
+    def process_tiffs_for_import(self, mms_ids: list, tiff_csv: str = "all_single_tiffs_with_local_paths.csv",
                                   alma_export_csv: str = None, for_import_dir: str = "For-Import",
                                   progress_callback=None) -> tuple[bool, str]:
         """
@@ -4306,6 +5368,246 @@ def main(page: ft.Page):
             add_log_message(f"Sound records decade analysis complete: {output_file}")
             add_log_message("💡 Tip: Sort by Decade column to group records for sub-collection distribution")
     
+    def on_function_14_click(e):
+        """Handle Function 14a: Prepare .clientThumb Thumbnails (Part 1 of 2)"""
+        # Determine if batch or single mode
+        is_batch = editor.set_members and len(editor.set_members) > 0
+        
+        if not is_batch:
+            # Single record mode
+            if not mms_id_input.value:
+                update_status("Please enter an MMS ID or load a set", True)
+                return
+            mms_ids_to_process = [mms_id_input.value]
+            record_info = f"MMS ID: {mms_id_input.value}"
+        else:
+            # Batch mode
+            mms_ids_to_process = editor.set_members
+            record_info = f"Records to process: {len(editor.set_members)}"
+        
+        # Show warning dialog
+        def proceed_with_upload(e):
+            warning_dialog.open = False
+            page.update()
+            
+            if is_batch:
+                add_log_message(f"Starting thumbnail preparation for {len(mms_ids_to_process)} records")
+                update_status(f"Preparing thumbnails for {len(mms_ids_to_process)} records...", False)
+                
+                # Show progress bar
+                set_progress_bar.visible = True
+                set_progress_bar.value = 0
+                set_progress_text.visible = True
+                set_progress_text.value = f"Processing: 0/{len(mms_ids_to_process)} records"
+                page.update()
+                
+                def progress_update(current, total):
+                    progress = current / total
+                    set_progress_bar.value = progress
+                    set_progress_text.value = f"Processing: {current}/{total} records ({progress*100:.1f}%)"
+                    status_text.value = f"Preparing thumbnails: {current}/{total} records ({progress*100:.1f}%)"
+                    page.update()
+            else:
+                add_log_message(f"Starting thumbnail preparation for MMS ID: {mms_ids_to_process[0]}")
+                update_status(f"Preparing thumbnail for {mms_ids_to_process[0]}...", False)
+                progress_update = None
+            
+            # Prepare thumbnails (Part 1 - create reps and process files)
+            storage.record_function_usage("function_14_upload_thumbnails")
+            success, message = editor.upload_clientthumb_thumbnails(
+                mms_ids_to_process,
+                progress_callback=progress_update
+            )
+            
+            # Hide progress bar (if it was shown)
+            if is_batch:
+                set_progress_bar.visible = False
+                set_progress_text.visible = False
+                page.update()
+            
+            update_status(message, not success)
+            if success:
+                if is_batch:
+                    add_log_message(f"Thumbnail preparation complete")
+                    add_log_message("💡 Check the logs for details on prepared files and any failures")
+                else:
+                    add_log_message("Thumbnail preparation complete for single record")
+        
+        def cancel_upload(e):
+            warning_dialog.open = False
+            page.update()
+            add_log_message("Thumbnail preparation cancelled by user")
+        
+        warning_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("⚠️ WARNING: Alma Data Modification", weight=ft.FontWeight.BOLD),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text(
+                        "This will create thumbnail representations in Alma and prepare files for upload.",
+                        size=14
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        record_info,
+                        weight=ft.FontWeight.BOLD
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "Function: 14a - Prepare Thumbnails (Part 1 of 2)",
+                        italic=True,
+                        color=ft.Colors.GREY_700
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "This action will PERMANENTLY create thumbnail representations in Alma. "
+                        "Files will be processed from .clientThumb files based on each record's grinnell: or dg_ identifier. "
+                        "Note: This only creates representations and prepares files. Actual file upload will be done in Function 14b.",
+                        size=13
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "Do you want to continue?",
+                        weight=ft.FontWeight.BOLD
+                    ),
+                ]),
+                padding=10,
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel_upload),
+                ft.TextButton(
+                    "Proceed",
+                    on_click=proceed_with_upload,
+                    style=ft.ButtonStyle(
+                        color=ft.Colors.WHITE,
+                        bgcolor=ft.Colors.RED_700,
+                    ),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        page.open(warning_dialog)
+    
+    def on_function_14b_click(e):
+        """Handle Function 14b: Upload Thumbnails via Selenium (Part 2 of 2)"""
+        # Get CSV file path from Set ID field
+        csv_path = set_id_input.value.strip() if set_id_input.value else ""
+        
+        if not csv_path:
+            update_status("Please enter the CSV file path from Function 14a in the Set ID field", True)
+            return
+        
+        if not csv_path.endswith('.csv'):
+            update_status("Please provide a valid CSV file path (must end with .csv)", True)
+            return
+        
+        # Show warning dialog
+        def proceed_with_upload(e):
+            warning_dialog.open = False
+            page.update()
+            
+            add_log_message(f"Starting thumbnail upload via Selenium")
+            add_log_message(f"CSV file: {csv_path}")
+            update_status(f"Uploading thumbnails via Firefox...", False)
+            
+            # Show progress bar
+            set_progress_bar.visible = True
+            set_progress_bar.value = 0
+            set_progress_text.visible = True
+            set_progress_text.value = f"Initializing..."
+            page.update()
+            
+            def progress_update(current, total):
+                progress = current / total
+                set_progress_bar.value = progress
+                set_progress_text.value = f"Processing: {current}/{total} records ({progress*100:.1f}%)"
+                status_text.value = f"Uploading thumbnails: {current}/{total} records ({progress*100:.1f}%)"
+                page.update()
+            
+            # Upload via Selenium
+            storage.record_function_usage("function_14b_upload_thumbnails")
+            success, message = editor.upload_thumbnails_selenium(
+                csv_path,
+                progress_callback=progress_update
+            )
+            
+            # Hide progress bar
+            set_progress_bar.visible = False
+            set_progress_text.visible = False
+            page.update()
+            
+            update_status(message, not success)
+            if success:
+                add_log_message(f"Thumbnail upload complete")
+                add_log_message("💡 Firefox has been left open for your review")
+            else:
+                add_log_message(f"Upload failed or incomplete - check logs for details")
+        
+        def cancel_upload(e):
+            warning_dialog.open = False
+            page.update()
+            add_log_message("Thumbnail upload cancelled by user")
+        
+        warning_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("⚠️ WARNING: Browser Automation", weight=ft.FontWeight.BOLD),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text(
+                        "This will upload thumbnail files to Alma using browser automation (Selenium).",
+                        size=14
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        f"CSV file: {csv_path}",
+                        weight=ft.FontWeight.BOLD
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "Function: 14b - Upload Thumbnails (Part 2 of 2)",
+                        italic=True,
+                        color=ft.Colors.GREY_700
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "IMPORTANT - Do this NOW before clicking Proceed:\n\n"
+                        "1. Open a terminal and run:\n"
+                        "   ./start_firefox_for_selenium.sh\n\n"
+                        "   Or manually: open -a Firefox --args --marionette\n\n"
+                        "2. In Firefox, log into Alma\n\n"
+                        "3. Then click Proceed below\n\n"
+                        "Selenium will connect to your Firefox session.\n"
+                        "Do not interact with Firefox during uploads.",
+                        size=13
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "Do you want to continue?",
+                        weight=ft.FontWeight.BOLD
+                    ),
+                ]),
+                padding=20
+            ),
+            actions=[
+                ft.TextButton(
+                    "Cancel",
+                    on_click=cancel_upload
+                ),
+                ft.TextButton(
+                    "Proceed",
+                    on_click=proceed_with_upload,
+                    style=ft.ButtonStyle(
+                        color=ft.Colors.WHITE,
+                        bgcolor=ft.Colors.RED_700
+                    )
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        page.open(warning_dialog)
+    
     # Function definitions with metadata
     # Active functions - frequently used
     active_functions = [
@@ -4317,7 +5619,9 @@ def main(page: ft.Page):
         "function_10_export_review",
         "function_11_identify_single_tiff",
         "function_12_process_tiffs",
-        "function_13_sound_by_decade"
+        "function_13_sound_by_decade",
+        "function_14a_prepare_thumbnails",
+        "function_14b_upload_thumbnails"
     ]
     
     # Inactive functions - less frequently used
@@ -4330,82 +5634,94 @@ def main(page: ft.Page):
     
     functions = {
         "function_1_fetch_xml": {
-            "label": "Fetch and Display Single XML",
+            "label": "1: Fetch and Display Single XML",
             "icon": "🔍",
             "handler": on_function_1_click,
             "help_file": "FUNCTION_1_FETCH_DISPLAY_XML.md"
         },
         "function_2_clear_dc_relation": {
-            "label": "Clear dc:relation Collections Fields",
+            "label": "2: Clear dc:relation Collections Fields",
             "icon": "🧹",
             "handler": on_function_2_click,
             "help_file": "FUNCTION_2_CLEAR_DC_RELATION.md"
         },
         "function_3_export_csv": {
-            "label": "Export Set to DCAP01 CSV",
+            "label": "3: Export Set to DCAP01 CSV",
             "icon": "📥",
             "handler": on_function_3_click,
             "help_file": "FUNCTION_3_EXPORT_TO_CSV.md"
         },
         "function_4_filter_pre1930": {
-            "label": "Filter CSV for Records 95+ Years Old",
+            "label": "4: Filter CSV for Records 95+ Years Old",
             "icon": "🔎",
             "handler": on_function_4_click,
             "help_file": "FUNCTION_4_FILTER_HISTORICAL_RECORDS.md"
         },
         "function_5_iiif": {
-            "label": "Get IIIF Manifest and Canvas",
+            "label": "5: Get IIIF Manifest and Canvas",
             "icon": "🖼️",
             "handler": on_function_5_click,
             "help_file": "FUNCTION_5_BATCH_FETCH_JSON.md"
         },
         "function_6_replace_rights": {
-            "label": "Replace old dc:rights with Public Domain link",
+            "label": "6: Replace old dc:rights with Public Domain link",
             "icon": "©️",
             "handler": on_function_6_click,
             "help_file": "FUNCTION_6_DC_RIGHTS_REPLACEMENT.md"
         },
         "function_7_add_grinnell_id": {
-            "label": "Add Grinnell: dc:identifier Field As Needed",
+            "label": "7: Add Grinnell: dc:identifier Field As Needed",
             "icon": "🏷️",
             "handler": on_function_7_click,
             "help_file": "FUNCTION_7_ADD_GRINNELL_IDENTIFIER.md"
         },
         "function_8_export_identifiers": {
-            "label": "Export dc:identifier CSV",
+            "label": "8: Export dc:identifier CSV",
             "icon": "🔖",
             "handler": on_function_8_click,
             "help_file": "FUNCTION_8_EXPORT_IDENTIFIERS.md"
         },
         "function_9_validate_handles": {
-            "label": "Validate Handle URLs and Export Results",
+            "label": "9: Validate Handle URLs and Export Results",
             "icon": "🔗",
             "handler": on_function_9_click,
             "help_file": "FUNCTION_9_VALIDATE_HANDLES.md"
         },
         "function_10_export_review": {
-            "label": "Export for Review with Clickable Handles",
+            "label": "10: Export for Review with Clickable Handles",
             "icon": "📋",
             "handler": on_function_10_click,
             "help_file": "FUNCTION_10_EXPORT_REVIEW.md"
         },
         "function_11_identify_single_tiff": {
-            "label": "Identify Single TIFF Representations",
+            "label": "11: Identify Single TIFF Representations",
             "icon": "🖼️",
             "handler": on_function_11_click,
             "help_file": "FUNCTION_11_IDENTIFY_SINGLE_TIFF.md"
         },
         "function_12_process_tiffs": {
-            "label": "Process TIFFs & Create JPG Derivatives",
+            "label": "12: Process TIFFs & Create JPG Derivatives",
             "icon": "📸",
             "handler": on_function_12_click,
             "help_file": "FUNCTION_12_PROCESS_TIFFS.md"
         },
         "function_13_sound_by_decade": {
-            "label": "Analyze Sound Records by Decade",
+            "label": "13: Analyze Sound Records by Decade",
             "icon": "🎵",
             "handler": on_function_13_click,
             "help_file": "FUNCTION_13_SOUND_BY_DECADE.md"
+        },
+        "function_14a_prepare_thumbnails": {
+            "label": "14a: Prepare Thumbnails (Part 1 of 2)",
+            "icon": "🖼️",
+            "handler": on_function_14_click,
+            "help_file": "FUNCTION_14a_PREPARE_THUMBNAILS.md"
+        },
+        "function_14b_upload_thumbnails": {
+            "label": "14b: Upload Thumbnails (Part 2 of 2)",
+            "icon": "⬆️",
+            "handler": on_function_14b_click,
+            "help_file": "FUNCTION_14b_UPLOAD_THUMBNAILS.md"
         }
     }
     

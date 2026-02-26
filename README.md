@@ -132,6 +132,42 @@ pip install -r requirements.txt
 python app.py
 ```
 
+## Optional: Selenium Setup for Function 14b
+
+Function 14b uses Selenium browser automation to upload thumbnail files via the Alma web interface (required because the Alma API file upload endpoint has limitations).
+
+### Prerequisites for Function 14b
+
+1. **Install GeckoDriver** (Firefox driver for Selenium):
+   ```bash
+   # macOS (via Homebrew)
+   brew install geckodriver
+   
+   # Or download from: https://github.com/mozilla/geckodriver/releases
+   ```
+
+2. **Start Firefox with Marionette enabled**:
+   
+   Use the provided helper script:
+   ```bash
+   ./start_firefox_for_selenium.sh
+   ```
+   
+   Or start Firefox manually:
+   ```bash
+   # macOS
+   open -a Firefox --args --marionette
+   
+   # Linux
+   firefox --marionette &
+   ```
+
+3. **Log into Alma** in the Firefox window before running Function 14b
+
+4. **Keep Firefox open** - Selenium will connect to this existing session
+
+See [FUNCTION_14b_UPLOAD_THUMBNAILS.md](FUNCTION_14b_UPLOAD_THUMBNAILS.md) for detailed instructions.
+
 ## Usage
 
 1. **Launch the application** using `./run.sh`
