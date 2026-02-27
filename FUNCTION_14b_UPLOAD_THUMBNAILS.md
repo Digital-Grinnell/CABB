@@ -88,45 +88,34 @@ For each record in the CSV file:
 
 ## Usage
 
-### Step 1: Start Firefox with Marionette
-1. **Close Firefox completely** if it's currently running
-2. **Start Firefox with remote debugging enabled**:
-   ```bash
-   # macOS - open Firefox with marionette enabled
-   open -a Firefox --args --marionette
-   ```
-   Or use the full path:
-   ```bash
-   /Applications/Firefox.app/Contents/MacOS/firefox --marionette
-   ```
-3. **Log into Alma** in the Firefox window
-4. **Navigate to the Alma home page**:
-   ```
-   https://grinnell.alma.exlibrisgroup.com/SAML
-   ```
-5. **Leave Firefox open** - Selenium will connect to this window
+### Quick Start (Recommended)
 
-### Step 2: Prepare CSV Path
+**Selenium now automatically launches Firefox** - no manual browser setup needed!
+
+### Step 1: Prepare CSV Path
 1. Locate the CSV file path from Function 14a output
    - Example: `~/Downloads/CABB_thumbnail_prep_20260226_135924/thumbnail_representations_20260226_135924.csv`
 
-### Step 3: Run Function 14b
+### Step 2: Run Function 14b
 1. In CABB, enter the CSV file path in the **Set ID** field
    - Example: `~/Downloads/CABB_thumbnail_prep_20260226_135924/thumbnail_representations_20260226_135924.csv`
    - Must use absolute path with ~/Downloads/
-2. Verify Firefox is running with `--marionette` flag and you're logged into Alma
-3. Select "14b: Upload Thumbnails (Part 2 of 2)" from the function dropdown
-4. Click the function button
-5. **Review the warning dialog carefully**
-6. Click "Proceed" to start
+2. Select "14b: Upload Thumbnails (Part 2 of 2)" from the function dropdown
+3. Click the function button
+4. **Review the warning dialog carefully**
+5. Click "Proceed" to start
 
-### Step 4: Selenium Connects and Processes
-1. Selenium connects to your existing Firefox window (the one you started with `--marionette`)
-2. If not already on Alma, it navigates to the home page
-3. Automation begins processing CSV records
-4. **Do not interact with Firefox** while uploads are in progress
+### Step 3: Log Into Alma
+1. Firefox will launch automatically
+2. Browser navigates to Alma SSO login: `https://grinnell.alma.exlibrisgroup.com/SAML`
+3. **You have 60 seconds to complete:**
+   - Grinnell SSO login
+   - DUO two-factor authentication
+   - Wait for Alma home page to load
+4. **Do not close or interact with Firefox after login**
+5. Automation will begin automatically
 
-### Step 5: Monitor Progress
+### Step 4: Monitor Progress
 - **Do not interact with Firefox** while the upload is running
 - Watch the progress bar in CABB
 - Monitor the log output for status updates
@@ -134,7 +123,7 @@ For each record in the CSV file:
   - ✓ Successfully uploaded
   - ✗ Failed (with error details)
 
-### Step 4: Review Results
+### Step 5: Review Results
 - Firefox will be **left open** after completion
 - You can review the last uploaded record
 - Check the log for any failures
@@ -232,14 +221,14 @@ If uploads fail:
   ```
 
 ### "Connection aborted" or "BadStatusLine" error
-- **Cause**: This was a previous approach that tried to connect to existing Firefox (doesn't work)
-- **Solution**: Updated code now launches a NEW Firefox window automatically
-- **What changed**: Selenium can't attach to existing sessions, so we simplified the workflow
+- **Cause**: Network connection issues or Firefox startup problems
+- **Solution**: Firefox now launches automatically with proper settings
+- **What changed**: Selenium launches a clean Firefox instance for better reliability
 
 ### "Connection refused" or "Unable to connect"
-- **Cause**: Firefox not running or marionette not enabled
-- **Solution**: Verify Firefox is running and was started with `--marionette` flag
-- Check if port 2828 is available (marionette default port)
+- **Cause**: GeckoDriver not accessible or port conflicts
+- **Solution**: Restart CABB application or check if another Selenium instance is running
+- Check Activity Monitor for existing geckodriver processes
 
 ### "GeckoDriver executable needs to be in PATH"
 - **Solution**: Install GeckoDriver: `brew install geckodriver` (macOS)
@@ -262,7 +251,7 @@ If uploads fail:
 
 ### Firefox closes during process
 - **Cause**: Firefox crashed or was manually closed
-- **Solution**: Restart Firefox, log back into Alma, run again
+- **Solution**: Restart Function 14b - Firefox will launch automatically
 - Consider processing in smaller batches
 
 ## Best Practices

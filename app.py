@@ -7,6 +7,7 @@ import flet as ft
 import os
 import logging
 import json
+import subprocess
 from datetime import datetime
 from dotenv import load_dotenv
 from typing import Optional
@@ -3888,6 +3889,7 @@ class AlmaBibEditor:
         from pathlib import Path
         from selenium import webdriver
         from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.keys import Keys
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
         from selenium.webdriver.support.ui import Select
@@ -3926,6 +3928,16 @@ class AlmaBibEditor:
                 options = webdriver.FirefoxOptions()
                 # Keep browser open after automation for review
                 options.set_preference("browser.sessionstore.resume_from_crash", False)
+                # Prevent fullscreen mode issues
+                options.set_preference("full-screen-api.enabled", False)
+                # Disable "Save password" prompts
+                options.set_preference("signon.rememberSignons", False)
+                # Disable cookie consent banners where possible
+                options.set_preference("cookiebanners.service.mode", 2)
+                options.set_preference("cookiebanners.service.mode.privateBrowsing", 2)
+                # Start with a normal window size (not maximized/fullscreen)
+                options.add_argument("--width=1400")
+                options.add_argument("--height=1000")
                 
                 # Create GeckoDriver service
                 service = Service()
@@ -3955,6 +3967,69 @@ class AlmaBibEditor:
                 
                 # Give user time to log in via SSO + DUO
                 time.sleep(60)
+                
+                # Force window to maximize and get focus
+                self.log("\nAttempting to focus Firefox window...")
+                try:
+                    # First, try to bring Firefox to front using AppleScript
+                    try:
+                        subprocess.run([
+                            'osascript', '-e',
+                            'tell application "Firefox" to activate'
+                        ], capture_output=True, timeout=5)
+                        self.log("✓ Firefox activated via AppleScript")
+                        time.sleep(0.5)  # Give it a moment to activate
+                    except Exception as e:
+                        self.log(f"⚠️  AppleScript activation failed: {e}")
+                    
+                    # Then maximize and focus the window
+                    driver.maximize_window()
+                    driver.switch_to.window(driver.current_window_handle)
+                    driver.execute_script("window.focus();")
+                    self.log("✓ Window maximized and focused")
+                except Exception as e:
+                    self.log(f"⚠️  Could not maximize/focus window: {e}")
+                
+                # Try to dismiss common popups
+                self.log("Attempting to dismiss common popups...")
+                try:
+                    # Try to dismiss "Stay signed in" dialogs (common selectors)
+                    dismiss_scripts = [
+                        # Click "No" or "Not now" on stay signed in prompts
+                        """
+                        var buttons = document.querySelectorAll('button, input[type="button"], input[type="submit"]');
+                        for (var i = 0; i < buttons.length; i++) {
+                            var text = buttons[i].textContent || buttons[i].value || '';
+                            if (text.toLowerCase().includes('no') || 
+                                text.toLowerCase().includes('not now') || 
+                                text.toLowerCase().includes('dismiss')) {
+                                buttons[i].click();
+                                break;
+                            }
+                        }
+                        """,
+                        # Dismiss cookie banners
+                        """
+                        var cookieButtons = document.querySelectorAll('[class*="cookie"] button, [id*="cookie"] button');
+                        for (var i = 0; i < cookieButtons.length; i++) {
+                            var text = cookieButtons[i].textContent || '';
+                            if (text.toLowerCase().includes('accept') || 
+                                text.toLowerCase().includes('ok') || 
+                                text.toLowerCase().includes('agree')) {
+                                cookieButtons[i].click();
+                                break;
+                            }
+                        }
+                        """
+                    ]
+                    
+                    for script in dismiss_scripts:
+                        driver.execute_script(script)
+                        time.sleep(0.5)
+                    
+                    self.log("✓ Popup dismissal attempted")
+                except Exception as e:
+                    self.log(f"⚠️  Could not dismiss popups: {e}")
                 
                 # Debug: Log current page info
                 current_url = driver.current_url
@@ -4015,15 +4090,8 @@ class AlmaBibEditor:
                         continue
                     
                     try:
-                        # Step 1: Find and configure search bar
-                        self.log("  Step 1: Configuring search bar...")
-                        
-                        # NOTE: The element selectors below are PLACEHOLDERS and will need to be
-                        # updated based on the actual Alma UI structure. To find the correct selectors:
-                        # 1. Open Firefox DevTools (F12)
-                        # 2. Use the Inspector to examine the search bar elements
-                        # 3. Look for id, name, or class attributes
-                        # 4. Update the selectors below accordingly
+                        # Step 1: Wait for page to be ready
+                        self.log("  Step 1: Waiting for Alma page to load...")
                         
                         # Wait for page to be ready
                         try:
@@ -4039,73 +4107,60 @@ class AlmaBibEditor:
                                 EC.presence_of_element_located((By.TAG_NAME, "body"))
                             )
                         
-                        # Find search type dropdown and set to "Digital titles"
-                        # This will need to be adjusted based on actual DOM structure
-                        try:
-                            search_type_select = Select(WebDriverWait(driver, 10).until(
-                                EC.presence_of_element_located((By.ID, "searchType"))  # TODO: Adjust this selector
-                            ))
-                            search_type_select.select_by_visible_text("Digital titles")
-                            self.log("    ✓ Set search type to 'Digital titles'")
-                        except TimeoutException:
-                            # First UI element not found - user might still be completing DUO
-                            self.log("    ⏸️  Search bar not found - waiting 30 more seconds for login completion...")
-                            time.sleep(30)
-                            # Retry finding search type
-                            try:
-                                search_type_select = Select(WebDriverWait(driver, 10).until(
-                                    EC.presence_of_element_located((By.ID, "searchType"))  # TODO: Adjust this selector
-                                ))
-                                search_type_select.select_by_visible_text("Digital titles")
-                                self.log("    ✓ Set search type to 'Digital titles'")
-                            except:
-                                self.log("    ⚠️ Could not find search type dropdown - attempting to continue", logging.WARNING)
-                        except:
-                            self.log("    ⚠️ Could not find search type dropdown - attempting to continue", logging.WARNING)
+                        # NOTE: Skipping search type and search field dropdown configuration
+                        # The search bar retains the last used settings ("Digital titles" and "Representation ID")
+                        # so we can go directly to entering the search term
                         
-                        # Find search field dropdown and set to "Representation PID"
-                        try:
-                            search_field_select = Select(WebDriverWait(driver, 5).until(
-                                EC.presence_of_element_located((By.ID, "searchField"))  # TODO: Adjust this selector
-                            ))
-                            search_field_select.select_by_visible_text("Representation PID")
-                            self.log("    ✓ Set search field to 'Representation PID'")
-                        except:
-                            self.log("    ⚠️ Could not find search field dropdown - attempting to continue", logging.WARNING)
+                        # # Find search type dropdown and set to "Digital titles"
+                        # # COMMENTED OUT: Search bar retains previous settings
+                        # try:
+                        #     search_type_select = Select(WebDriverWait(driver, 10).until(
+                        #         EC.presence_of_element_located((By.ID, "searchType"))
+                        #     ))
+                        #     search_type_select.select_by_visible_text("Digital titles")
+                        #     self.log("    ✓ Set search type to 'Digital titles'")
+                        # except:
+                        #     self.log("    ⚠️ Could not find search type dropdown - attempting to continue", logging.WARNING)
+                        
+                        # # Find search field dropdown and set to "Representation PID"
+                        # # COMMENTED OUT: Search bar retains previous settings
+                        # try:
+                        #     search_field_select = Select(WebDriverWait(driver, 5).until(
+                        #         EC.presence_of_element_located((By.ID, "searchField"))
+                        #     ))
+                        #     search_field_select.select_by_visible_text("Representation PID")
+                        #     self.log("    ✓ Set search field to 'Representation PID'")
+                        # except:
+                        #     self.log("    ⚠️ Could not find search field dropdown - attempting to continue", logging.WARNING)
                         
                         # Step 2: Enter representation ID and search
                         self.log(f"  Step 2: Searching for representation {rep_id}...")
+                        self.log("    Note: Using previous search settings (Digital titles / Representation ID)")
                         try:
                             search_input = WebDriverWait(driver, 10).until(
-                                EC.presence_of_element_located((By.ID, "searchInput"))  # TODO: Adjust this selector
+                                EC.presence_of_element_located((By.ID, "NEW_ALMA_MENU_TOP_NAV_Search_Text"))
                             )
                             search_input.clear()
                             search_input.send_keys(rep_id)
                             self.log("    ✓ Entered representation ID in search field")
+                            
+                            # Press ENTER to initiate search (instead of clicking button)
+                            search_input.send_keys(Keys.RETURN)
+                            self.log("    ✓ Search initiated (pressed ENTER)")
                         except TimeoutException:
-                            self.log("    ✗ Could not find search input field with id='searchInput'", logging.ERROR)
+                            self.log("    ✗ Could not find search input field with id='NEW_ALMA_MENU_TOP_NAV_Search_Text'", logging.ERROR)
                             self.log("    → You need to inspect the page and update the selector in app.py", logging.ERROR)
                             self.log("    → Check the saved HTML file in ~/Downloads/alma_page_debug_*.html", logging.ERROR)
                             raise
-                        
-                        # Click search button (magnifying glass)
-                        try:
-                            search_button = driver.find_element(By.ID, "searchButton")  # TODO: Adjust this selector
-                            search_button.click()
-                            self.log("    ✓ Clicked search button")
-                        except NoSuchElementException:
-                            self.log("    ✗ Could not find search button with id='searchButton'", logging.ERROR)
-                            self.log("    → You need to inspect the page and update the selector in app.py", logging.ERROR)
-                            raise
-                        self.log("    ✓ Search initiated")
                         
                         # Wait for results
                         time.sleep(2)
                         
                         # Step 3: Click on "Digital Representations (X)" link
                         self.log("  Step 3: Opening Digital Representations...")
+                        # Note: Using CSS_SELECTOR for multiple classes (CLASS_NAME only supports single class)
                         digital_reps_link = WebDriverWait(driver, 10).until(
-                            EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Digital Representations"))
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, ".hep-smart-link-ex-link-content.sel-smart-link-nggeneralsectiontitleall_titles_details_digital_representations.ng-star-inserted"))
                         )
                         digital_reps_link.click()
                         self.log("    ✓ Opened Digital Representations")
@@ -5713,6 +5768,13 @@ def main(page: ft.Page):
                         "Function: 14b - Upload Thumbnails (Part 2 of 2)",
                         italic=True,
                         color=ft.Colors.GREY_700
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "⚠️ IMPORTANT: Close all Firefox windows before proceeding!",
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.RED_700,
+                        size=14
                     ),
                     ft.Container(height=10),
                     ft.Text(
