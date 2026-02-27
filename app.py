@@ -4105,26 +4105,12 @@ class AlmaBibEditor:
                 current_url = driver.current_url
                 self.log(f"\nCurrent URL: {current_url}")
                 
-                # Save page source for inspection
-                page_source = driver.page_source
-                debug_file = Path.home() / "Downloads" / f"alma_page_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-                with open(debug_file, 'w', encoding='utf-8') as f:
-                    f.write(page_source)
-                self.log(f"📄 Page HTML saved to: {debug_file}")
-                self.log("")
-                self.log("=" * 70)
-                self.log("⚠️  ELEMENT SELECTORS ARE PLACEHOLDERS - NEED UPDATING")
-                self.log("=" * 70)
-                self.log("To find the correct selectors:")
-                self.log("1. In the Firefox window, press F12 to open DevTools")
-                self.log("2. Click the Inspector/Select Element tool (arrow icon)")
-                self.log("3. Click on the search bar dropdown (search type)")
-                self.log("4. Note the 'id' or 'name' attribute in DevTools")
-                self.log("5. Update app.py with the correct selectors")
-                self.log("")
-                self.log(f"Or use the helper script:")
-                self.log(f"  python inspect_alma_page.py {debug_file}")
-                self.log("=" * 70)
+                # # Save page source for inspection (COMMENTED OUT - fills up Downloads)
+                # page_source = driver.page_source
+                # debug_file = Path.home() / "Downloads" / f"alma_page_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                # with open(debug_file, 'w', encoding='utf-8') as f:
+                #     f.write(page_source)
+                # self.log(f"📄 Page HTML saved to: {debug_file}")
                 self.log("")
                 
                 self.log("Starting automated uploads...")
@@ -4239,24 +4225,23 @@ class AlmaBibEditor:
                                 EC.element_to_be_clickable((By.XPATH, "//ex-link[.//span[contains(@class, 'sel-smart-link-nggeneralsectiontitleall_titles_details_digital_representations')]]"))
                             )
                         except TimeoutException:
-                            # Element not found - save screenshot and page source for debugging
+                            # Element not found
                             self.log("    ✗ Digital Representations link not found", logging.ERROR)
                             
-                            # Save screenshot
-                            screenshot_file = Path.home() / "Downloads" / f"alma_no_digreps_{mms_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                            driver.save_screenshot(str(screenshot_file))
-                            self.log(f"    📸 Screenshot saved: {screenshot_file}")
-                            
-                            # Save page source
-                            page_source = driver.page_source
-                            html_file = Path.home() / "Downloads" / f"alma_no_digreps_{mms_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-                            with open(html_file, 'w', encoding='utf-8') as f:
-                                f.write(page_source)
-                            self.log(f"    📄 Page HTML saved: {html_file}")
-                            
-                            # Check if "No results" message appears
-                            if "no results" in page_source.lower() or "no records found" in page_source.lower():
-                                self.log("    ℹ️  Search returned no results - record may not exist or search settings incorrect", logging.WARNING)
+                            # # Debug: Save screenshot and page source (COMMENTED OUT - fills up Downloads)
+                            # screenshot_file = Path.home() / "Downloads" / f"alma_no_digreps_{mms_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                            # driver.save_screenshot(str(screenshot_file))
+                            # self.log(f"    📸 Screenshot saved: {screenshot_file}")
+                            # 
+                            # page_source = driver.page_source
+                            # html_file = Path.home() / "Downloads" / f"alma_no_digreps_{mms_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                            # with open(html_file, 'w', encoding='utf-8') as f:
+                            #     f.write(page_source)
+                            # self.log(f"    📄 Page HTML saved: {html_file}")
+                            # 
+                            # # Check if "No results" message appears
+                            # if "no results" in page_source.lower() or "no records found" in page_source.lower():
+                            #     self.log("    ℹ️  Search returned no results - record may not exist or search settings incorrect", logging.WARNING)
                             
                             # Try alternative selectors
                             self.log("    Attempting alternative selectors...")
@@ -4292,31 +4277,89 @@ class AlmaBibEditor:
                             self.log("    ✓ Opened Digital Representations (via JavaScript)")
                         
                         # Wait for modal/window to appear
-                        time.sleep(1)
+                        time.sleep(2)
+                        
+                        # Check for and close any overlay/popup that might obscure the content
+                        self.log("    Checking for overlay popups...")
+                        try:
+                            # Look for close button (X) with class "sel-id-ex-svg-icon-close"
+                            close_button = driver.find_element(By.CSS_SELECTOR, ".sel-id-ex-svg-icon-close")
+                            close_button.click()
+                            self.log("    ✓ Closed overlay popup")
+                            time.sleep(1)  # Wait for overlay to close
+                        except NoSuchElementException:
+                            self.log("    ℹ️  No overlay popup detected (this is normal)")
+                        except Exception as e:
+                            self.log(f"    ⚠️  Could not close overlay: {e}", logging.WARNING)
+                        
+                        # # Debug: Save screenshot of Digital Representations modal (COMMENTED OUT - fills up Downloads)
+                        # try:
+                        #     screenshot_file = Path.home() / "Downloads" / f"alma_digreps_modal_{rep_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                        #     driver.save_screenshot(str(screenshot_file))
+                        #     self.log(f"    📸 Digital Reps modal screenshot: {screenshot_file}")
+                        #     
+                        #     html_file = Path.home() / "Downloads" / f"alma_digreps_modal_{rep_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                        #     with open(html_file, 'w', encoding='utf-8') as f:
+                        #         f.write(driver.page_source)
+                        #     self.log(f"    📄 Digital Reps modal HTML: {html_file}")
+                        # except Exception as debug_err:
+                        #     self.log(f"    ⚠️ Could not save debug files: {debug_err}", logging.WARNING)
                         
                         # Step 4: Click on the specific representation ID link
-                        self.log(f"  Step 4: Opening representation {rep_id}...")
-                        rep_link = WebDriverWait(driver, 10).until(
-                            EC.element_to_be_clickable((By.LINK_TEXT, rep_id))
-                        )
-                        rep_link.click()
-                        self.log("    ✓ Opened representation")
+                        self.log(f"  Step 4: Looking for representation {rep_id}...")
+                        
+                        try:
+                            # Try multiple strategies to find the representation ID link
+                            # Strategy 1: Exact link text
+                            try:
+                                rep_link = WebDriverWait(driver, 5).until(
+                                    EC.element_to_be_clickable((By.LINK_TEXT, rep_id))
+                                )
+                                self.log("    ✓ Found rep ID using exact link text")
+                            except TimeoutException:
+                                # Strategy 2: Partial link text (in case there's extra formatting)
+                                try:
+                                    rep_link = WebDriverWait(driver, 3).until(
+                                        EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, rep_id))
+                                    )
+                                    self.log("    ✓ Found rep ID using partial link text")
+                                except TimeoutException:
+                                    # Strategy 3: XPath - any clickable element containing the rep ID
+                                    try:
+                                        rep_link = WebDriverWait(driver, 3).until(
+                                            EC.element_to_be_clickable((By.XPATH, f"//*[contains(text(), '{rep_id}')]"))
+                                        )
+                                        self.log("    ✓ Found rep ID using XPath text search")
+                                    except TimeoutException:
+                                        # Strategy 4: Try finding in a table/list structure
+                                        rep_link = WebDriverWait(driver, 3).until(
+                                            EC.element_to_be_clickable((By.XPATH, f"//a[contains(., '{rep_id}')]"))
+                                        )
+                                        self.log("    ✓ Found rep ID using XPath anchor search")
+                            
+                            rep_link.click()
+                            self.log("    ✓ Clicked representation link")
+                        except TimeoutException:
+                            self.log(f"    ✗ Could not find representation ID {rep_id} on page", logging.ERROR)
+                            self.log(f"    → Check screenshot/HTML files saved above", logging.ERROR)
+                            self.log(f"    → The representation might not exist or modal didn't load", logging.ERROR)
+                            raise
                         
                         # Wait for representation page to load
                         time.sleep(2)
                         
-                        # Debug: Save screenshot and HTML of representation page
-                        try:
-                            screenshot_file = Path.home() / "Downloads" / f"alma_rep_page_{rep_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                            driver.save_screenshot(str(screenshot_file))
-                            self.log(f"    📸 Representation page screenshot: {screenshot_file}")
-                            
-                            html_file = Path.home() / "Downloads" / f"alma_rep_page_{rep_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-                            with open(html_file, 'w', encoding='utf-8') as f:
-                                f.write(driver.page_source)
-                            self.log(f"    📄 Representation page HTML: {html_file}")
-                        except Exception as debug_err:
-                            self.log(f"    ⚠️ Could not save debug files: {debug_err}", logging.WARNING)
+                        # # Debug: Save screenshot and HTML of representation page (COMMENTED OUT - fills up Downloads)
+                        # try:
+                        #     screenshot_file = Path.home() / "Downloads" / f"alma_rep_page_{rep_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                        #     driver.save_screenshot(str(screenshot_file))
+                        #     self.log(f"    📸 Representation page screenshot: {screenshot_file}")
+                        #     
+                        #     html_file = Path.home() / "Downloads" / f"alma_rep_page_{rep_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                        #     with open(html_file, 'w', encoding='utf-8') as f:
+                        #         f.write(driver.page_source)
+                        #     self.log(f"    📄 Representation page HTML: {html_file}")
+                        # except Exception as debug_err:
+                        #     self.log(f"    ⚠️ Could not save debug files: {debug_err}", logging.WARNING)
                         
                         # Step 5: Find and use the thumbnail upload control
                         self.log("  Step 5: Looking for thumbnail upload control...")
