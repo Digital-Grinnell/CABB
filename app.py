@@ -3890,6 +3890,7 @@ class AlmaBibEditor:
         from selenium import webdriver
         from selenium.webdriver.common.by import By
         from selenium.webdriver.common.keys import Keys
+        from selenium.webdriver.common.action_chains import ActionChains
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
         from selenium.webdriver.support.ui import Select
@@ -3959,6 +3960,14 @@ class AlmaBibEditor:
                 self.log("1. Complete the SSO login process in the Firefox window")
                 self.log("2. Complete DUO authentication if prompted")
                 self.log("3. Wait for the Alma home page to fully load")
+                self.log("")
+                self.log("⚠️  IMPORTANT: Configure the search bar BEFORE automation starts:")
+                self.log("   • Click the search dropdown (left side)")
+                self.log("   • Select: 'Digital titles'")
+                self.log("   • Click the field dropdown (middle)")
+                self.log("   • Select: 'Representation ID' or 'Representation PID'")
+                self.log("   • Leave the search box EMPTY")
+                self.log("")
                 self.log("4. Automation will begin automatically in 60 seconds...")
                 self.log("")
                 self.log("(If you need more time, the system will pause for 30 more seconds)")
@@ -3968,68 +3977,129 @@ class AlmaBibEditor:
                 # Give user time to log in via SSO + DUO
                 time.sleep(60)
                 
-                # Force window to maximize and get focus
-                self.log("\nAttempting to focus Firefox window...")
-                try:
-                    # First, try to bring Firefox to front using AppleScript
+                # Aggressively force Firefox to get focus and dismiss popups
+                self.log("\n" + "=" * 70)
+                self.log("FOCUSING FIREFOX AND DISMISSING POPUPS")
+                self.log("=" * 70)
+                
+                # Multiple attempts to activate and focus
+                for attempt in range(3):
+                    self.log(f"\nFocus attempt {attempt + 1}/3...")
+                    
                     try:
+                        # Activate Firefox via AppleScript
                         subprocess.run([
                             'osascript', '-e',
                             'tell application "Firefox" to activate'
                         ], capture_output=True, timeout=5)
-                        self.log("✓ Firefox activated via AppleScript")
-                        time.sleep(0.5)  # Give it a moment to activate
-                    except Exception as e:
-                        self.log(f"⚠️  AppleScript activation failed: {e}")
-                    
-                    # Then maximize and focus the window
-                    driver.maximize_window()
-                    driver.switch_to.window(driver.current_window_handle)
-                    driver.execute_script("window.focus();")
-                    self.log("✓ Window maximized and focused")
-                except Exception as e:
-                    self.log(f"⚠️  Could not maximize/focus window: {e}")
-                
-                # Try to dismiss common popups
-                self.log("Attempting to dismiss common popups...")
-                try:
-                    # Try to dismiss "Stay signed in" dialogs (common selectors)
-                    dismiss_scripts = [
-                        # Click "No" or "Not now" on stay signed in prompts
-                        """
-                        var buttons = document.querySelectorAll('button, input[type="button"], input[type="submit"]');
-                        for (var i = 0; i < buttons.length; i++) {
-                            var text = buttons[i].textContent || buttons[i].value || '';
-                            if (text.toLowerCase().includes('no') || 
-                                text.toLowerCase().includes('not now') || 
-                                text.toLowerCase().includes('dismiss')) {
-                                buttons[i].click();
-                                break;
-                            }
-                        }
-                        """,
-                        # Dismiss cookie banners
-                        """
-                        var cookieButtons = document.querySelectorAll('[class*="cookie"] button, [id*="cookie"] button');
-                        for (var i = 0; i < cookieButtons.length; i++) {
-                            var text = cookieButtons[i].textContent || '';
-                            if (text.toLowerCase().includes('accept') || 
-                                text.toLowerCase().includes('ok') || 
-                                text.toLowerCase().includes('agree')) {
-                                cookieButtons[i].click();
-                                break;
-                            }
-                        }
-                        """
-                    ]
-                    
-                    for script in dismiss_scripts:
-                        driver.execute_script(script)
+                        self.log(f"  ✓ Firefox activated via AppleScript")
+                        time.sleep(1)  # Wait for activation to take effect
+                        
+                        # Maximize and focus window
+                        driver.maximize_window()
+                        driver.switch_to.window(driver.current_window_handle)
+                        driver.execute_script("window.focus();")
+                        self.log(f"  ✓ Window maximized and focused")
                         time.sleep(0.5)
+                        
+                        # Use keyboard to dismiss popups (Tab + Enter, then Escape)
+                        # This works even when mouse focus is lost
+                        actions = ActionChains(driver)
+                        
+                        # Try pressing Escape to close any dialogs
+                        actions.send_keys(Keys.ESCAPE)
+                        actions.perform()
+                        time.sleep(0.3)
+                        
+                        # Try Tab + Enter to dismiss "Stay signed in" type prompts
+                        actions = ActionChains(driver)
+                        actions.send_keys(Keys.TAB)
+                        actions.send_keys(Keys.RETURN)
+                        actions.perform()
+                        time.sleep(0.3)
+                        
+                        self.log(f"  ✓ Keyboard popup dismissal attempted")
+                        
+                    except Exception as e:
+                        self.log(f"  ⚠️  Focus attempt {attempt + 1} had issues: {e}")
                     
-                    self.log("✓ Popup dismissal attempted")
+                    time.sleep(0.5)
+                
+                # Try to dismiss common popups with JavaScript
+                self.log("\nAttempting JavaScript popup dismissal...")
+                try:
+                    # Enhanced popup dismissal scripts - run multiple times
+                    for round_num in range(3):
+                        dismiss_scripts = [
+                            # Press Escape key on any focused element
+                            """
+                            if (document.activeElement) {
+                                var event = new KeyboardEvent('keydown', {'key': 'Escape', 'code': 'Escape', 'keyCode': 27});
+                                document.activeElement.dispatchEvent(event);
+                            }
+                            """,
+                            # Click "No" or "Not now" on stay signed in prompts
+                            """
+                            var buttons = document.querySelectorAll('button, input[type="button"], input[type="submit"]');
+                            for (var i = 0; i < buttons.length; i++) {
+                                var text = buttons[i].textContent || buttons[i].value || '';
+                                if (text.toLowerCase().includes('no') || 
+                                    text.toLowerCase().includes('not now') || 
+                                    text.toLowerCase().includes('dismiss') ||
+                                    text.toLowerCase().includes('cancel')) {
+                                    buttons[i].click();
+                                    break;
+                                }
+                            }
+                            """,
+                            # Dismiss cookie banners
+                            """
+                            var cookieButtons = document.querySelectorAll('[class*="cookie"] button, [id*="cookie"] button');
+                            for (var i = 0; i < cookieButtons.length; i++) {
+                                var text = cookieButtons[i].textContent || '';
+                                if (text.toLowerCase().includes('accept') || 
+                                    text.toLowerCase().includes('ok') || 
+                                    text.toLowerCase().includes('agree')) {
+                                    cookieButtons[i].click();
+                                    break;
+                                }
+                            }
+                            """,
+                            # Close any modal overlays
+                            """
+                            var closeButtons = document.querySelectorAll('[class*="close"], [class*="dismiss"], [aria-label*="close" i]');
+                            for (var i = 0; i < closeButtons.length; i++) {
+                                if (closeButtons[i].offsetParent !== null) {
+                                    closeButtons[i].click();
+                                    break;
+                                }
+                            }
+                            """
+                        ]
+                        
+                        for script in dismiss_scripts:
+                            driver.execute_script(script)
+                            time.sleep(0.2)
+                        
+                        if round_num < 2:
+                            time.sleep(0.5)  # Brief pause between rounds
+                    
+                    self.log("✓ JavaScript popup dismissal completed (3 rounds)")
                 except Exception as e:
-                    self.log(f"⚠️  Could not dismiss popups: {e}")
+                    self.log(f"⚠️  Could not dismiss popups via JavaScript: {e}")
+                
+                # Final focus attempt
+                try:
+                    subprocess.run([
+                        'osascript', '-e',
+                        'tell application "Firefox" to activate'
+                    ], capture_output=True, timeout=5)
+                    driver.execute_script("window.focus();")
+                    self.log("✓ Final Firefox activation completed")
+                except Exception as e:
+                    self.log(f"⚠️  Final activation failed: {e}")
+                
+                self.log("=" * 70)
                 
                 # Debug: Log current page info
                 current_url = driver.current_url
@@ -4135,7 +4205,8 @@ class AlmaBibEditor:
                         
                         # Step 2: Enter representation ID and search
                         self.log(f"  Step 2: Searching for representation {rep_id}...")
-                        self.log("    Note: Using previous search settings (Digital titles / Representation ID)")
+                        self.log("    ℹ️  Using retained search settings")
+                        self.log("    ⚠️  Ensure search is set to: Digital titles / Representation ID")
                         try:
                             search_input = WebDriverWait(driver, 10).until(
                                 EC.presence_of_element_located((By.ID, "NEW_ALMA_MENU_TOP_NAV_Search_Text"))
@@ -4153,17 +4224,72 @@ class AlmaBibEditor:
                             self.log("    → Check the saved HTML file in ~/Downloads/alma_page_debug_*.html", logging.ERROR)
                             raise
                         
-                        # Wait for results
-                        time.sleep(2)
+                        # Wait for search results to load
+                        self.log("    Waiting for search results to load...")
+                        time.sleep(10)  # Give the page more time to load and render results
                         
                         # Step 3: Click on "Digital Representations (X)" link
                         self.log("  Step 3: Opening Digital Representations...")
-                        # Note: Using CSS_SELECTOR for multiple classes (CLASS_NAME only supports single class)
-                        digital_reps_link = WebDriverWait(driver, 10).until(
-                            EC.element_to_be_clickable((By.CSS_SELECTOR, ".hep-smart-link-ex-link-content.sel-smart-link-nggeneralsectiontitleall_titles_details_digital_representations.ng-star-inserted"))
-                        )
-                        digital_reps_link.click()
-                        self.log("    ✓ Opened Digital Representations")
+                        self.log("    Waiting for Digital Representations link to be clickable...")
+                        
+                        try:
+                            # Wait longer for the element to be truly clickable (not just present)
+                            # Find the ex-link that contains a span with the identifying class
+                            digital_reps_link = WebDriverWait(driver, 20).until(
+                                EC.element_to_be_clickable((By.XPATH, "//ex-link[.//span[contains(@class, 'sel-smart-link-nggeneralsectiontitleall_titles_details_digital_representations')]]"))
+                            )
+                        except TimeoutException:
+                            # Element not found - save screenshot and page source for debugging
+                            self.log("    ✗ Digital Representations link not found", logging.ERROR)
+                            
+                            # Save screenshot
+                            screenshot_file = Path.home() / "Downloads" / f"alma_no_digreps_{mms_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                            driver.save_screenshot(str(screenshot_file))
+                            self.log(f"    📸 Screenshot saved: {screenshot_file}")
+                            
+                            # Save page source
+                            page_source = driver.page_source
+                            html_file = Path.home() / "Downloads" / f"alma_no_digreps_{mms_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                            with open(html_file, 'w', encoding='utf-8') as f:
+                                f.write(page_source)
+                            self.log(f"    📄 Page HTML saved: {html_file}")
+                            
+                            # Check if "No results" message appears
+                            if "no results" in page_source.lower() or "no records found" in page_source.lower():
+                                self.log("    ℹ️  Search returned no results - record may not exist or search settings incorrect", logging.WARNING)
+                            
+                            # Try alternative selectors
+                            self.log("    Attempting alternative selectors...")
+                            try:
+                                # Try finding any element with "digital" in text (case-insensitive)
+                                digital_reps_link = driver.find_element(By.XPATH, "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'digital representation')]")
+                                self.log("    ✓ Found using alternative selector (case-insensitive text)")
+                            except NoSuchElementException:
+                                # Last resort: try by partial link text
+                                try:
+                                    digital_reps_link = driver.find_element(By.PARTIAL_LINK_TEXT, "Digital Representation")
+                                    self.log("    ✓ Found using partial link text")
+                                except NoSuchElementException:
+                                    self.log("    ✗ Could not find Digital Representations link with any selector", logging.ERROR)
+                                    self.log("    → Please inspect the screenshot and HTML file to find the correct selector", logging.ERROR)
+                                    raise TimeoutException("Digital Representations link not found after trying multiple selectors")
+                        
+                        # Additional wait to ensure any overlays/animations are complete
+                        time.sleep(1)
+                        
+                        # Scroll element into view
+                        driver.execute_script("arguments[0].scrollIntoView(true);", digital_reps_link)
+                        time.sleep(0.5)  # Brief pause after scrolling
+                        
+                        # Try regular click first
+                        try:
+                            digital_reps_link.click()
+                            self.log("    ✓ Opened Digital Representations")
+                        except Exception as e:
+                            # If regular click fails, use JavaScript click
+                            self.log(f"    Regular click blocked ({e}), using JavaScript click...")
+                            driver.execute_script("arguments[0].click();", digital_reps_link)
+                            self.log("    ✓ Opened Digital Representations (via JavaScript)")
                         
                         # Wait for modal/window to appear
                         time.sleep(1)
@@ -4177,13 +4303,38 @@ class AlmaBibEditor:
                         self.log("    ✓ Opened representation")
                         
                         # Wait for representation page to load
-                        time.sleep(1)
+                        time.sleep(2)
                         
-                        # Step 5: Click "Thumbnail Upload" file selector
-                        self.log("  Step 5: Uploading thumbnail file...")
-                        file_input = WebDriverWait(driver, 10).until(
-                            EC.presence_of_element_located((By.ID, "thumbnailUpload"))  # TODO: Adjust this selector
-                        )
+                        # Debug: Save screenshot and HTML of representation page
+                        try:
+                            screenshot_file = Path.home() / "Downloads" / f"alma_rep_page_{rep_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                            driver.save_screenshot(str(screenshot_file))
+                            self.log(f"    📸 Representation page screenshot: {screenshot_file}")
+                            
+                            html_file = Path.home() / "Downloads" / f"alma_rep_page_{rep_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                            with open(html_file, 'w', encoding='utf-8') as f:
+                                f.write(driver.page_source)
+                            self.log(f"    📄 Representation page HTML: {html_file}")
+                        except Exception as debug_err:
+                            self.log(f"    ⚠️ Could not save debug files: {debug_err}", logging.WARNING)
+                        
+                        # Step 5: Find and use the thumbnail upload control
+                        self.log("  Step 5: Looking for thumbnail upload control...")
+                        
+                        try:
+                            # File input has id="pageBeansavedFile"
+                            file_input = WebDriverWait(driver, 10).until(
+                                EC.presence_of_element_located((By.ID, "pageBeansavedFile"))
+                            )
+                            self.log("    ✓ Found file input (id=pageBeansavedFile)")
+                        except TimeoutException:
+                            # Fallback: try generic file input selector
+                            self.log("    ⚠️ ID not found, trying input[type='file']...", logging.WARNING)
+                            file_input = WebDriverWait(driver, 5).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='file']"))
+                            )
+                            self.log("    ✓ Found file input using type='file'")
+                        
                         file_input.send_keys(str(file_path.absolute()))
                         self.log(f"    ✓ Selected file: {file_path.name}")
                         
@@ -4191,21 +4342,35 @@ class AlmaBibEditor:
                         time.sleep(2)
                         
                         # Step 6: Click Save button
-                        save_button = WebDriverWait(driver, 10).until(
-                            EC.element_to_be_clickable((By.ID, "saveButton"))  # TODO: Adjust this selector
-                        )
-                        save_button.click()
-                        self.log("    ✓ Clicked Save")
+                        self.log("  Step 6: Saving changes...")
+                        try:
+                            save_button = WebDriverWait(driver, 10).until(
+                                EC.element_to_be_clickable((By.ID, "PAGE_BUTTONS_cbuttonsave"))
+                            )
+                            save_button.click()
+                            self.log("    ✓ Clicked Save button")
+                        except TimeoutException:
+                            # Fallback: try finding button by text
+                            self.log("    ⚠️ Save button ID not found, trying button text...", logging.WARNING)
+                            save_button = WebDriverWait(driver, 5).until(
+                                EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Save')]"))
+                            )
+                            save_button.click()
+                            self.log("    ✓ Clicked Save button (via text)")
                         
                         # Wait for save to complete
-                        time.sleep(2)
+                        time.sleep(3)
+                        self.log("    ✓ Changes saved")
                         
                         self.log(f"  ✓ Successfully uploaded thumbnail for {mms_id}")
                         success_count += 1
                         
                     except TimeoutException as e:
                         self.log(f"  ✗ Timeout waiting for page element: {str(e)}", logging.ERROR)
-                        self.log(f"    This may indicate the page structure has changed or the page didn't load in time", logging.ERROR)
+                        self.log(f"    This may indicate:", logging.ERROR)
+                        self.log(f"    - The page structure has changed (check screenshot/HTML in Downloads)", logging.ERROR)
+                        self.log(f"    - The search returned no results (wrong search settings?)", logging.ERROR)
+                        self.log(f"    - The page didn't load in time (network issues?)", logging.ERROR)
                         failed_count += 1
                     except NoSuchElementException as e:
                         self.log(f"  ✗ Could not find required element: {str(e)}", logging.ERROR)
