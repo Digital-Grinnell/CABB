@@ -2967,19 +2967,23 @@ class AlmaBibEditor:
                     failed_count += 1
             
             # Write CSV file with results
+            csv_file_path = None
             if csv_data:
                 csv_file = output_dir / f"thumbnail_representations_{timestamp}.csv"
+                csv_file_path = str(csv_file.absolute())
                 with open(csv_file, 'w', newline='', encoding='utf-8') as f:
                     writer = csv.DictWriter(f, fieldnames=['mms_id', 'rep_id', 'filename', 'original_file'])
                     writer.writeheader()
                     writer.writerows(csv_data)
                 
-                self.log(f"\n✓ Created CSV file: {csv_file}")
+                self.log(f"\n✓ Created CSV file: {csv_file_path}")
                 self.log(f"  Contains {len(csv_data)} entries")
             
             # Final summary
             message = f"Thumbnail preparation complete: {success_count} prepared, {failed_count} failed, "
             message += f"{no_identifier_count} no identifier, {no_thumbnail_count} no thumbnail (normal)"
+            if csv_file_path:
+                message += f"\nCSV file: {csv_file_path}"
             message += f"\nOutput directory: {output_dir.absolute()}"
             self.log(message)
             if no_thumbnail_count > 0:
