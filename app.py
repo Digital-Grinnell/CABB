@@ -4219,14 +4219,28 @@ class AlmaBibEditor:
                         self.log("    Waiting for Digital Representations link to be clickable...")
                         
                         try:
-                            # Wait longer for the element to be truly clickable (not just present)
-                            # Find the ex-link that contains a span with the identifying class
-                            digital_reps_link = WebDriverWait(driver, 20).until(
-                                EC.element_to_be_clickable((By.XPATH, "//ex-link[.//span[contains(@class, 'sel-smart-link-nggeneralsectiontitleall_titles_details_digital_representations')]]"))
-                            )
+                            # Primary: Try case-insensitive text search (most reliable)
+                            try:
+                                digital_reps_link = WebDriverWait(driver, 15).until(
+                                    EC.element_to_be_clickable((By.XPATH, "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'digital representation')]"))
+                                )
+                                self.log("    ✓ Found Digital Reps link (case-insensitive text)")
+                            except TimeoutException:
+                                # Fallback 1: Try partial link text
+                                try:
+                                    digital_reps_link = WebDriverWait(driver, 5).until(
+                                        EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Digital Representation"))
+                                    )
+                                    self.log("    ✓ Found Digital Reps link (partial link text)")
+                                except TimeoutException:
+                                    # Fallback 2: Try the ex-link with span class (sometimes obscured)
+                                    digital_reps_link = WebDriverWait(driver, 5).until(
+                                        EC.element_to_be_clickable((By.XPATH, "//ex-link[.//span[contains(@class, 'sel-smart-link-nggeneralsectiontitleall_titles_details_digital_representations')]]"))
+                                    )
+                                    self.log("    ✓ Found Digital Reps link (ex-link/span selector)")
                         except TimeoutException:
-                            # Element not found
-                            self.log("    ✗ Digital Representations link not found", logging.ERROR)
+                            # All methods failed
+                            self.log("    ✗ Digital Representations link not found with any selector", logging.ERROR)
                             
                             # # Debug: Save screenshot and page source (COMMENTED OUT - fills up Downloads)
                             # screenshot_file = Path.home() / "Downloads" / f"alma_no_digreps_{mms_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
@@ -4244,20 +4258,14 @@ class AlmaBibEditor:
                             #     self.log("    ℹ️  Search returned no results - record may not exist or search settings incorrect", logging.WARNING)
                             
                             # Try alternative selectors
-                            self.log("    Attempting alternative selectors...")
+                            self.log("    Attempting one more alternative selector...")
                             try:
-                                # Try finding any element with "digital" in text (case-insensitive)
-                                digital_reps_link = driver.find_element(By.XPATH, "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'digital representation')]")
-                                self.log("    ✓ Found using alternative selector (case-insensitive text)")
+                                # Last resort: find any element with "digital" in text
+                                digital_reps_link = driver.find_element(By.XPATH, "//*[contains(text(), 'Digital')]")
+                                self.log("    ✓ Found using last resort selector (any element with 'Digital')")
                             except NoSuchElementException:
-                                # Last resort: try by partial link text
-                                try:
-                                    digital_reps_link = driver.find_element(By.PARTIAL_LINK_TEXT, "Digital Representation")
-                                    self.log("    ✓ Found using partial link text")
-                                except NoSuchElementException:
-                                    self.log("    ✗ Could not find Digital Representations link with any selector", logging.ERROR)
-                                    self.log("    → Please inspect the screenshot and HTML file to find the correct selector", logging.ERROR)
-                                    raise TimeoutException("Digital Representations link not found after trying multiple selectors")
+                                self.log("    ✗ Could not find Digital Representations link with any selector", logging.ERROR)
+                                raise TimeoutException("Digital Representations link not found after trying all selectors")
                         
                         # Additional wait to ensure any overlays/animations are complete
                         time.sleep(1)
