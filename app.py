@@ -3311,8 +3311,10 @@ class AlmaBibEditor:
                 return False, f"CSV file not found: {csv_file_path}", 0, 0
             
             records = []
+            fieldnames = None
             with open(csv_path, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
+                fieldnames = reader.fieldnames  # Save field names for later
                 for row in reader:
                     records.append(row)
             
@@ -3320,6 +3322,9 @@ class AlmaBibEditor:
                 return False, "No records found in CSV file", 0, 0
             
             self.log(f"Loaded {len(records)} record(s) from CSV")
+            
+            # Track successful uploads to filter CSV later
+            successful_mms_ids = set()
             
             # Launch Firefox via GeckoDriver for automation
             self.log("Starting Firefox browser for automation...")
@@ -3575,7 +3580,11 @@ class AlmaBibEditor:
                     if not file_path.exists():
                         self.log(f"  ✗ File not found: {filename}", logging.ERROR)
                         failed_count += 1
-                        continue
+                        self.log(f"\n⚠️  STOPPING ON FIRST FAILURE for debugging", logging.WARNING)
+                        self.log(f"    Successes so far: {success_count}", logging.INFO)
+                        self.log(f"    Failures: {failed_count}", logging.INFO)
+                        self.log(f"    Remaining: {len(records) - current}", logging.INFO)
+                        break
                     
                     # Verify file is not empty (zero bytes)
                     file_size = file_path.stat().st_size
@@ -3583,7 +3592,11 @@ class AlmaBibEditor:
                         self.log(f"  ✗ File is empty (0 bytes): {filename}", logging.ERROR)
                         self.log(f"    → Skipping zero-byte file", logging.WARNING)
                         failed_count += 1
-                        continue
+                        self.log(f"\n⚠️  STOPPING ON FIRST FAILURE for debugging", logging.WARNING)
+                        self.log(f"    Successes so far: {success_count}", logging.INFO)
+                        self.log(f"    Failures: {failed_count}", logging.INFO)
+                        self.log(f"    Remaining: {len(records) - current}", logging.INFO)
+                        break
                     
                     try:
                         # Step 1: Wait for page to be ready
@@ -3908,6 +3921,7 @@ class AlmaBibEditor:
                         
                         self.log(f"  ✓ Successfully uploaded thumbnail for {mms_id}")
                         success_count += 1
+                        successful_mms_ids.add(mms_id)  # Track success for CSV filtering
                         
                     except TimeoutException as e:
                         self.log(f"  ✗ Timeout waiting for page element: {str(e)}", logging.ERROR)
@@ -3916,19 +3930,55 @@ class AlmaBibEditor:
                         self.log(f"    - The search returned no results (wrong search settings?)", logging.ERROR)
                         self.log(f"    - The page didn't load in time (network issues?)", logging.ERROR)
                         failed_count += 1
+                        self.log(f"\n⚠️  STOPPING ON FIRST FAILURE for debugging", logging.WARNING)
+                        self.log(f"    Successes so far: {success_count}", logging.INFO)
+                        self.log(f"    Failures: {failed_count}", logging.INFO)
+                        self.log(f"    Remaining: {len(records) - current}", logging.INFO)
+                        break
                     except NoSuchElementException as e:
                         self.log(f"  ✗ Could not find required element: {str(e)}", logging.ERROR)
                         failed_count += 1
+                        self.log(f"\n⚠️  STOPPING ON FIRST FAILURE for debugging", logging.WARNING)
+                        self.log(f"    Successes so far: {success_count}", logging.INFO)
+                        self.log(f"    Failures: {failed_count}", logging.INFO)
+                        self.log(f"    Remaining: {len(records) - current}", logging.INFO)
+                        break
                     except Exception as e:
                         self.log(f"  ✗ Error uploading thumbnail: {str(e)}", logging.ERROR)
                         import traceback
                         self.log(traceback.format_exc(), logging.DEBUG)
                         failed_count += 1
+                        self.log(f"\n⚠️  STOPPING ON FIRST FAILURE for debugging", logging.WARNING)
+                        self.log(f"    Successes so far: {success_count}", logging.INFO)
+                        self.log(f"    Failures: {failed_count}", logging.INFO)
+                        self.log(f"    Remaining: {len(records) - current}", logging.INFO)
+                        break
                 
             finally:
                 # Note: We don't close the driver since we're using an existing session
                 self.log("\n⚠️ NOTE: Firefox browser has been left open for your review")
                 self.log("You can manually close Firefox when done reviewing the results", logging.DEBUG)
+            
+            # Create a new CSV with only failed records for next iteration
+            if success_count > 0 and failed_count > 0:
+                # Filter out successful records
+                failed_records = [r for r in records if r['mms_id'] not in successful_mms_ids]
+                
+                # Create new CSV filename with timestamp
+                from datetime import datetime
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                failed_csv_path = csv_path.parent / f"{csv_path.stem}_failed_{timestamp}.csv"
+                
+                # Write failed records to new CSV
+                with open(failed_csv_path, 'w', encoding='utf-8', newline='') as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(failed_records)
+                
+                self.log(f"\n📄 Created CSV with {failed_count} failed record(s): {failed_csv_path}")
+                self.log(f"   Use this file for the next iteration to retry only failed uploads")
+            elif failed_count > 0:
+                self.log(f"\n⚠️ All {failed_count} upload(s) failed - original CSV unchanged")
             
             message = f"Thumbnail upload complete: {success_count} uploaded, {failed_count} failed"
             self.log(message)
