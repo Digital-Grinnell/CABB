@@ -3308,7 +3308,7 @@ class AlmaBibEditor:
             # Read CSV file
             csv_path = Path(csv_file_path)
             if not csv_path.exists():
-                return False, f"CSV file not found: {csv_file_path}", 0, 0
+                return False, f"CSV file not found: {csv_file_path}", 0, 0, None
             
             records = []
             fieldnames = None
@@ -3319,7 +3319,7 @@ class AlmaBibEditor:
                     records.append(row)
             
             if not records:
-                return False, "No records found in CSV file", 0, 0
+                return False, "No records found in CSV file", 0, 0, None
             
             self.log(f"Loaded {len(records)} record(s) from CSV")
             
@@ -3552,7 +3552,7 @@ class AlmaBibEditor:
                 
                 self.log("Starting automated uploads...")
             except Exception as e:
-                return False, f"Could not start Firefox: {str(e)}. Please ensure GeckoDriver is installed (brew install geckodriver).", 0, 0
+                return False, f"Could not start Firefox: {str(e)}. Please ensure GeckoDriver is installed (brew install geckodriver).", 0, 0, None
             
             success_count = 0
             failed_count = 0
