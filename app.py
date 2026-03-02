@@ -3256,7 +3256,7 @@ class AlmaBibEditor:
                     pass
             return False, f"Error preparing thumbnail: {str(e)}"
     
-    def upload_thumbnails_selenium(self, csv_file_path: str, progress_callback=None, log_level: str = "INFO") -> tuple[bool, str, int, int]:
+    def upload_thumbnails_selenium(self, csv_file_path: str, progress_callback=None, log_level: str = "INFO") -> tuple[bool, str, int, int, str | None]:
         """
         Function 14b: Upload thumbnail files to Alma representations using Selenium
         
@@ -3274,7 +3274,7 @@ class AlmaBibEditor:
             log_level: Minimum log level to display (ERROR, WARNING, INFO, DEBUG)
             
         Returns:
-            tuple: (success: bool, message: str, success_count: int, failed_count: int)
+            tuple: (success: bool, message: str, success_count: int, failed_count: int, failed_csv_path: str | None)
         """
         # Convert log level string to logging constant
         min_log_level = getattr(logging, log_level, logging.INFO)
