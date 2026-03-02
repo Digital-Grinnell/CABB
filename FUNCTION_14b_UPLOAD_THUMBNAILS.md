@@ -98,6 +98,14 @@ For each record in the CSV file:
 
 ### Step 2: Run Function 14b
 1. In CABB, enter the CSV file path in the **Set ID** field
+2. **Set Log Verbosity** (new feature):
+   - **Errors Only**: Shows only errors and critical failures (cleanest output)
+   - **Warnings+**: Shows warnings and errors
+   - **Normal** (default): Shows standard progress information
+   - **Verbose**: Shows all debugging details (use for troubleshooting)
+   
+   💡 **Tip**: Use "Errors Only" or "Warnings+" for cleaner logs during production runs. Use "Verbose" when debugging issues.
+3. Click the **14b - Upload Thumbnails** button
    - Example: `~/Downloads/CABB_thumbnail_prep_20260226_135924/thumbnail_representations_20260226_135924.csv`
    - Must use absolute path with ~/Downloads/
 2. Select "14b: Upload Thumbnails (Part 2 of 2)" from the function dropdown

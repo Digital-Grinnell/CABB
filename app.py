@@ -15,6 +15,9 @@ import xml.etree.ElementTree as ET
 import xml.dom.minidom as minidom
 import requests
 
+# Import inactive functions module
+import inactive_functions
+
 # Load environment variables
 load_dotenv()
 
@@ -122,13 +125,15 @@ class AlmaBibEditor:
         self.kill_switch = False  # Emergency stop for batch operations
         self.last_manifest = None  # Store last retrieved IIIF manifest
         self.last_manifest_url = None  # Store last manifest URL
+        self.min_log_level = logging.INFO  # Minimum log level for UI display
         logger.debug(f"API Region: {self.api_region}")
         logger.debug(f"API Key configured: {'Yes' if self.api_key else 'No'}")
         
     def log(self, message, level=logging.INFO):
-        """Log a message and send to UI callback"""
+        """Log a message and send to UI callback if level is sufficient"""
         logger.log(level, message)
-        if self.log_callback:
+        # Only send to UI callback if message level is >= minimum level
+        if self.log_callback and level >= self.min_log_level:
             self.log_callback(message)
     
     def _get_alma_api_url(self):
@@ -616,132 +621,8 @@ class AlmaBibEditor:
         self.log("Dialog should now be visible")
     
     def clear_dc_relation_collections(self, mms_id: str) -> tuple[bool, str]:
-        """
-        Function 2: Clear all dc:relation fields having a value that begins with 
-        "alma:01GCL_INST/bibs/collections/"
-        
-        Uses the proven approach from change-bib-by-request.py:
-        1. GET the bib record as XML
-        2. Parse and modify the XML tree
-        3. PUT the entire XML tree back
-        
-        Args:
-            mms_id: The MMS ID of the bibliographic record
-            
-        Returns:
-            tuple: (success: bool, message: str)
-        """
-        self.log(f"Starting clear_dc_relation_collections for MMS ID: {mms_id}")
-        if not self.api_key:
-            self.log("API Key not configured", logging.ERROR)
-            return False, "API Key not configured"
-        
-        try:
-            # Get the Alma API base URL
-            api_url = self._get_alma_api_url()
-            
-            # Step 1: GET the bib record as XML
-            self.log(f"Fetching bibliographic record {mms_id} as XML")
-            headers = {'Accept': 'application/xml'}
-            response = requests.get(
-                f"{api_url}/almaws/v1/bibs/{mms_id}?view=full&expand=None&apikey={self.api_key}",
-                headers=headers
-            )
-            
-            if response.status_code != 200:
-                self.log(f"Failed to fetch record: {response.status_code}", logging.ERROR)
-                self.log(f"Response: {response.text}", logging.ERROR)
-                return False, f"Failed to fetch record: {response.status_code}"
-            
-            # Step 2: Parse the XML response
-            self.log("Parsing XML response")
-            root = ET.fromstring(response.text)
-            
-            # Register namespaces (but NOT the default namespace - we'll handle that in tostring)
-            # This prevents xmlns attribute on <bib> root element which Alma rejects
-            namespaces_to_register = {
-                'dc': 'http://purl.org/dc/elements/1.1/',
-                'dcterms': 'http://purl.org/dc/terms/',
-                'xsi': 'http://www.w3.org/2001/XMLSchema-instance'
-            }
-            for prefix, uri in namespaces_to_register.items():
-                ET.register_namespace(prefix, uri)
-            
-            self.log("Registered namespaces: dc, dcterms, xsi (default namespace handled in tostring)")
-            
-            # Step 3: Find and remove matching dc:relation elements
-            # Use namespaces dict for finding
-            search_namespaces = {
-                'dc': 'http://purl.org/dc/elements/1.1/',
-                'dcterms': 'http://purl.org/dc/terms/'
-            }
-            pattern = 'alma:01GCL_INST/bibs/collections/'
-            relations = root.findall('.//dc:relation', search_namespaces)
-            self.log(f"Found {len(relations)} dc:relation elements")
-            
-            removed_count = 0
-            for relation in relations:
-                if relation.text and relation.text.startswith(pattern):
-                    self.log(f"MATCH FOUND - Removing: {relation.text}")
-                    # Find parent and remove the element
-                    for parent in root.iter():
-                        if relation in list(parent):
-                            parent.remove(relation)
-                            removed_count += 1
-                            break
-            
-            if removed_count == 0:
-                self.log("No matching dc:relation fields found")
-                return True, "No matching dc:relation fields found"
-            
-            # Step 4: Convert the modified tree back to XML bytes
-            self.log(f"Removed {removed_count} dc:relation field(s), preparing to update")
-            xml_bytes = ET.tostring(root, encoding='utf-8')
-            
-            # Convert to string and fix namespace prefixes
-            xml_str = xml_bytes.decode('utf-8')
-            # Remove ns0: prefix from element names (e.g., <ns0:record> -> <record>)
-            xml_str = xml_str.replace('ns0:', '').replace(':ns0', '')
-            # Remove the xmlns declaration for the Alma namespace (Alma rejects it on <bib>)
-            xml_str = xml_str.replace(' xmlns="http://alma.exlibrisgroup.com/dc/01GCL_INST"', '')
-            xml_bytes = xml_str.encode('utf-8')
-            
-            # Log a sample of the XML being sent (first 500 chars)
-            self.log("=" * 60)
-            self.log("XML being sent to Alma (first 500 chars):")
-            self.log(xml_str[:500])
-            self.log("=" * 60)
-            
-            # Step 5: PUT the modified XML back to Alma
-            self.log(f"Updating record {mms_id} in Alma")
-            headers = {
-                'Accept': 'application/xml',
-                'Content-Type': 'application/xml; charset=utf-8'
-            }
-            response = requests.put(
-                f"{api_url}/almaws/v1/bibs/{mms_id}?validate=true&override_warning=true&override_lock=true&stale_version_check=false&check_match=false&apikey={self.api_key}",
-                headers=headers,
-                data=xml_bytes
-            )
-            
-            if response.status_code != 200:
-                self.log(f"Failed to update record: {response.status_code}", logging.ERROR)
-                self.log(f"Response: {response.text}", logging.ERROR)
-                self.log("=" * 60)
-                self.log("Full XML that was sent:")
-                self.log(xml_str)
-                self.log("=" * 60)
-                return False, f"Failed to update record: {response.status_code}"
-            
-            self.log(f"Successfully updated record {mms_id}")
-            return True, f"Successfully removed {removed_count} dc:relation field(s) from record {mms_id}"
-            
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            self.log(f"Error processing record {mms_id}: {str(e)}", logging.ERROR)
-            self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
-            return False, f"Error processing record {mms_id}: {str(e)}"
+        """Function 2: Delegate to inactive_functions module"""
+        return inactive_functions.clear_dc_relation_collections(self, mms_id)
     
     def export_to_csv(self, mms_ids: list, output_file: str, progress_callback=None) -> tuple[bool, str]:
         """
@@ -1112,113 +993,8 @@ class AlmaBibEditor:
         return row
     
     def filter_csv_by_pre1930_dates(self, input_file: str = None, output_file: str = None) -> tuple[bool, str]:
-        """
-        Function 4: Filter CSV export to only records 95 years old or older
-        
-        Reads the most recent alma_export_*.csv file and filters records that have
-        non-empty date values 95 years or older (rounded down to year) in any of these fields:
-        - dc:date
-        - dcterms:created
-        - dcterms:issued
-        - dcterms:dateSubmitted
-        - dcterms:dateAccepted
-        
-        The cutoff year is calculated dynamically as: current_year - 95
-        Dates are rounded down to the year only when applying the age requirement.
-        
-        Args:
-            input_file: Optional path to input CSV (if None, uses most recent alma_export_*.csv)
-            output_file: Optional path to output CSV (if None, generates timestamped filename)
-            
-        Returns:
-            tuple: (success: bool, message: str)
-        """
-        import csv
-        import glob
-        import re
-        from datetime import datetime
-        
-        # Calculate cutoff year (95 years ago)
-        current_year = datetime.now().year
-        cutoff_year = current_year - 95
-        
-        self.log(f"Starting CSV filter for records 95+ years old (cutoff year: {cutoff_year})")
-        
-        try:
-            # Find most recent alma_export_*.csv if not specified
-            if input_file is None:
-                csv_files = glob.glob("alma_export_*.csv")
-                if not csv_files:
-                    return False, "No alma_export_*.csv files found"
-                input_file = max(csv_files, key=lambda f: f)
-                self.log(f"Using input file: {input_file}")
-            
-            # Generate output filename if not specified
-            if output_file is None:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_file = f"historical_export_{timestamp}.csv"
-            
-            # Date fields to check
-            date_fields = [
-                "dc:date",
-                "dcterms:created",
-                "dcterms:issued",
-                "dcterms:dateSubmitted",
-                "dcterms:dateAccepted"
-            ]
-            
-            def extract_year(date_str: str) -> Optional[int]:
-                """Extract 4-digit year from date string"""
-                if not date_str or not date_str.strip():
-                    return None
-                
-                # Look for 4-digit year
-                match = re.search(r'\b(1[0-9]{3}|20[0-9]{2})\b', date_str)
-                if match:
-                    try:
-                        return int(match.group(1))
-                    except ValueError:
-                        return None
-                return None
-            
-            def has_old_date(row: dict) -> bool:
-                """Check if any date field contains a year 95+ years old (year <= cutoff_year)"""
-                for field in date_fields:
-                    date_value = row.get(field, "")
-                    year = extract_year(date_value)
-                    if year is not None and year <= cutoff_year:
-                        return True
-                return False
-            
-            # Read input CSV and filter
-            filtered_rows = []
-            total_rows = 0
-            
-            with open(input_file, 'r', encoding='utf-8') as infile:
-                reader = csv.DictReader(infile)
-                fieldnames = reader.fieldnames
-                
-                for row in reader:
-                    total_rows += 1
-                    if has_old_date(row):
-                        filtered_rows.append(row)
-            
-            # Write filtered results
-            with open(output_file, 'w', newline='', encoding='utf-8') as outfile:
-                writer = csv.DictWriter(outfile, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(filtered_rows)
-            
-            message = f"Filtered {len(filtered_rows)} of {total_rows} records (95+ years old, ≤{cutoff_year}) → {output_file}"
-            self.log(message)
-            return True, message
-            
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            self.log(f"Error filtering CSV: {str(e)}", logging.ERROR)
-            self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
-            return False, f"Error filtering CSV: {str(e)}"
+        """Function 4: Delegate to inactive_functions module"""
+        return inactive_functions.filter_csv_by_pre1930_dates(self, input_file, output_file)
     
     def get_iiif_manifest_and_canvas(self, mms_id: str, representation_id: str = None) -> tuple[bool, str]:
         """
@@ -1407,402 +1183,12 @@ class AlmaBibEditor:
             return False, f"Error retrieving IIIF manifest: {str(e)}"
     
     def replace_author_copyright_rights(self, mms_id: str) -> tuple[bool, str, str]:
-        """
-        Function 6: Replace dc:rights fields starting with "Copyright to this work is held by the author(s)"
-        or "Grinnell College Libraries does not own the copyright in these images..."
-        with a rights statement URL and xml:lang attribute. Also adds new dc:rights for records with none.
-        
-        Finds dc:rights fields with value starting "Copyright to this work is held by the author(s)"
-        or "Grinnell College Libraries does not own the copyright in these images..."
-        and replaces with dc:rights xml:lang="eng" value="https://rightsstatements.org/page/NoC-US/1.0/?language=en"
-        For records with NO dc:rights elements, adds the new Public Domain rights element.
-        Ensures no duplicate values are created.
-        
-        Args:
-            mms_id: The MMS ID of the bibliographic record
-            
-        Returns:
-            tuple: (success: bool, message: str, outcome: str)
-                outcome can be: 'replaced', 'added', 'removed_duplicates', 'no_change', 'error'
-        """
-        self.log(f"Starting replace_author_copyright_rights for MMS ID: {mms_id}")
-        if not self.api_key:
-            self.log("API Key not configured", logging.ERROR)
-            return False, "API Key not configured", "error"
-        
-        try:
-            # Get the Alma API base URL
-            api_url = self._get_alma_api_url()
-            
-            # Step 1: GET the bib record as XML
-            self.log(f"Fetching bibliographic record {mms_id} as XML")
-            headers = {'Accept': 'application/xml'}
-            response = requests.get(
-                f"{api_url}/almaws/v1/bibs/{mms_id}?view=full&expand=None&apikey={self.api_key}",
-                headers=headers
-            )
-            
-            if response.status_code != 200:
-                self.log(f"Failed to fetch record: {response.status_code}", logging.ERROR)
-                self.log(f"Response: {response.text}", logging.ERROR)
-                return False, f"Failed to fetch record: {response.status_code}", "error"
-            
-            # Step 2: Parse the XML response
-            self.log("Parsing XML response")
-            root = ET.fromstring(response.text)
-            
-            # Register namespaces (but NOT the default namespace)
-            namespaces_to_register = {
-                'dc': 'http://purl.org/dc/elements/1.1/',
-                'dcterms': 'http://purl.org/dc/terms/',
-                'xsi': 'http://www.w3.org/2001/XMLSchema-instance',
-                'xml': 'http://www.w3.org/XML/1998/namespace'
-            }
-            for prefix, uri in namespaces_to_register.items():
-                ET.register_namespace(prefix, uri)
-            
-            self.log("Registered namespaces: dc, dcterms, xsi, xml")
-            
-            # Step 3: Find dc:rights elements
-            search_namespaces = {
-                'dc': 'http://purl.org/dc/elements/1.1/',
-                'dcterms': 'http://purl.org/dc/terms/'
-            }
-            rights_elements = root.findall('.//dc:rights', search_namespaces)
-            self.log(f"Found {len(rights_elements)} dc:rights elements")
-            
-            # Constants
-            pattern_start = "Copyright to this work is held by the author(s)"
-            grinnell_pattern_start = "Grinnell College Libraries does not own the copyright in these images"
-            new_value = '<a href="https://rightsstatements.org/page/NoC-US/1.0/?language=en" target="_blank">Public Domain in the United States</a>'
-            url_pattern = "https://rightsstatements.org/page/NoC-US/1.0/?language=en"
-            
-            # Check if new value already exists
-            url_exists = False
-            url_element = None
-            author_copyright_elements = []
-            grinnell_copyright_elements = []
-            old_link_elements = []  # Links without target attribute
-            
-            for rights_elem in rights_elements:
-                if rights_elem.text:
-                    if rights_elem.text == new_value:
-                        url_exists = True
-                        url_element = rights_elem
-                        self.log(f"Rights statement URL with target already exists")
-                    elif rights_elem.text.startswith(pattern_start):
-                        author_copyright_elements.append(rights_elem)
-                        self.log(f"Found author copyright field: {rights_elem.text[:80]}...")
-                    elif rights_elem.text.startswith(grinnell_pattern_start):
-                        grinnell_copyright_elements.append(rights_elem)
-                        self.log(f"Found Grinnell copyright field: {rights_elem.text[:80]}...")
-                    elif url_pattern in rights_elem.text and 'target="_blank"' not in rights_elem.text:
-                        # Found old link without target attribute
-                        old_link_elements.append(rights_elem)
-                        self.log(f"Found old link without target: {rights_elem.text[:80]}...")
-            
-            # If URL with target already exists, remove any author copyright fields, grinnell copyright fields, and old links
-            if url_exists:
-                elements_to_remove = author_copyright_elements + grinnell_copyright_elements + old_link_elements
-                if elements_to_remove:
-                    self.log(f"URL exists, removing {len(elements_to_remove)} old field(s)")
-                    for rights_elem in elements_to_remove:
-                        # Find parent and remove the element
-                        for parent in root.iter():
-                            if rights_elem in list(parent):
-                                parent.remove(rights_elem)
-                                self.log(f"Removed: {rights_elem.text[:80]}...")
-                                break
-                    
-                    changes_made = len(elements_to_remove)
-                    outcome = "removed_duplicates"
-                else:
-                    self.log("URL exists and no old fields to remove")
-                    return True, "Rights statement URL already exists, no changes needed", "no_change"
-            else:
-                # URL doesn't exist, replace author copyright fields, grinnell copyright fields, or old links OR add new element
-                elements_to_replace = author_copyright_elements + grinnell_copyright_elements + old_link_elements
-                if not elements_to_replace:
-                    # No dc:rights elements exist, add a new one
-                    if len(rights_elements) == 0:
-                        warning_msg = f"WARNING: Record {mms_id} has NO dc:rights element - adding Public Domain rights statement"
-                        self.log(warning_msg, logging.WARNING)
-                        self.log("No dc:rights elements found, adding new Public Domain rights element")
-                        # Find where to add dc:rights
-                        # In Alma XML, Dublin Core elements are inside anies/any, not inside a "metadata" element
-                        # Look for any existing DC element to find the parent
-                        dc_parent = None
-                        
-                        # Try to find parent by looking for other dc: elements
-                        dc_test_tags = ['title', 'creator', 'subject', 'description', 'publisher', 'contributor', 'date', 'type', 'format', 'identifier', 'source', 'language', 'relation', 'coverage']
-                        for tag in dc_test_tags:
-                            test_elem = root.find(f'.//{{http://purl.org/dc/elements/1.1/}}{tag}', search_namespaces)
-                            if test_elem is not None:
-                                # Find this element's parent
-                                for parent in root.iter():
-                                    if test_elem in list(parent):
-                                        dc_parent = parent
-                                        self.log(f"Found DC parent element via dc:{tag}")
-                                        break
-                                if dc_parent is not None:
-                                    break
-                        
-                        # If no DC elements found, try to find anies/any element
-                        if dc_parent is None:
-                            anies_elem = root.find('.//{http://com/exlibris/urm/general/xmlbeans}anies')
-                            if anies_elem is not None:
-                                any_elems = list(anies_elem)
-                                if any_elems:
-                                    dc_parent = any_elems[0]
-                                    self.log("Found DC parent element via anies/any")
-                        
-                        if dc_parent is not None:
-                            # Create new dc:rights element
-                            new_rights_elem = ET.Element('{http://purl.org/dc/elements/1.1/}rights')
-                            new_rights_elem.text = new_value
-                            dc_parent.append(new_rights_elem)
-                            self.log(f"Added new dc:rights element: {new_value}")
-                            changes_made = 1
-                            outcome = "added"
-                        else:
-                            self.log("Could not find parent element to add dc:rights", logging.ERROR)
-                            return False, "Could not find parent element to add dc:rights", "error"
-                    else:
-                        self.log("No matching dc:rights fields found")
-                        return True, "No matching dc:rights fields found", "no_change"
-                
-                else:
-                    # Replace first matching element with new value
-                    first_elem = elements_to_replace[0]
-                    first_elem.text = new_value
-                    self.log(f"Replaced first old field with new URL")
-                    
-                    # Remove any additional fields (duplicates)
-                    for rights_elem in elements_to_replace[1:]:
-                        for parent in root.iter():
-                            if rights_elem in list(parent):
-                                parent.remove(rights_elem)
-                                self.log(f"Removed duplicate: {rights_elem.text[:80]}...")
-                                break
-                    
-                    changes_made = len(elements_to_replace)
-                    outcome = "replaced"
-            
-            # Step 4: Convert the modified tree back to XML bytes
-            self.log(f"Modified {changes_made} dc:rights field(s), preparing to update")
-            xml_bytes = ET.tostring(root, encoding='utf-8')
-            
-            # Convert to string and fix namespace prefixes
-            xml_str = xml_bytes.decode('utf-8')
-            # Remove ns0: prefix from element names
-            xml_str = xml_str.replace('ns0:', '').replace(':ns0', '')
-            # Remove the xmlns declaration for the Alma namespace
-            xml_str = xml_str.replace(' xmlns="http://alma.exlibrisgroup.com/dc/01GCL_INST"', '')
-            xml_bytes = xml_str.encode('utf-8')
-            
-            # Log a sample of the XML being sent
-            self.log("=" * 60)
-            self.log("XML being sent to Alma (first 500 chars):")
-            self.log(xml_str[:500])
-            self.log("=" * 60)
-            
-            # Step 5: PUT the modified XML back to Alma
-            self.log(f"Updating record {mms_id} in Alma")
-            headers = {
-                'Accept': 'application/xml',
-                'Content-Type': 'application/xml; charset=utf-8'
-            }
-            response = requests.put(
-                f"{api_url}/almaws/v1/bibs/{mms_id}?validate=true&override_warning=true&override_lock=true&stale_version_check=false&check_match=false&apikey={self.api_key}",
-                headers=headers,
-                data=xml_bytes
-            )
-            
-            if response.status_code != 200:
-                self.log(f"Failed to update record: {response.status_code}", logging.ERROR)
-                self.log(f"Response: {response.text}", logging.ERROR)
-                self.log("=" * 60)
-                self.log("Full XML that was sent:")
-                self.log(xml_str)
-                self.log("=" * 60)
-                return False, f"Failed to update record: {response.status_code}", "error"
-            
-            self.log(f"Successfully updated record {mms_id}")
-            
-            # Build appropriate success message based on outcome
-            if outcome == "removed_duplicates":
-                message = f"Removed {changes_made} duplicate field(s) (rights URL already present) in record {mms_id}"
-            elif outcome == "replaced":
-                message = f"Replaced {changes_made} old dc:rights field(s) with Public Domain link in record {mms_id}"
-            elif outcome == "added":
-                message = f"Added new Public Domain dc:rights element to record {mms_id}"
-            else:
-                message = f"Updated record {mms_id}"
-            
-            return True, message, outcome
-            
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            self.log(f"Error processing record {mms_id}: {str(e)}", logging.ERROR)
-            self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
-            return False, f"Error processing record {mms_id}: {str(e)}", "error"
+        """Function 6: Delegate to inactive_functions module"""
+        return inactive_functions.replace_author_copyright_rights(self, mms_id)
     
     def add_grinnell_identifier(self, mms_id: str) -> tuple[bool, str]:
-        """
-        Function 7: Add Grinnell: dc:identifier field as needed
-        
-        Finds records with dc:identifier starting with "dg_" and adds a corresponding
-        "Grinnell:<number>" dc:identifier if one doesn't already exist.
-        
-        Args:
-            mms_id: The MMS ID of the bibliographic record
-            
-        Returns:
-            tuple: (success: bool, message: str)
-        """
-        self.log(f"Starting add_grinnell_identifier for MMS ID: {mms_id}")
-        if not self.api_key:
-            self.log("API Key not configured", logging.ERROR)
-            return False, "API Key not configured"
-        
-        try:
-            # Get the Alma API base URL
-            api_url = self._get_alma_api_url()
-            
-            # Step 1: GET the bib record as XML
-            self.log(f"Fetching bibliographic record {mms_id} as XML")
-            headers = {'Accept': 'application/xml'}
-            response = requests.get(
-                f"{api_url}/almaws/v1/bibs/{mms_id}?view=full&expand=None&apikey={self.api_key}",
-                headers=headers
-            )
-            
-            if response.status_code != 200:
-                self.log(f"Failed to fetch record: {response.status_code}", logging.ERROR)
-                self.log(f"Response: {response.text}", logging.ERROR)
-                return False, f"Failed to fetch record: {response.status_code}"
-            
-            # Step 2: Parse the XML response
-            self.log("Parsing XML response")
-            root = ET.fromstring(response.text)
-            
-            # Register namespaces
-            namespaces_to_register = {
-                'dc': 'http://purl.org/dc/elements/1.1/',
-                'dcterms': 'http://purl.org/dc/terms/',
-                'xsi': 'http://www.w3.org/2001/XMLSchema-instance'
-            }
-            for prefix, uri in namespaces_to_register.items():
-                ET.register_namespace(prefix, uri)
-            
-            self.log("Registered namespaces: dc, dcterms, xsi")
-            
-            # Step 3: Find dc:identifier elements
-            search_namespaces = {
-                'dc': 'http://purl.org/dc/elements/1.1/',
-                'dcterms': 'http://purl.org/dc/terms/'
-            }
-            identifier_elements = root.findall('.//dc:identifier', search_namespaces)
-            self.log(f"Found {len(identifier_elements)} dc:identifier elements")
-            
-            # Step 4: Check for existing identifiers
-            dg_identifier = None
-            grinnell_identifier_exists = False
-            
-            for identifier_elem in identifier_elements:
-                if identifier_elem.text:
-                    if identifier_elem.text.startswith("dg_"):
-                        dg_identifier = identifier_elem.text
-                        self.log(f"Found dg_ identifier: {dg_identifier}")
-                    elif identifier_elem.text.startswith("Grinnell:"):
-                        grinnell_identifier_exists = True
-                        self.log(f"Found existing Grinnell: identifier: {identifier_elem.text}")
-            
-            # Step 5: Determine if we need to add Grinnell: identifier
-            if not dg_identifier:
-                self.log("No dg_ identifier found - nothing to do")
-                return True, "No dg_ identifier found"
-            
-            if grinnell_identifier_exists:
-                self.log("Grinnell: identifier already exists - nothing to do")
-                return True, "Grinnell: identifier already exists"
-            
-            # Step 6: Extract number from dg_ identifier and create Grinnell: identifier
-            # Extract number from "dg_<number>"
-            dg_number = dg_identifier.replace("dg_", "")
-            new_grinnell_id = f"Grinnell:{dg_number}"
-            self.log(f"Creating new identifier: {new_grinnell_id}")
-            
-            # Step 7: Add new dc:identifier element
-            # Find the parent element that contains dc:identifier elements
-            # Typically this is the record element in the anies section
-            parent_element = None
-            for identifier_elem in identifier_elements:
-                for parent in root.iter():
-                    if identifier_elem in list(parent):
-                        parent_element = parent
-                        break
-                if parent_element:
-                    break
-            
-            if not parent_element:
-                self.log("Could not find parent element for dc:identifier", logging.ERROR)
-                return False, "Could not find parent element for dc:identifier"
-            
-            # Create new dc:identifier element
-            new_identifier = ET.Element('{http://purl.org/dc/elements/1.1/}identifier')
-            new_identifier.text = new_grinnell_id
-            parent_element.append(new_identifier)
-            self.log(f"Added new dc:identifier: {new_grinnell_id}")
-            
-            # Step 8: Convert the modified tree back to XML bytes
-            xml_bytes = ET.tostring(root, encoding='utf-8')
-            
-            # Convert to string and fix namespace prefixes
-            xml_str = xml_bytes.decode('utf-8')
-            # Remove ns0: prefix from element names
-            xml_str = xml_str.replace('ns0:', '').replace(':ns0', '')
-            # Remove the xmlns declaration for the Alma namespace
-            xml_str = xml_str.replace(' xmlns="http://alma.exlibrisgroup.com/dc/01GCL_INST"', '')
-            xml_bytes = xml_str.encode('utf-8')
-            
-            # Log a sample of the XML being sent
-            self.log("=" * 60)
-            self.log("XML being sent to Alma (first 500 chars):")
-            self.log(xml_str[:500])
-            self.log("=" * 60)
-            
-            # Step 9: PUT the modified XML back to Alma
-            self.log(f"Updating record {mms_id} in Alma")
-            headers = {
-                'Accept': 'application/xml',
-                'Content-Type': 'application/xml; charset=utf-8'
-            }
-            response = requests.put(
-                f"{api_url}/almaws/v1/bibs/{mms_id}?validate=true&override_warning=true&override_lock=true&stale_version_check=false&check_match=false&apikey={self.api_key}",
-                headers=headers,
-                data=xml_bytes
-            )
-            
-            if response.status_code != 200:
-                self.log(f"Failed to update record: {response.status_code}", logging.ERROR)
-                self.log(f"Response: {response.text}", logging.ERROR)
-                self.log("=" * 60)
-                self.log("Full XML that was sent:")
-                self.log(xml_str)
-                self.log("=" * 60)
-                return False, f"Failed to update record: {response.status_code}"
-            
-            self.log(f"Successfully updated record {mms_id}")
-            return True, f"Added {new_grinnell_id} to record {mms_id}"
-            
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            self.log(f"Error processing record {mms_id}: {str(e)}", logging.ERROR)
-            self.log(f"Full traceback:\n{error_details}", logging.DEBUG)
-            return False, f"Error processing record {mms_id}: {str(e)}"
+        """Function 7: Delegate to inactive_functions module"""
+        return inactive_functions.add_grinnell_identifier(self, mms_id)
     
     def export_identifier_csv(self, mms_ids: list, output_file: str, progress_callback=None) -> tuple[bool, str]:
         """
@@ -3870,7 +3256,7 @@ class AlmaBibEditor:
                     pass
             return False, f"Error preparing thumbnail: {str(e)}"
     
-    def upload_thumbnails_selenium(self, csv_file_path: str, progress_callback=None) -> tuple[bool, str, int, int]:
+    def upload_thumbnails_selenium(self, csv_file_path: str, progress_callback=None, log_level: str = "INFO") -> tuple[bool, str, int, int]:
         """
         Function 14b: Upload thumbnail files to Alma representations using Selenium
         
@@ -3885,10 +3271,18 @@ class AlmaBibEditor:
         Args:
             csv_file_path: Path to CSV file from Function 14a
             progress_callback: Optional callback function(current, total) for progress updates
+            log_level: Minimum log level to display (ERROR, WARNING, INFO, DEBUG)
             
         Returns:
             tuple: (success: bool, message: str, success_count: int, failed_count: int)
         """
+        # Convert log level string to logging constant
+        min_log_level = getattr(logging, log_level, logging.INFO)
+        # Store original min level to restore later
+        original_min_level = self.min_log_level
+        # Set temporary min level for this function
+        self.min_log_level = min_log_level
+        
         import csv
         from pathlib import Path
         from selenium import webdriver
@@ -3903,7 +3297,8 @@ class AlmaBibEditor:
         
         try:
             self.log(f"Starting Function 14b: Upload Thumbnails via Selenium")
-            self.log(f"Reading CSV file: {csv_file_path}")
+            self.log(f"Log level: {log_level}")
+            self.log(f"Reading CSV file: {csv_file_path}", logging.DEBUG)
             
             # Read CSV file
             csv_path = Path(csv_file_path)
@@ -3923,8 +3318,8 @@ class AlmaBibEditor:
             
             # Launch Firefox via GeckoDriver for automation
             self.log("Starting Firefox browser for automation...")
-            self.log("Note: Selenium will launch a NEW Firefox window (cannot attach to existing sessions)")
-            self.log("")
+            self.log("Note: Selenium will launch a NEW Firefox window (cannot attach to existing sessions)", logging.DEBUG)
+            self.log("", logging.DEBUG)
             
             # Configure Firefox options
             try:
@@ -3948,13 +3343,13 @@ class AlmaBibEditor:
                 service = Service()
                 
                 # Launch Firefox
-                self.log("Launching Firefox via GeckoDriver...")
+                self.log("Launching Firefox via GeckoDriver...", logging.DEBUG)
                 driver = webdriver.Firefox(service=service, options=options)
                 self.log("✓ Firefox launched successfully")
                 
                 # Navigate to Alma SAML/SSO login page
                 target_url = "https://grinnell.alma.exlibrisgroup.com/SAML"
-                self.log("Navigating to Alma SSO login page...")
+                self.log("Navigating to Alma SSO login page...", logging.DEBUG)
                 driver.get(target_url)
                 
                 self.log("")
@@ -3982,13 +3377,13 @@ class AlmaBibEditor:
                 time.sleep(60)
                 
                 # Aggressively force Firefox to get focus and dismiss popups
-                self.log("\n" + "=" * 70)
-                self.log("FOCUSING FIREFOX AND DISMISSING POPUPS")
-                self.log("=" * 70)
+                self.log("\n" + "=" * 70, logging.DEBUG)
+                self.log("FOCUSING FIREFOX AND DISMISSING POPUPS", logging.DEBUG)
+                self.log("=" * 70, logging.DEBUG)
                 
                 # Multiple attempts to activate and focus
                 for attempt in range(3):
-                    self.log(f"\nFocus attempt {attempt + 1}/3...")
+                    self.log(f"\nFocus attempt {attempt + 1}/3...", logging.DEBUG)
                     
                     try:
                         # Activate Firefox via AppleScript
@@ -3996,14 +3391,14 @@ class AlmaBibEditor:
                             'osascript', '-e',
                             'tell application "Firefox" to activate'
                         ], capture_output=True, timeout=5)
-                        self.log(f"  ✓ Firefox activated via AppleScript")
+                        self.log(f"  ✓ Firefox activated via AppleScript", logging.DEBUG)
                         time.sleep(1)  # Wait for activation to take effect
                         
                         # Maximize and focus window
                         driver.maximize_window()
                         driver.switch_to.window(driver.current_window_handle)
                         driver.execute_script("window.focus();")
-                        self.log(f"  ✓ Window maximized and focused")
+                        self.log(f"  ✓ Window maximized and focused", logging.DEBUG)
                         time.sleep(0.5)
                         
                         # Use keyboard to dismiss popups (Tab + Enter, then Escape)
@@ -4022,15 +3417,15 @@ class AlmaBibEditor:
                         actions.perform()
                         time.sleep(0.3)
                         
-                        self.log(f"  ✓ Keyboard popup dismissal attempted")
+                        self.log(f"  ✓ Keyboard popup dismissal attempted", logging.DEBUG)
                         
                     except Exception as e:
-                        self.log(f"  ⚠️  Focus attempt {attempt + 1} had issues: {e}")
+                        self.log(f"  ⚠️  Focus attempt {attempt + 1} had issues: {e}", logging.DEBUG)
                     
                     time.sleep(0.5)
                 
                 # Try to dismiss common popups with JavaScript
-                self.log("\nAttempting JavaScript popup dismissal...")
+                self.log("\nAttempting JavaScript popup dismissal...", logging.DEBUG)
                 try:
                     # Enhanced popup dismissal scripts - run multiple times
                     for round_num in range(3):
@@ -4088,9 +3483,9 @@ class AlmaBibEditor:
                         if round_num < 2:
                             time.sleep(0.5)  # Brief pause between rounds
                     
-                    self.log("✓ JavaScript popup dismissal completed (3 rounds)")
+                    self.log("✓ JavaScript popup dismissal completed (3 rounds)", logging.DEBUG)
                 except Exception as e:
-                    self.log(f"⚠️  Could not dismiss popups via JavaScript: {e}")
+                    self.log(f"⚠️  Could not dismiss popups via JavaScript: {e}", logging.DEBUG)
                 
                 # Final focus attempt
                 try:
@@ -4099,15 +3494,15 @@ class AlmaBibEditor:
                         'tell application "Firefox" to activate'
                     ], capture_output=True, timeout=5)
                     driver.execute_script("window.focus();")
-                    self.log("✓ Final Firefox activation completed")
+                    self.log("✓ Final Firefox activation completed", logging.DEBUG)
                 except Exception as e:
-                    self.log(f"⚠️  Final activation failed: {e}")
+                    self.log(f"⚠️  Final activation failed: {e}", logging.DEBUG)
                 
-                self.log("=" * 70)
+                self.log("=" * 70, logging.DEBUG)
                 
                 # Debug: Log current page info
                 current_url = driver.current_url
-                self.log(f"\nCurrent URL: {current_url}")
+                self.log(f"\nCurrent URL: {current_url}", logging.DEBUG)
                 
                 # # Save page source for inspection (COMMENTED OUT - fills up Downloads)
                 # page_source = driver.page_source
@@ -4115,7 +3510,7 @@ class AlmaBibEditor:
                 # with open(debug_file, 'w', encoding='utf-8') as f:
                 #     f.write(page_source)
                 # self.log(f"📄 Page HTML saved to: {debug_file}")
-                self.log("")
+                self.log("", logging.DEBUG)
                 
                 self.log("Starting automated uploads...")
             except Exception as e:
@@ -4139,8 +3534,8 @@ class AlmaBibEditor:
                     filename = record['filename']
                     
                     self.log(f"\n[{current}/{len(records)}] Processing MMS ID: {mms_id}")
-                    self.log(f"  Rep ID: {rep_id}")
-                    self.log(f"  File: {filename}")
+                    self.log(f"  Rep ID: {rep_id}", logging.DEBUG)
+                    self.log(f"  File: {filename}", logging.DEBUG)
                     
                     # Verify file exists
                     file_path = Path(filename)
@@ -4151,7 +3546,7 @@ class AlmaBibEditor:
                     
                     try:
                         # Step 1: Wait for page to be ready
-                        self.log("  Step 1: Waiting for Alma page to load...")
+                        self.log("  Step 1: Waiting for Alma page to load...", logging.DEBUG)
                         
                         # Wait for page to be ready
                         try:
@@ -4160,7 +3555,7 @@ class AlmaBibEditor:
                             )
                         except TimeoutException:
                             # If page not ready, user might still be logging in
-                            self.log("    ⏸️  Page not ready yet - waiting 30 more seconds for login...")
+                            self.log("    ⏸️  Page not ready yet - waiting 30 more seconds for login...", logging.WARNING)
                             time.sleep(30)
                             # Try again
                             WebDriverWait(driver, 10).until(
@@ -4194,20 +3589,20 @@ class AlmaBibEditor:
                         #     self.log("    ⚠️ Could not find search field dropdown - attempting to continue", logging.WARNING)
                         
                         # Step 2: Enter representation ID and search
-                        self.log(f"  Step 2: Searching for representation {rep_id}...")
-                        self.log("    ℹ️  Using retained search settings")
-                        self.log("    ⚠️  Ensure search is set to: Digital titles / Representation ID")
+                        self.log(f"  Step 2: Searching for representation {rep_id}...", logging.DEBUG)
+                        self.log("    ℹ️  Using retained search settings", logging.DEBUG)
+                        self.log("    ⚠️  Ensure search is set to: Digital titles / Representation ID", logging.DEBUG)
                         try:
                             search_input = WebDriverWait(driver, 10).until(
                                 EC.presence_of_element_located((By.ID, "NEW_ALMA_MENU_TOP_NAV_Search_Text"))
                             )
                             search_input.clear()
                             search_input.send_keys(rep_id)
-                            self.log("    ✓ Entered representation ID in search field")
+                            self.log("    ✓ Entered representation ID in search field", logging.DEBUG)
                             
                             # Press ENTER to initiate search (instead of clicking button)
                             search_input.send_keys(Keys.RETURN)
-                            self.log("    ✓ Search initiated (pressed ENTER)")
+                            self.log("    ✓ Search initiated (pressed ENTER)", logging.DEBUG)
                         except TimeoutException:
                             self.log("    ✗ Could not find search input field with id='NEW_ALMA_MENU_TOP_NAV_Search_Text'", logging.ERROR)
                             self.log("    → You need to inspect the page and update the selector in app.py", logging.ERROR)
@@ -4215,12 +3610,12 @@ class AlmaBibEditor:
                             raise
                         
                         # Wait for search results to load
-                        self.log("    Waiting for search results to load...")
+                        self.log("    Waiting for search results to load...", logging.DEBUG)
                         time.sleep(10)  # Give the page more time to load and render results
                         
                         # Step 3: Click on "Digital Representations (X)" link
-                        self.log("  Step 3: Opening Digital Representations...")
-                        self.log("    Waiting for Digital Representations link to be clickable...")
+                        self.log("  Step 3: Opening Digital Representations...", logging.DEBUG)
+                        self.log("    Waiting for Digital Representations link to be clickable...", logging.DEBUG)
                         
                         try:
                             # Primary: Try case-insensitive text search (most reliable)
@@ -4228,20 +3623,20 @@ class AlmaBibEditor:
                                 digital_reps_link = WebDriverWait(driver, 15).until(
                                     EC.element_to_be_clickable((By.XPATH, "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'digital representation')]"))
                                 )
-                                self.log("    ✓ Found Digital Reps link (case-insensitive text)")
+                                self.log("    ✓ Found Digital Reps link (case-insensitive text)", logging.DEBUG)
                             except TimeoutException:
                                 # Fallback 1: Try partial link text
                                 try:
                                     digital_reps_link = WebDriverWait(driver, 5).until(
                                         EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Digital Representation"))
                                     )
-                                    self.log("    ✓ Found Digital Reps link (partial link text)")
+                                    self.log("    ✓ Found Digital Reps link (partial link text)", logging.DEBUG)
                                 except TimeoutException:
                                     # Fallback 2: Try the ex-link with span class (sometimes obscured)
                                     digital_reps_link = WebDriverWait(driver, 5).until(
                                         EC.element_to_be_clickable((By.XPATH, "//ex-link[.//span[contains(@class, 'sel-smart-link-nggeneralsectiontitleall_titles_details_digital_representations')]]"))
                                     )
-                                    self.log("    ✓ Found Digital Reps link (ex-link/span selector)")
+                                    self.log("    ✓ Found Digital Reps link (ex-link/span selector)", logging.DEBUG)
                         except TimeoutException:
                             # All methods failed
                             self.log("    ✗ Digital Representations link not found with any selector", logging.ERROR)
@@ -4262,11 +3657,11 @@ class AlmaBibEditor:
                             #     self.log("    ℹ️  Search returned no results - record may not exist or search settings incorrect", logging.WARNING)
                             
                             # Try alternative selectors
-                            self.log("    Attempting one more alternative selector...")
+                            self.log("    Attempting one more alternative selector...", logging.WARNING)
                             try:
                                 # Last resort: find any element with "digital" in text
                                 digital_reps_link = driver.find_element(By.XPATH, "//*[contains(text(), 'Digital')]")
-                                self.log("    ✓ Found using last resort selector (any element with 'Digital')")
+                                self.log("    ✓ Found using last resort selector (any element with 'Digital')", logging.WARNING)
                             except NoSuchElementException:
                                 self.log("    ✗ Could not find Digital Representations link with any selector", logging.ERROR)
                                 raise TimeoutException("Digital Representations link not found after trying all selectors")
@@ -4281,28 +3676,28 @@ class AlmaBibEditor:
                         # Try regular click first
                         try:
                             digital_reps_link.click()
-                            self.log("    ✓ Opened Digital Representations")
+                            self.log("    ✓ Opened Digital Representations", logging.DEBUG)
                         except Exception as e:
                             # If regular click fails, use JavaScript click
-                            self.log(f"    Regular click blocked ({e}), using JavaScript click...")
+                            self.log(f"    Regular click blocked ({e}), using JavaScript click...", logging.DEBUG)
                             driver.execute_script("arguments[0].click();", digital_reps_link)
-                            self.log("    ✓ Opened Digital Representations (via JavaScript)")
+                            self.log("    ✓ Opened Digital Representations (via JavaScript)", logging.DEBUG)
                         
                         # Wait for modal/window to appear
                         time.sleep(2)
                         
                         # Check for and close any overlay/popup that might obscure the content
-                        self.log("    Checking for overlay popups...")
+                        self.log("    Checking for overlay popups...", logging.DEBUG)
                         try:
                             # Look for close button (X) with class "sel-id-ex-svg-icon-close"
                             close_button = driver.find_element(By.CSS_SELECTOR, ".sel-id-ex-svg-icon-close")
                             close_button.click()
-                            self.log("    ✓ Closed overlay popup")
+                            self.log("    ✓ Closed overlay popup", logging.DEBUG)
                             time.sleep(1)  # Wait for overlay to close
                         except NoSuchElementException:
-                            self.log("    ℹ️  No overlay popup detected (this is normal)")
+                            self.log("    ℹ️  No overlay popup detected (this is normal)", logging.DEBUG)
                         except Exception as e:
-                            self.log(f"    ⚠️  Could not close overlay: {e}", logging.WARNING)
+                            self.log(f"    ⚠️  Could not close overlay: {e}", logging.DEBUG)
                         
                         # # Debug: Save screenshot of Digital Representations modal (COMMENTED OUT - fills up Downloads)
                         # try:
@@ -4318,7 +3713,7 @@ class AlmaBibEditor:
                         #     self.log(f"    ⚠️ Could not save debug files: {debug_err}", logging.WARNING)
                         
                         # Step 4: Click on the specific representation ID link
-                        self.log(f"  Step 4: Looking for representation {rep_id}...")
+                        self.log(f"  Step 4: Looking for representation {rep_id}...", logging.DEBUG)
                         
                         try:
                             # Try multiple strategies to find the representation ID link
@@ -4350,7 +3745,7 @@ class AlmaBibEditor:
                                         self.log("    ✓ Found rep ID using XPath anchor search")
                             
                             rep_link.click()
-                            self.log("    ✓ Clicked representation link")
+                            self.log("    ✓ Clicked representation link", logging.DEBUG)
                         except TimeoutException:
                             self.log(f"    ✗ Could not find representation ID {rep_id} on page", logging.ERROR)
                             self.log(f"    → Check screenshot/HTML files saved above", logging.ERROR)
@@ -4374,7 +3769,7 @@ class AlmaBibEditor:
                         #     self.log(f"    ⚠️ Could not save debug files: {debug_err}", logging.WARNING)
                         
                         # Step 5: Find and use the thumbnail upload control
-                        self.log("  Step 5: Looking for thumbnail upload control...")
+                        self.log("  Step 5: Looking for thumbnail upload control...", logging.DEBUG)
                         
                         try:
                             # File input has id="pageBeansavedFile"
@@ -4391,7 +3786,7 @@ class AlmaBibEditor:
                             self.log("    ✓ Found file input using type='file'")
                         
                         file_input.send_keys(str(file_path.absolute()))
-                        self.log(f"    ✓ Selected file: {file_path.name}")
+                        self.log(f"    ✓ Selected file: {file_path.name}", logging.DEBUG)
                         
                         # Wait for file to be processed
                         time.sleep(2)
@@ -4439,7 +3834,7 @@ class AlmaBibEditor:
             finally:
                 # Note: We don't close the driver since we're using an existing session
                 self.log("\n⚠️ NOTE: Firefox browser has been left open for your review")
-                self.log("You can manually close Firefox when done reviewing the results")
+                self.log("You can manually close Firefox when done reviewing the results", logging.DEBUG)
             
             message = f"Thumbnail upload complete: {success_count} uploaded, {failed_count} failed"
             self.log(message)
@@ -4455,6 +3850,9 @@ class AlmaBibEditor:
             import traceback
             self.log(traceback.format_exc(), logging.ERROR)
             return False, error_msg, 0, 0
+        finally:
+            # Restore original min log level
+            self.min_log_level = original_min_level
     
     def process_tiffs_for_import(self, mms_ids: list, tiff_csv: str = "all_single_tiffs_with_local_paths.csv",
                                   alma_export_csv: str = None, for_import_dir: str = "For-Import",
@@ -4756,6 +4154,21 @@ def main(page: ft.Page):
         keyboard_type=ft.KeyboardType.NUMBER,
         tooltip="Enter 0 for no limit, positive N for first N records, or negative -N for last N records",
         on_change=lambda e: storage.set_ui_state("limit", e.control.value)
+    )
+    
+    log_level_dropdown = ft.Dropdown(
+        label="Log Verbosity",
+        hint_text="Select log detail level",
+        width=150,
+        value=storage.get_ui_state("log_level", "INFO"),
+        options=[
+            ft.dropdown.Option("ERROR", "Errors Only"),
+            ft.dropdown.Option("WARNING", "Warnings+"),
+            ft.dropdown.Option("INFO", "Normal"),
+            ft.dropdown.Option("DEBUG", "Verbose")
+        ],
+        tooltip="Controls how much detail appears in logs. Use 'Errors Only' for cleaner output during Function 14b",
+        on_change=lambda e: storage.set_ui_state("log_level", e.control.value)
     )
     
     # Set members display
@@ -5863,9 +5276,14 @@ def main(page: ft.Page):
             
             # Upload via Selenium
             storage.record_function_usage("function_14b_upload_thumbnails")
+            
+            # Get log level from dropdown
+            selected_log_level = log_level_dropdown.value if log_level_dropdown.value else "INFO"
+            
             success, message, success_count, failed_count = editor.upload_thumbnails_selenium(
                 csv_path,
-                progress_callback=progress_update
+                progress_callback=progress_update,
+                log_level=selected_log_level
             )
             
             # Hide progress bar
@@ -6337,6 +5755,7 @@ def main(page: ft.Page):
                     ft.Row([
                         set_id_input,
                         limit_input,
+                        log_level_dropdown,
                     ], spacing=10),
                     ft.Row([
                         ft.ElevatedButton(
