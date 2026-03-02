@@ -3283,6 +3283,11 @@ class AlmaBibEditor:
         # Set temporary min level for this function
         self.min_log_level = min_log_level
         
+        # Suppress noisy loggers from Selenium and urllib3
+        # These libraries log every HTTP request at DEBUG level, flooding the terminal
+        logging.getLogger('selenium.webdriver.remote.remote_connection').setLevel(logging.WARNING)
+        logging.getLogger('urllib3.connectionpool').setLevel(logging.WARNING)
+        
         import csv
         from pathlib import Path
         from selenium import webdriver
@@ -3473,6 +3478,34 @@ class AlmaBibEditor:
                                     break;
                                 }
                             }
+                            """,
+                            # Dismiss "Manage Widgets" popup
+                            """
+                            var widgetButtons = document.querySelectorAll('button, a, [role="button"]');
+                            for (var i = 0; i < widgetButtons.length; i++) {
+                                var text = widgetButtons[i].textContent || widgetButtons[i].getAttribute('aria-label') || '';
+                                if (text.toLowerCase().includes('manage widgets') || 
+                                    text.toLowerCase().includes('widget') ||
+                                    widgetButtons[i].classList.toString().toLowerCase().includes('widget')) {
+                                    // Try to find close button in parent/sibling elements
+                                    var parent = widgetButtons[i].closest('div[role="dialog"], div[class*="modal"], div[class*="popup"]');
+                                    if (parent) {
+                                        var closeBtn = parent.querySelector('[aria-label*="close" i], button[class*="close"], a[class*="close"]');
+                                        if (closeBtn) {
+                                            closeBtn.click();
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            // Also try direct widget modal dismissal
+                            var widgetModals = document.querySelectorAll('[class*="widget" i] [class*="close"], [aria-label*="widget" i] [aria-label*="close" i]');
+                            for (var i = 0; i < widgetModals.length; i++) {
+                                if (widgetModals[i].offsetParent !== null) {
+                                    widgetModals[i].click();
+                                    break;
+                                }
+                            }
                             """
                         ]
                         
@@ -3544,6 +3577,14 @@ class AlmaBibEditor:
                         failed_count += 1
                         continue
                     
+                    # Verify file is not empty (zero bytes)
+                    file_size = file_path.stat().st_size
+                    if file_size == 0:
+                        self.log(f"  ✗ File is empty (0 bytes): {filename}", logging.ERROR)
+                        self.log(f"    → Skipping zero-byte file", logging.WARNING)
+                        failed_count += 1
+                        continue
+                    
                     try:
                         # Step 1: Wait for page to be ready
                         self.log("  Step 1: Waiting for Alma page to load...", logging.DEBUG)
@@ -3592,21 +3633,74 @@ class AlmaBibEditor:
                         self.log(f"  Step 2: Searching for representation {rep_id}...", logging.DEBUG)
                         self.log("    ℹ️  Using retained search settings", logging.DEBUG)
                         self.log("    ⚠️  Ensure search is set to: Digital titles / Representation ID", logging.DEBUG)
+                        
+                        # Dismiss any popups/widgets that might be blocking the search field
+                        self.log("    Dismissing any interfering popups...", logging.DEBUG)
+                        try:
+                            # Run the enhanced popup dismissal scripts
+                            dismiss_scripts = [
+                                # Press Escape to close any dialogs
+                                "if (document.activeElement) { var e = new KeyboardEvent('keydown', {'key': 'Escape', 'code': 'Escape', 'keyCode': 27}); document.activeElement.dispatchEvent(e); }",
+                                # Close Manage Widgets popup specifically
+                                """
+                                var btns = document.querySelectorAll('button, a, [role="button"]');
+                                for (var i = 0; i < btns.length; i++) {
+                                    var txt = (btns[i].textContent || btns[i].getAttribute('aria-label') || '').toLowerCase();
+                                    if (txt.includes('manage') || txt.includes('widget')) {
+                                        var p = btns[i].closest('div[role="dialog"], div[class*="modal"], div[class*="popup"]');
+                                        if (p) { var c = p.querySelector('[aria-label*="close" i], button[class*="close"]'); if (c) c.click(); }
+                                    }
+                                }
+                                """,
+                                # Close any modal overlays
+                                """
+                                var closeBtns = document.querySelectorAll('[class*="close"], [class*="dismiss"], [aria-label*="close" i]');
+                                for (var i = 0; i < closeBtns.length; i++) {
+                                    if (closeBtns[i].offsetParent !== null) { closeBtns[i].click(); break; }
+                                }
+                                """
+                            ]
+                            for script in dismiss_scripts:
+                                driver.execute_script(script)
+                                time.sleep(0.1)
+                            self.log("    ✓ Popup dismissal completed", logging.DEBUG)
+                        except Exception as e:
+                            self.log(f"    ⚠️  Popup dismissal had issues: {e}", logging.DEBUG)
+                        
                         try:
                             search_input = WebDriverWait(driver, 10).until(
                                 EC.presence_of_element_located((By.ID, "NEW_ALMA_MENU_TOP_NAV_Search_Text"))
                             )
-                            search_input.clear()
-                            search_input.send_keys(rep_id)
+                            
+                            # Check if element is disabled and try to enable it via JavaScript
+                            is_disabled = driver.execute_script("return arguments[0].disabled;", search_input)
+                            if is_disabled:
+                                self.log("    ⚠️  Search field is disabled, attempting to enable via JavaScript...", logging.DEBUG)
+                                driver.execute_script("arguments[0].disabled = false;", search_input)
+                                time.sleep(0.5)
+                            
+                            # Use JavaScript to clear and set value (more reliable than .clear() when elements are finicky)
+                            driver.execute_script("arguments[0].value = '';", search_input)
+                            driver.execute_script("arguments[0].value = arguments[1];", search_input, rep_id)
+                            # Trigger input event so Angular/framework detects the change
+                            driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", search_input)
                             self.log("    ✓ Entered representation ID in search field", logging.DEBUG)
                             
-                            # Press ENTER to initiate search (instead of clicking button)
-                            search_input.send_keys(Keys.RETURN)
+                            # Press ENTER to initiate search (use JavaScript to be safe)
+                            driver.execute_script("""
+                                var e = new KeyboardEvent('keydown', {'key': 'Enter', 'code': 'Enter', 'keyCode': 13, bubbles: true});
+                                arguments[0].dispatchEvent(e);
+                            """, search_input)
                             self.log("    ✓ Search initiated (pressed ENTER)", logging.DEBUG)
                         except TimeoutException:
                             self.log("    ✗ Could not find search input field with id='NEW_ALMA_MENU_TOP_NAV_Search_Text'", logging.ERROR)
                             self.log("    → You need to inspect the page and update the selector in app.py", logging.ERROR)
                             self.log("    → Check the saved HTML file in ~/Downloads/alma_page_debug_*.html", logging.ERROR)
+                            raise
+                        except Exception as e:
+                            self.log(f"    ✗ Error interacting with search field: {str(e)}", logging.ERROR)
+                            self.log(f"    → This may be due to popups/widgets blocking interaction", logging.ERROR)
+                            self.log(f"    → Try manually closing any popups in the browser and restart", logging.ERROR)
                             raise
                         
                         # Wait for search results to load
@@ -3719,27 +3813,27 @@ class AlmaBibEditor:
                             # Try multiple strategies to find the representation ID link
                             # Strategy 1: Exact link text
                             try:
-                                rep_link = WebDriverWait(driver, 5).until(
+                                rep_link = WebDriverWait(driver, 2).until(
                                     EC.element_to_be_clickable((By.LINK_TEXT, rep_id))
                                 )
                                 self.log("    ✓ Found rep ID using exact link text")
                             except TimeoutException:
                                 # Strategy 2: Partial link text (in case there's extra formatting)
                                 try:
-                                    rep_link = WebDriverWait(driver, 3).until(
+                                    rep_link = WebDriverWait(driver, 2).until(
                                         EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, rep_id))
                                     )
                                     self.log("    ✓ Found rep ID using partial link text")
                                 except TimeoutException:
                                     # Strategy 3: XPath - any clickable element containing the rep ID
                                     try:
-                                        rep_link = WebDriverWait(driver, 3).until(
+                                        rep_link = WebDriverWait(driver, 2).until(
                                             EC.element_to_be_clickable((By.XPATH, f"//*[contains(text(), '{rep_id}')]"))
                                         )
                                         self.log("    ✓ Found rep ID using XPath text search")
                                     except TimeoutException:
                                         # Strategy 4: Try finding in a table/list structure
-                                        rep_link = WebDriverWait(driver, 3).until(
+                                        rep_link = WebDriverWait(driver, 2).until(
                                             EC.element_to_be_clickable((By.XPATH, f"//a[contains(., '{rep_id}')]"))
                                         )
                                         self.log("    ✓ Found rep ID using XPath anchor search")
