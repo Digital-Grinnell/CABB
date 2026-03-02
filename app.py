@@ -2374,14 +2374,14 @@ class AlmaBibEditor:
             self.log(message)
             if no_thumbnail_count > 0:
                 self.log(f"Note: {no_thumbnail_count} record(s) had no matching thumbnail files - this is expected for some records", logging.INFO)
-            return True, message
+            return True, message, csv_file_path
             
         except Exception as e:
             error_msg = f"Error preparing thumbnails: {str(e)}"
             self.log(error_msg, logging.ERROR)
             import traceback
             self.log(traceback.format_exc(), logging.DEBUG)
-            return False, error_msg
+            return False, error_msg, None
     
     def add_jpg_representations_from_folder(self, mms_ids: list, jpg_folder: str = "For-Import", progress_callback=None) -> tuple[bool, str]:
         """
@@ -3589,14 +3589,9 @@ class AlmaBibEditor:
                     # Verify file is not empty (zero bytes)
                     file_size = file_path.stat().st_size
                     if file_size == 0:
-                        self.log(f"  ✗ File is empty (0 bytes): {filename}", logging.ERROR)
+                        self.log(f"  ⚠️  File is empty (0 bytes): {filename}", logging.WARNING)
                         self.log(f"    → Skipping zero-byte file", logging.WARNING)
-                        failed_count += 1
-                        self.log(f"\n⚠️  STOPPING ON FIRST FAILURE for debugging", logging.WARNING)
-                        self.log(f"    Successes so far: {success_count}", logging.INFO)
-                        self.log(f"    Failures: {failed_count}", logging.INFO)
-                        self.log(f"    Remaining: {len(records) - current}", logging.INFO)
-                        break
+                        continue
                     
                     try:
                         # Step 1: Wait for page to be ready
@@ -3960,6 +3955,7 @@ class AlmaBibEditor:
                 self.log("You can manually close Firefox when done reviewing the results", logging.DEBUG)
             
             # Create a new CSV with only failed records for next iteration
+            failed_csv_path = None
             if success_count > 0 and failed_count > 0:
                 # Filter out successful records
                 failed_records = [r for r in records if r['mms_id'] not in successful_mms_ids]
@@ -3977,6 +3973,7 @@ class AlmaBibEditor:
                 
                 self.log(f"\n📄 Created CSV with {failed_count} failed record(s): {failed_csv_path}")
                 self.log(f"   Use this file for the next iteration to retry only failed uploads")
+                failed_csv_path = str(failed_csv_path.absolute())
             elif failed_count > 0:
                 self.log(f"\n⚠️ All {failed_count} upload(s) failed - original CSV unchanged")
             
@@ -3986,14 +3983,14 @@ class AlmaBibEditor:
             if failed_count > 0:
                 self.log(f"⚠️ {failed_count} upload(s) failed - check logs for details", logging.WARNING)
             
-            return True, message, success_count, failed_count
+            return True, message, success_count, failed_count, failed_csv_path
             
         except Exception as e:
             error_msg = f"Error in selenium upload: {str(e)}"
             self.log(error_msg, logging.ERROR)
             import traceback
             self.log(traceback.format_exc(), logging.ERROR)
-            return False, error_msg, 0, 0
+            return False, error_msg, 0, 0, None
         finally:
             # Restore original min log level
             self.min_log_level = original_min_level
@@ -5307,7 +5304,7 @@ def main(page: ft.Page):
             
             # Prepare thumbnails (Part 1 - create reps and process files)
             storage.record_function_usage("function_14_upload_thumbnails")
-            success, message = editor.upload_clientthumb_thumbnails(
+            success, message, csv_file_path = editor.upload_clientthumb_thumbnails(
                 mms_ids_to_process,
                 progress_callback=progress_update
             )
@@ -5320,6 +5317,12 @@ def main(page: ft.Page):
             
             update_status(message, not success)
             if success:
+                # Auto-populate Set ID field with CSV path for Function 14b
+                if csv_file_path:
+                    set_id_input.value = csv_file_path
+                    add_log_message(f"📋 CSV path copied to Set ID field for Function 14b")
+                    page.update()
+                
                 if is_batch:
                     add_log_message(f"Thumbnail preparation complete")
                     add_log_message("💡 Check the logs for details on prepared files and any failures")
@@ -5424,7 +5427,7 @@ def main(page: ft.Page):
             # Get log level from dropdown
             selected_log_level = log_level_dropdown.value if log_level_dropdown.value else "INFO"
             
-            success, message, success_count, failed_count = editor.upload_thumbnails_selenium(
+            success, message, success_count, failed_count, failed_csv_path = editor.upload_thumbnails_selenium(
                 csv_path,
                 progress_callback=progress_update,
                 log_level=selected_log_level
@@ -5437,6 +5440,12 @@ def main(page: ft.Page):
             
             update_status(message, not success)
             if success:
+                # Auto-populate Set ID field with failed CSV path if there were failures
+                if failed_csv_path:
+                    set_id_input.value = failed_csv_path
+                    add_log_message(f"📋 Failed CSV path copied to Set ID field for retry")
+                    page.update()
+                
                 add_log_message(f"Thumbnail upload complete")
                 add_log_message("💡 Firefox has been left open for your review")
             else:
