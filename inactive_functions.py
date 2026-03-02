@@ -7,7 +7,7 @@ to reduce file size and improve maintainability.
 import logging
 import xml.etree.ElementTree as ET
 import requests
-from typing import Optional, tuple
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
