@@ -3587,6 +3587,641 @@ class AlmaBibEditor:
                 except:
                     pass
             return False, f"Error preparing thumbnail: {str(e)}"
+    def _setup_selenium_browser(self):
+        """
+        Helper method: Set up and launch Firefox browser for Selenium automation.
+        
+        This is shared between Function 11b (JPG upload) and Function 14b (thumbnail upload).
+        
+        Returns:
+            WebDriver: Configured Firefox WebDriver instance
+            
+        Raises:
+            Exception: If browser cannot be launched
+        """
+        from selenium import webdriver
+        from selenium.webdriver.firefox.service import Service
+        
+        self.log("Starting Firefox browser for automation...")
+        self.log("Note: Selenium will launch a NEW Firefox window (cannot attach to existing sessions)", logging.DEBUG)
+        self.log("", logging.DEBUG)
+        
+        try:
+            options = webdriver.FirefoxOptions()
+            # Keep browser open after automation for review
+            options.set_preference("browser.sessionstore.resume_from_crash", False)
+            # Prevent fullscreen mode issues
+            options.set_preference("full-screen-api.enabled", False)
+            # Disable "Save password" prompts
+            options.set_preference("signon.rememberSignons", False)
+            # Disable cookie consent banners where possible
+            options.set_preference("cookiebanners.service.mode", 2)
+            options.set_preference("cookiebanners.service.mode.privateBrowsing", 2)
+            # Start with a normal window size (not maximized/fullscreen)
+            options.add_argument("--width=1400")
+            options.add_argument("--height=1000")
+            
+            # Create GeckoDriver service
+            service = Service()
+            
+            # Launch Firefox
+            self.log("Launching Firefox via GeckoDriver...", logging.DEBUG)
+            driver = webdriver.Firefox(service=service, options=options)
+            self.log("✓ Firefox launched successfully")
+            
+            return driver
+            
+        except Exception as e:
+            raise Exception(f"Could not start Firefox: {str(e)}. Please ensure GeckoDriver is installed (brew install geckodriver).")
+    
+    def _perform_initial_alma_login(self, driver):
+        """
+        Helper method: Navigate to Alma SSO login and wait for user to complete authentication.
+        
+        This is shared between Function 11b (JPG upload) and Function 14b (thumbnail upload).
+        
+        Args:
+            driver: Selenium WebDriver instance
+            
+        Performs:
+        - Navigates to Alma SAML/SSO login page
+        - Displays instructions for user login
+        - Waits 60 seconds for SSO + DUO authentication
+        - Focuses Firefox window and dismisses popups
+        """
+        from selenium.webdriver.common.keys import Keys
+        from selenium.webdriver.common.action_chains import ActionChains
+        import subprocess
+        import time
+        
+        # Navigate to Alma SAML/SSO login page
+        target_url = "https://grinnell.alma.exlibrisgroup.com/SAML"
+        self.log("Navigating to Alma SSO login page...", logging.DEBUG)
+        driver.get(target_url)
+        
+        self.log("")
+        self.log("=" * 70)
+        self.log("⏸️  PLEASE LOG INTO ALMA NOW (via Grinnell SSO)")
+        self.log("=" * 70)
+        self.log("1. Complete the SSO login process in the Firefox window")
+        self.log("2. Complete DUO authentication if prompted")
+        self.log("3. Wait for the Alma home page to fully load")
+        self.log("")
+        self.log("4. ⚙️  CONFIGURE THE SEARCH BAR (at top of page):")
+        self.log("   • Click the search dropdown (left side)")
+        self.log("   • Select: 'Digital titles'")
+        self.log("   • Click the field dropdown (middle)")
+        self.log("   • Select: 'Representation ID' or 'Representation PID'")
+        self.log("   • Leave the search box EMPTY")
+        self.log("")
+        self.log("5. Automation will begin automatically in 60 seconds...")
+        self.log("")
+        self.log("(If you need more time, the system will pause for 30 more seconds)")
+        self.log("(Or use the Kill Switch and restart the function)")
+        self.log("")
+        
+        # Give user time to log in via SSO + DUO
+        time.sleep(60)
+        
+        # Aggressively force Firefox to get focus and dismiss popups
+        self.log("\n" + "=" * 70, logging.DEBUG)
+        self.log("FOCUSING FIREFOX AND DISMISSING POPUPS", logging.DEBUG)
+        self.log("=" * 70, logging.DEBUG)
+        
+        # Multiple attempts to activate and focus
+        for attempt in range(3):
+            self.log(f"\nFocus attempt {attempt + 1}/3...", logging.DEBUG)
+            
+            try:
+                # Activate Firefox via AppleScript
+                subprocess.run([
+                    'osascript', '-e',
+                    'tell application "Firefox" to activate'
+                ], capture_output=True, timeout=5)
+                self.log(f"  ✓ Firefox activated via AppleScript", logging.DEBUG)
+                time.sleep(1)  # Wait for activation to take effect
+                
+                # Maximize and focus window
+                driver.maximize_window()
+                driver.switch_to.window(driver.current_window_handle)
+                driver.execute_script("window.focus();")
+                self.log(f"  ✓ Window maximized and focused", logging.DEBUG)
+                time.sleep(0.5)
+                
+                # Use keyboard to dismiss popups (Tab + Enter, then Escape)
+                # This works even when mouse focus is lost
+                actions = ActionChains(driver)
+                
+                # Try pressing Escape to close any dialogs
+                actions.send_keys(Keys.ESCAPE)
+                actions.perform()
+                time.sleep(0.3)
+                
+                # Try Tab + Enter to dismiss "Stay signed in" type prompts
+                actions = ActionChains(driver)
+                actions.send_keys(Keys.TAB)
+                actions.send_keys(Keys.RETURN)
+                actions.perform()
+                time.sleep(0.3)
+                
+                self.log(f"  ✓ Keyboard popup dismissal attempted", logging.DEBUG)
+                
+            except Exception as e:
+                self.log(f"  ⚠️  Focus attempt {attempt + 1} had issues: {e}", logging.DEBUG)
+            
+            time.sleep(0.5)
+        
+        # Try to dismiss common popups with JavaScript
+        self.log("\nAttempting JavaScript popup dismissal...", logging.DEBUG)
+        try:
+            # Enhanced popup dismissal scripts - run multiple times
+            for round_num in range(3):
+                dismiss_scripts = [
+                    # Press Escape key on any focused element
+                    """
+                    if (document.activeElement) {
+                        var event = new KeyboardEvent('keydown', {'key': 'Escape', 'code': 'Escape', 'keyCode': 27});
+                        document.activeElement.dispatchEvent(event);
+                    }
+                    """,
+                    # Click "No" or "Not now" on stay signed in prompts
+                    """
+                    var buttons = document.querySelectorAll('button, input[type="button"], input[type="submit"]');
+                    for (var i = 0; i < buttons.length; i++) {
+                        var text = buttons[i].textContent || buttons[i].value || '';
+                        if (text.toLowerCase().includes('no') || 
+                            text.toLowerCase().includes('not now') || 
+                            text.toLowerCase().includes('dismiss') ||
+                            text.toLowerCase().includes('cancel')) {
+                            buttons[i].click();
+                            break;
+                        }
+                    }
+                    """,
+                    # Dismiss cookie banners
+                    """
+                    var cookieButtons = document.querySelectorAll('[class*="cookie"] button, [id*="cookie"] button');
+                    for (var i = 0; i < cookieButtons.length; i++) {
+                        var text = cookieButtons[i].textContent || '';
+                        if (text.toLowerCase().includes('accept') || 
+                            text.toLowerCase().includes('ok') || 
+                            text.toLowerCase().includes('agree')) {
+                            cookieButtons[i].click();
+                            break;
+                        }
+                    }
+                    """,
+                    # Close any modal overlays
+                    """
+                    var closeButtons = document.querySelectorAll('[class*="close"], [class*="dismiss"], [aria-label*="close" i]');
+                    for (var i = 0; i < closeButtons.length; i++) {
+                        if (closeButtons[i].offsetParent !== null) {
+                            closeButtons[i].click();
+                            break;
+                        }
+                    }
+                    """,
+                    # Dismiss "Manage Widgets" popup
+                    """
+                    var widgetButtons = document.querySelectorAll('button, a, [role="button"]');
+                    for (var i = 0; i < widgetButtons.length; i++) {
+                        var text = widgetButtons[i].textContent || widgetButtons[i].getAttribute('aria-label') || '';
+                        if (text.toLowerCase().includes('manage widgets') || 
+                            text.toLowerCase().includes('widget') ||
+                            widgetButtons[i].classList.toString().toLowerCase().includes('widget')) {
+                            // Try to find close button in parent/sibling elements
+                            var parent = widgetButtons[i].closest('div[role="dialog"], div[class*="modal"], div[class*="popup"]');
+                            if (parent) {
+                                var closeBtn = parent.querySelector('[aria-label*="close" i], button[class*="close"], a[class*="close"]');
+                                if (closeBtn) {
+                                    closeBtn.click();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // Also try direct widget modal dismissal
+                    var widgetModals = document.querySelectorAll('[class*="widget" i] [class*="close"], [aria-label*="widget" i] [aria-label*="close" i]');
+                    for (var i = 0; i < widgetModals.length; i++) {
+                        if (widgetModals[i].offsetParent !== null) {
+                            widgetModals[i].click();
+                            break;
+                        }
+                    }
+                    """
+                ]
+                
+                for script in dismiss_scripts:
+                    driver.execute_script(script)
+                    time.sleep(0.2)
+                
+                if round_num < 2:
+                    time.sleep(0.5)  # Brief pause between rounds
+            
+            self.log("✓ JavaScript popup dismissal completed (3 rounds)", logging.DEBUG)
+        except Exception as e:
+            self.log(f"⚠️  Could not dismiss popups via JavaScript: {e}", logging.DEBUG)
+        
+        # Final focus attempt
+        try:
+            subprocess.run([
+                'osascript', '-e',
+                'tell application "Firefox" to activate'
+            ], capture_output=True, timeout=5)
+            driver.execute_script("window.focus();")
+            self.log("✓ Final Firefox activation completed", logging.DEBUG)
+        except Exception as e:
+            self.log(f"⚠️  Final activation failed: {e}", logging.DEBUG)
+        
+        self.log("=" * 70, logging.DEBUG)
+        
+        # Debug: Log current page info
+        current_url = driver.current_url
+        self.log(f"\nCurrent URL: {current_url}", logging.DEBUG)
+        self.log("", logging.DEBUG)
+        
+        self.log("Starting automated uploads...")
+    
+    def _search_for_representation(self, driver, rep_id: str):
+        """
+        Helper method: Search for a specific representation ID in Alma.
+        
+        This is shared between Function 11b (JPG upload) and Function 14b (thumbnail upload).
+        
+        Args:
+            driver: Selenium WebDriver instance
+            rep_id: Representation ID to search for
+            
+        Performs:
+        - Waits for page to be ready
+        - Dismisses any interfering popups
+        - Enters representation ID in search field
+        - Presses ENTER to initiate search
+        - Waits for search results to load
+        
+        Raises:
+            TimeoutException: If search field cannot be found or page not ready
+        """
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.common.exceptions import TimeoutException
+        import time
+        
+        # Step 1: Wait for page to be ready
+        self.log("  Step 1: Waiting for Alma page to load...", logging.DEBUG)
+        
+        # Wait for page to be ready
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+        except TimeoutException:
+            # If page not ready, user might still be logging in
+            self.log("    ⏸️  Page not ready yet - waiting 30 more seconds for login...", logging.WARNING)
+            time.sleep(30)
+            # Try again
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+        
+        # Step 2: Enter representation ID and search
+        self.log(f"  Step 2: Searching for representation {rep_id}...", logging.DEBUG)
+        self.log("    ℹ️  Using retained search settings", logging.DEBUG)
+        self.log("    ⚠️  Ensure search is set to: Digital titles / Representation ID", logging.DEBUG)
+        
+        # Dismiss any popups/widgets that might be blocking the search field
+        self.log("    Dismissing any interfering popups...", logging.DEBUG)
+        try:
+            # Run the enhanced popup dismissal scripts
+            dismiss_scripts = [
+                # Press Escape to close any dialogs
+                "if (document.activeElement) { var e = new KeyboardEvent('keydown', {'key': 'Escape', 'code': 'Escape', 'keyCode': 27}); document.activeElement.dispatchEvent(e); }",
+                # Close Manage Widgets popup specifically
+                """
+                var btns = document.querySelectorAll('button, a, [role="button"]');
+                for (var i = 0; i < btns.length; i++) {
+                    var txt = (btns[i].textContent || btns[i].getAttribute('aria-label') || '').toLowerCase();
+                    if (txt.includes('manage') || txt.includes('widget')) {
+                        var p = btns[i].closest('div[role="dialog"], div[class*="modal"], div[class*="popup"]');
+                        if (p) { var c = p.querySelector('[aria-label*="close" i], button[class*="close"]'); if (c) c.click(); }
+                    }
+                }
+                """,
+                # Close any modal overlays
+                """
+                var closeBtns = document.querySelectorAll('[class*="close"], [class*="dismiss"], [aria-label*="close" i]');
+                for (var i = 0; i < closeBtns.length; i++) {
+                    if (closeBtns[i].offsetParent !== null) { closeBtns[i].click(); break; }
+                }
+                """
+            ]
+            for script in dismiss_scripts:
+                driver.execute_script(script)
+                time.sleep(0.1)
+            self.log("    ✓ Popup dismissal completed", logging.DEBUG)
+        except Exception as e:
+            self.log(f"    ⚠️  Popup dismissal had issues: {e}", logging.DEBUG)
+        
+        try:
+            search_input = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, "NEW_ALMA_MENU_TOP_NAV_Search_Text"))
+            )
+            
+            # Check if element is disabled and try to enable it via JavaScript
+            is_disabled = driver.execute_script("return arguments[0].disabled;", search_input)
+            if is_disabled:
+                self.log("    ⚠️  Search field is disabled, attempting to enable via JavaScript...", logging.DEBUG)
+                driver.execute_script("arguments[0].disabled = false;", search_input)
+                time.sleep(0.5)
+            
+            # Use JavaScript to clear and set value (more reliable than .clear() when elements are finicky)
+            driver.execute_script("arguments[0].value = '';", search_input)
+            driver.execute_script("arguments[0].value = arguments[1];", search_input, rep_id)
+            # Trigger input event so Angular/framework detects the change
+            driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", search_input)
+            self.log("    ✓ Entered representation ID in search field", logging.DEBUG)
+            
+            # Press ENTER to initiate search (use JavaScript to be safe)
+            driver.execute_script("""
+                var e = new KeyboardEvent('keydown', {'key': 'Enter', 'code': 'Enter', 'keyCode': 13, bubbles: true});
+                arguments[0].dispatchEvent(e);
+            """, search_input)
+            self.log("    ✓ Search initiated (pressed ENTER)", logging.DEBUG)
+        except TimeoutException:
+            self.log("    ✗ Could not find search input field with id='NEW_ALMA_MENU_TOP_NAV_Search_Text'", logging.ERROR)
+            self.log("    → You need to inspect the page and update the selector in app.py", logging.ERROR)
+            self.log("    → Check the saved HTML file in ~/Downloads/alma_page_debug_*.html", logging.ERROR)
+            raise
+        except Exception as e:
+            self.log(f"    ✗ Error interacting with search field: {str(e)}", logging.ERROR)
+            self.log(f"    → This may be due to popups/widgets blocking interaction", logging.ERROR)
+            self.log(f"    → Try manually closing any popups in the browser and restart", logging.ERROR)
+            raise
+        
+        # Wait for search results to load
+        self.log("    Waiting for search results to load...", logging.DEBUG)
+        time.sleep(10)  # Give the page more time to load and render results
+    
+    def _navigate_to_representation(self, driver, rep_id: str) -> None:
+        """
+        Helper method: Navigate from search results to a specific representation page.
+        
+        This is shared between Function 11b (JPG upload) and Function 14b (thumbnail upload).
+        
+        Steps performed:
+        1. Find and click "Digital Representations" link (Step 3)
+        2. Handle any overlay popups
+        3. Find and click specific representation ID link (Step 4)
+        
+        Args:
+            driver: Selenium WebDriver instance
+            rep_id: Representation ID to navigate to
+            
+        Raises:
+            TimeoutException: If Digital Representations link or representation ID cannot be found
+        """
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.common.exceptions import TimeoutException, NoSuchElementException
+        from pathlib import Path
+        import time
+        
+        # Step 3: Click on "Digital Representations (X)" link
+        self.log("  Step 3: Opening Digital Representations...", logging.DEBUG)
+        self.log("    Waiting for Digital Representations link to be clickable...", logging.DEBUG)
+        
+        try:
+            # Primary: Try case-insensitive text search (most reliable)
+            try:
+                digital_reps_link = WebDriverWait(driver, 15).until(
+                    EC.element_to_be_clickable((By.XPATH, "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'digital representation')]"))
+                )
+                self.log("    ✓ Found Digital Reps link (case-insensitive text)", logging.DEBUG)
+            except TimeoutException:
+                # Fallback 1: Try partial link text
+                try:
+                    digital_reps_link = WebDriverWait(driver, 5).until(
+                        EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Digital Representation"))
+                    )
+                    self.log("    ✓ Found Digital Reps link (partial link text)", logging.DEBUG)
+                except TimeoutException:
+                    # Fallback 2: Try the ex-link with span class
+                    digital_reps_link = WebDriverWait(driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, "//ex-link[.//span[contains(@class, 'sel-smart-link-nggeneralsectiontitleall_titles_details_digital_representations')]]"))
+                    )
+                    self.log("    ✓ Found Digital Reps link (ex-link/span selector)", logging.DEBUG)
+        except TimeoutException:
+            # All methods failed - try last resort
+            self.log("    ✗ Digital Representations link not found with any selector", logging.ERROR)
+            self.log("    Attempting last resort selector...", logging.WARNING)
+            try:
+                digital_reps_link = driver.find_element(By.XPATH, "//*[contains(text(), 'Digital')]")
+                self.log("    ✓ Found using last resort selector (any element with 'Digital')", logging.WARNING)
+            except NoSuchElementException:
+                self.log("    ✗ Could not find Digital Representations link with any selector", logging.ERROR)
+                raise TimeoutException("Digital Representations link not found after trying all selectors")
+        
+        # Additional wait to ensure any overlays/animations are complete
+        time.sleep(1)
+        
+        # Scroll element into view
+        driver.execute_script("arguments[0].scrollIntoView(true);", digital_reps_link)
+        time.sleep(0.5)
+        
+        # Try regular click first
+        try:
+            digital_reps_link.click()
+            self.log("    ✓ Clicked Digital Reps link", logging.DEBUG)
+        except Exception as click_err:
+            # If regular click fails, use JavaScript
+            self.log(f"    ⚠️ Regular click failed ({click_err}), trying JavaScript...", logging.DEBUG)
+            driver.execute_script("arguments[0].click();", digital_reps_link)
+            self.log("    ✓ Clicked Digital Reps link (JavaScript)", logging.DEBUG)
+        
+        # Wait for modal/window to appear
+        time.sleep(2)
+        
+        # Verify the Digital Representations section actually opened
+        self.log("    ⏳ Waiting for Digital Representations section to load...", logging.DEBUG)
+        try:
+            WebDriverWait(driver, 10).until(
+                lambda d: d.find_element(By.XPATH, "//*[contains(@class, 'representation') or contains(@id, 'representation') or contains(text(), 'Representation')]")
+            )
+            self.log("    ✓ Digital Representations section loaded", logging.DEBUG)
+        except TimeoutException:
+            self.log("    ⚠️ Digital Representations section may not have opened, trying click again...", logging.WARNING)
+            driver.execute_script("arguments[0].click();", digital_reps_link)
+            time.sleep(3)
+            self.log("    ✓ Attempted second click", logging.DEBUG)
+        
+        # Check for and close any overlay/popup that might obscure the content
+        self.log("    Checking for overlay popups...", logging.DEBUG)
+        try:
+            close_button = driver.find_element(By.CSS_SELECTOR, ".sel-id-ex-svg-icon-close")
+            close_button.click()
+            self.log("    ✓ Closed overlay popup", logging.DEBUG)
+            time.sleep(1)
+        except NoSuchElementException:
+            self.log("    ℹ️  No overlay popup detected (this is normal)", logging.DEBUG)
+        except Exception as e:
+            self.log(f"    ⚠️ Could not close overlay: {e}", logging.DEBUG)
+        
+        # Wait for the representation list/table to load
+        self.log("    ⏳ Waiting for representation list to populate...", logging.DEBUG)
+        
+        # Strategy: Wait for actual representation links to appear (they're long numeric IDs)
+        # This is more reliable than just checking for a table/list structure
+        representation_content_loaded = False
+        max_wait = 15  # seconds
+        wait_interval = 1
+        elapsed = 0
+        
+        while elapsed < max_wait and not representation_content_loaded:
+            try:
+                # Check if we can find any links that look like representation IDs
+                # Representation IDs are typically long numeric strings (12+ digits)
+                rep_links_count = driver.execute_script("""
+                    var links = document.querySelectorAll('a');
+                    var repCount = 0;
+                    for (var i = 0; i < links.length; i++) {
+                        var text = links[i].textContent.trim();
+                        // Check if link text is a long numeric string (likely a rep ID)
+                        if (text.match(/^\\d{12,}$/)) {
+                            repCount++;
+                        }
+                    }
+                    return repCount;
+                """)
+                
+                if rep_links_count > 0:
+                    self.log(f"    ✓ Found {rep_links_count} representation link(s) in list", logging.DEBUG)
+                    representation_content_loaded = True
+                    break
+                else:
+                    # Check for loading indicators
+                    loading_present = driver.execute_script("""
+                        var loaders = document.querySelectorAll('[class*="loading"], [class*="spinner"], [class*="progress"]');
+                        var visible = 0;
+                        for (var i = 0; i < loaders.length; i++) {
+                            if (loaders[i].offsetParent !== null) visible++;
+                        }
+                        return visible;
+                    """)
+                    
+                    if loading_present > 0:
+                        self.log(f"    ⏳ Still loading ({loading_present} loading indicator(s))...", logging.DEBUG)
+                    else:
+                        self.log(f"    ⏳ Waiting for representation content... ({elapsed}s)", logging.DEBUG)
+                    
+                    time.sleep(wait_interval)
+                    elapsed += wait_interval
+                    
+            except Exception as e:
+                self.log(f"    ⚠️ Error checking for representation content: {e}", logging.DEBUG)
+                time.sleep(wait_interval)
+                elapsed += wait_interval
+        
+        if not representation_content_loaded:
+            self.log(f"    ⚠️ Representation content did not load within {max_wait}s, proceeding anyway...", logging.WARNING)
+        
+        # Additional safety wait
+        time.sleep(1)
+        
+        # Legacy check for list structure (kept for compatibility)
+        try:
+            WebDriverWait(driver, 5).until(
+                lambda d: d.find_element(By.XPATH, "//table | //ul | //div[contains(@class, 'list')]")
+            )
+            self.log("    ✓ Representation list structure confirmed", logging.DEBUG)
+        except TimeoutException:
+            self.log("    ⚠️ Could not detect representation list structure", logging.WARNING)
+        
+        # Step 4: Click on the specific representation ID link
+        self.log(f"  Step 4: Looking for representation {rep_id}...", logging.DEBUG)
+        
+        # Scroll the page to ensure any representation list is visible
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(0.5)
+        driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(0.5)
+        
+        try:
+            # Try multiple strategies to find the representation ID link
+            # Strategy 1: Exact link text (give this more time as it's most reliable)
+            try:
+                rep_link = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.LINK_TEXT, rep_id))
+                )
+                self.log(f"    ✓ Found representation (exact link text)", logging.DEBUG)
+            except TimeoutException:
+                # Strategy 2: Partial link text
+                try:
+                    rep_link = WebDriverWait(driver, 3).until(
+                        EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, rep_id))
+                    )
+                    self.log(f"    ✓ Found representation (partial link text)", logging.DEBUG)
+                except TimeoutException:
+                    # Strategy 3: XPath text search
+                    try:
+                        rep_link = WebDriverWait(driver, 3).until(
+                            EC.element_to_be_clickable((By.XPATH, f"//*[contains(text(), '{rep_id}')]"))
+                        )
+                        self.log(f"    ✓ Found representation (XPath text search)", logging.DEBUG)
+                    except TimeoutException:
+                        # Strategy 4: XPath anchor search
+                        rep_link = WebDriverWait(driver, 3).until(
+                            EC.element_to_be_clickable((By.XPATH, f"//a[contains(., '{rep_id}')]"))
+                        )
+                        self.log(f"    ✓ Found representation (XPath anchor search)", logging.DEBUG)
+            
+            # Try clicking, but if it's intercepted, use JavaScript
+            try:
+                rep_link.click()
+                self.log("    ✓ Clicked representation link", logging.DEBUG)
+            except Exception as click_err:
+                self.log(f"    ⚠️ Normal click failed ({str(click_err)}), using JavaScript...", logging.WARNING)
+                driver.execute_script("arguments[0].click();", rep_link)
+                self.log("    ✓ Clicked representation link (via JavaScript)", logging.DEBUG)
+            
+            time.sleep(3)
+        except TimeoutException:
+            self.log(f"    ✗ Could not find representation ID {rep_id} on page", logging.ERROR)
+            self.log(f"    → The representation might not exist in this record", logging.ERROR)
+            self.log(f"    → Or the Digital Representations section didn't fully load", logging.ERROR)
+            
+            # Try to list what's actually on the page
+            try:
+                links = driver.execute_script("""
+                    var links = document.querySelectorAll('a');
+                    var linkTexts = [];
+                    for (var i = 0; i < Math.min(links.length, 20); i++) {
+                        if (links[i].textContent.trim()) {
+                            linkTexts.push(links[i].textContent.trim().substring(0, 50));
+                        }
+                    }
+                    return linkTexts;
+                """)
+                self.log(f"    ℹ️  First 20 links on page: {links}", logging.ERROR)
+            except Exception as list_err:
+                self.log(f"    ⚠️ Could not list links: {list_err}", logging.WARNING)
+            
+            # Save debug info
+            try:
+                from datetime import datetime
+                screenshot_file = Path.home() / "Downloads" / f"alma_missing_rep_{rep_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                driver.save_screenshot(str(screenshot_file))
+                self.log(f"    📸 Screenshot saved: {screenshot_file}", logging.ERROR)
+                
+                html_file = Path.home() / "Downloads" / f"alma_missing_rep_{rep_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                with open(html_file, 'w', encoding='utf-8') as f:
+                    f.write(driver.page_source)
+                self.log(f"    📄 Page source saved: {html_file}", logging.ERROR)
+            except Exception as debug_err:
+                self.log(f"    ⚠️ Could not save debug files: {debug_err}", logging.WARNING)
+            
+            raise
     
     def upload_thumbnails_selenium(self, csv_file_path: str, progress_callback=None, log_level: str = "INFO") -> tuple[bool, str, int, int, str | None]:
         """
@@ -3658,231 +4293,12 @@ class AlmaBibEditor:
             # Track successful uploads to filter CSV later
             successful_mms_ids = set()
             
-            # Launch Firefox via GeckoDriver for automation
-            self.log("Starting Firefox browser for automation...")
-            self.log("Note: Selenium will launch a NEW Firefox window (cannot attach to existing sessions)", logging.DEBUG)
-            self.log("", logging.DEBUG)
-            
-            # Configure Firefox options
+            # Setup browser (shared helper method)
             try:
-                from selenium.webdriver.firefox.service import Service
+                driver = self._setup_selenium_browser()
                 
-                options = webdriver.FirefoxOptions()
-                # Keep browser open after automation for review
-                options.set_preference("browser.sessionstore.resume_from_crash", False)
-                # Prevent fullscreen mode issues
-                options.set_preference("full-screen-api.enabled", False)
-                # Disable "Save password" prompts
-                options.set_preference("signon.rememberSignons", False)
-                # Disable cookie consent banners where possible
-                options.set_preference("cookiebanners.service.mode", 2)
-                options.set_preference("cookiebanners.service.mode.privateBrowsing", 2)
-                # Start with a normal window size (not maximized/fullscreen)
-                options.add_argument("--width=1400")
-                options.add_argument("--height=1000")
-                
-                # Create GeckoDriver service
-                service = Service()
-                
-                # Launch Firefox
-                self.log("Launching Firefox via GeckoDriver...", logging.DEBUG)
-                driver = webdriver.Firefox(service=service, options=options)
-                self.log("✓ Firefox launched successfully")
-                
-                # Navigate to Alma SAML/SSO login page
-                target_url = "https://grinnell.alma.exlibrisgroup.com/SAML"
-                self.log("Navigating to Alma SSO login page...", logging.DEBUG)
-                driver.get(target_url)
-                
-                self.log("")
-                self.log("=" * 70)
-                self.log("⏸️  PLEASE LOG INTO ALMA NOW (via Grinnell SSO)")
-                self.log("=" * 70)
-                self.log("1. Complete the SSO login process in the Firefox window")
-                self.log("2. Complete DUO authentication if prompted")
-                self.log("3. Wait for the Alma home page to fully load")
-                self.log("")
-                self.log("4. ⚙️  CONFIGURE THE SEARCH BAR (at top of page):")
-                self.log("   • Click the search dropdown (left side)")
-                self.log("   • Select: 'Digital titles'")
-                self.log("   • Click the field dropdown (middle)")
-                self.log("   • Select: 'Representation ID' or 'Representation PID'")
-                self.log("   • Leave the search box EMPTY")
-                self.log("")
-                self.log("5. Automation will begin automatically in 60 seconds...")
-                self.log("")
-                self.log("(If you need more time, the system will pause for 30 more seconds)")
-                self.log("(Or use the Kill Switch and restart Function 14b)")
-                self.log("")
-                
-                # Give user time to log in via SSO + DUO
-                time.sleep(60)
-                
-                # Aggressively force Firefox to get focus and dismiss popups
-                self.log("\n" + "=" * 70, logging.DEBUG)
-                self.log("FOCUSING FIREFOX AND DISMISSING POPUPS", logging.DEBUG)
-                self.log("=" * 70, logging.DEBUG)
-                
-                # Multiple attempts to activate and focus
-                for attempt in range(3):
-                    self.log(f"\nFocus attempt {attempt + 1}/3...", logging.DEBUG)
-                    
-                    try:
-                        # Activate Firefox via AppleScript
-                        subprocess.run([
-                            'osascript', '-e',
-                            'tell application "Firefox" to activate'
-                        ], capture_output=True, timeout=5)
-                        self.log(f"  ✓ Firefox activated via AppleScript", logging.DEBUG)
-                        time.sleep(1)  # Wait for activation to take effect
-                        
-                        # Maximize and focus window
-                        driver.maximize_window()
-                        driver.switch_to.window(driver.current_window_handle)
-                        driver.execute_script("window.focus();")
-                        self.log(f"  ✓ Window maximized and focused", logging.DEBUG)
-                        time.sleep(0.5)
-                        
-                        # Use keyboard to dismiss popups (Tab + Enter, then Escape)
-                        # This works even when mouse focus is lost
-                        actions = ActionChains(driver)
-                        
-                        # Try pressing Escape to close any dialogs
-                        actions.send_keys(Keys.ESCAPE)
-                        actions.perform()
-                        time.sleep(0.3)
-                        
-                        # Try Tab + Enter to dismiss "Stay signed in" type prompts
-                        actions = ActionChains(driver)
-                        actions.send_keys(Keys.TAB)
-                        actions.send_keys(Keys.RETURN)
-                        actions.perform()
-                        time.sleep(0.3)
-                        
-                        self.log(f"  ✓ Keyboard popup dismissal attempted", logging.DEBUG)
-                        
-                    except Exception as e:
-                        self.log(f"  ⚠️  Focus attempt {attempt + 1} had issues: {e}", logging.DEBUG)
-                    
-                    time.sleep(0.5)
-                
-                # Try to dismiss common popups with JavaScript
-                self.log("\nAttempting JavaScript popup dismissal...", logging.DEBUG)
-                try:
-                    # Enhanced popup dismissal scripts - run multiple times
-                    for round_num in range(3):
-                        dismiss_scripts = [
-                            # Press Escape key on any focused element
-                            """
-                            if (document.activeElement) {
-                                var event = new KeyboardEvent('keydown', {'key': 'Escape', 'code': 'Escape', 'keyCode': 27});
-                                document.activeElement.dispatchEvent(event);
-                            }
-                            """,
-                            # Click "No" or "Not now" on stay signed in prompts
-                            """
-                            var buttons = document.querySelectorAll('button, input[type="button"], input[type="submit"]');
-                            for (var i = 0; i < buttons.length; i++) {
-                                var text = buttons[i].textContent || buttons[i].value || '';
-                                if (text.toLowerCase().includes('no') || 
-                                    text.toLowerCase().includes('not now') || 
-                                    text.toLowerCase().includes('dismiss') ||
-                                    text.toLowerCase().includes('cancel')) {
-                                    buttons[i].click();
-                                    break;
-                                }
-                            }
-                            """,
-                            # Dismiss cookie banners
-                            """
-                            var cookieButtons = document.querySelectorAll('[class*="cookie"] button, [id*="cookie"] button');
-                            for (var i = 0; i < cookieButtons.length; i++) {
-                                var text = cookieButtons[i].textContent || '';
-                                if (text.toLowerCase().includes('accept') || 
-                                    text.toLowerCase().includes('ok') || 
-                                    text.toLowerCase().includes('agree')) {
-                                    cookieButtons[i].click();
-                                    break;
-                                }
-                            }
-                            """,
-                            # Close any modal overlays
-                            """
-                            var closeButtons = document.querySelectorAll('[class*="close"], [class*="dismiss"], [aria-label*="close" i]');
-                            for (var i = 0; i < closeButtons.length; i++) {
-                                if (closeButtons[i].offsetParent !== null) {
-                                    closeButtons[i].click();
-                                    break;
-                                }
-                            }
-                            """,
-                            # Dismiss "Manage Widgets" popup
-                            """
-                            var widgetButtons = document.querySelectorAll('button, a, [role="button"]');
-                            for (var i = 0; i < widgetButtons.length; i++) {
-                                var text = widgetButtons[i].textContent || widgetButtons[i].getAttribute('aria-label') || '';
-                                if (text.toLowerCase().includes('manage widgets') || 
-                                    text.toLowerCase().includes('widget') ||
-                                    widgetButtons[i].classList.toString().toLowerCase().includes('widget')) {
-                                    // Try to find close button in parent/sibling elements
-                                    var parent = widgetButtons[i].closest('div[role="dialog"], div[class*="modal"], div[class*="popup"]');
-                                    if (parent) {
-                                        var closeBtn = parent.querySelector('[aria-label*="close" i], button[class*="close"], a[class*="close"]');
-                                        if (closeBtn) {
-                                            closeBtn.click();
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            // Also try direct widget modal dismissal
-                            var widgetModals = document.querySelectorAll('[class*="widget" i] [class*="close"], [aria-label*="widget" i] [aria-label*="close" i]');
-                            for (var i = 0; i < widgetModals.length; i++) {
-                                if (widgetModals[i].offsetParent !== null) {
-                                    widgetModals[i].click();
-                                    break;
-                                }
-                            }
-                            """
-                        ]
-                        
-                        for script in dismiss_scripts:
-                            driver.execute_script(script)
-                            time.sleep(0.2)
-                        
-                        if round_num < 2:
-                            time.sleep(0.5)  # Brief pause between rounds
-                    
-                    self.log("✓ JavaScript popup dismissal completed (3 rounds)", logging.DEBUG)
-                except Exception as e:
-                    self.log(f"⚠️  Could not dismiss popups via JavaScript: {e}", logging.DEBUG)
-                
-                # Final focus attempt
-                try:
-                    subprocess.run([
-                        'osascript', '-e',
-                        'tell application "Firefox" to activate'
-                    ], capture_output=True, timeout=5)
-                    driver.execute_script("window.focus();")
-                    self.log("✓ Final Firefox activation completed", logging.DEBUG)
-                except Exception as e:
-                    self.log(f"⚠️  Final activation failed: {e}", logging.DEBUG)
-                
-                self.log("=" * 70, logging.DEBUG)
-                
-                # Debug: Log current page info
-                current_url = driver.current_url
-                self.log(f"\nCurrent URL: {current_url}", logging.DEBUG)
-                
-                # # Save page source for inspection (COMMENTED OUT - fills up Downloads)
-                # page_source = driver.page_source
-                # debug_file = Path.home() / "Downloads" / f"alma_page_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-                # with open(debug_file, 'w', encoding='utf-8') as f:
-                #     f.write(page_source)
-                # self.log(f"📄 Page HTML saved to: {debug_file}")
-                self.log("", logging.DEBUG)
-                
-                self.log("Starting automated uploads...")
+                # Perform initial login and focus (shared helper method)
+                self._perform_initial_alma_login(driver)
             except Exception as e:
                 return False, f"Could not start Firefox: {str(e)}. Please ensure GeckoDriver is installed (brew install geckodriver).", 0, 0, None
             
@@ -3926,265 +4342,11 @@ class AlmaBibEditor:
                         continue
                     
                     try:
-                        # Step 1: Wait for page to be ready
-                        self.log("  Step 1: Waiting for Alma page to load...", logging.DEBUG)
+                        # Steps 1-2: Search for representation (shared helper method)
+                        self._search_for_representation(driver, rep_id)
                         
-                        # Wait for page to be ready
-                        try:
-                            WebDriverWait(driver, 10).until(
-                                EC.presence_of_element_located((By.TAG_NAME, "body"))
-                            )
-                        except TimeoutException:
-                            # If page not ready, user might still be logging in
-                            self.log("    ⏸️  Page not ready yet - waiting 30 more seconds for login...", logging.WARNING)
-                            time.sleep(30)
-                            # Try again
-                            WebDriverWait(driver, 10).until(
-                                EC.presence_of_element_located((By.TAG_NAME, "body"))
-                            )
-                        
-                        # NOTE: Skipping search type and search field dropdown configuration
-                        # The search bar retains the last used settings ("Digital titles" and "Representation ID")
-                        # so we can go directly to entering the search term
-                        
-                        # # Find search type dropdown and set to "Digital titles"
-                        # # COMMENTED OUT: Search bar retains previous settings
-                        # try:
-                        #     search_type_select = Select(WebDriverWait(driver, 10).until(
-                        #         EC.presence_of_element_located((By.ID, "searchType"))
-                        #     ))
-                        #     search_type_select.select_by_visible_text("Digital titles")
-                        #     self.log("    ✓ Set search type to 'Digital titles'")
-                        # except:
-                        #     self.log("    ⚠️ Could not find search type dropdown - attempting to continue", logging.WARNING)
-                        
-                        # # Find search field dropdown and set to "Representation PID"
-                        # # COMMENTED OUT: Search bar retains previous settings
-                        # try:
-                        #     search_field_select = Select(WebDriverWait(driver, 5).until(
-                        #         EC.presence_of_element_located((By.ID, "searchField"))
-                        #     ))
-                        #     search_field_select.select_by_visible_text("Representation PID")
-                        #     self.log("    ✓ Set search field to 'Representation PID'")
-                        # except:
-                        #     self.log("    ⚠️ Could not find search field dropdown - attempting to continue", logging.WARNING)
-                        
-                        # Step 2: Enter representation ID and search
-                        self.log(f"  Step 2: Searching for representation {rep_id}...", logging.DEBUG)
-                        self.log("    ℹ️  Using retained search settings", logging.DEBUG)
-                        self.log("    ⚠️  Ensure search is set to: Digital titles / Representation ID", logging.DEBUG)
-                        
-                        # Dismiss any popups/widgets that might be blocking the search field
-                        self.log("    Dismissing any interfering popups...", logging.DEBUG)
-                        try:
-                            # Run the enhanced popup dismissal scripts
-                            dismiss_scripts = [
-                                # Press Escape to close any dialogs
-                                "if (document.activeElement) { var e = new KeyboardEvent('keydown', {'key': 'Escape', 'code': 'Escape', 'keyCode': 27}); document.activeElement.dispatchEvent(e); }",
-                                # Close Manage Widgets popup specifically
-                                """
-                                var btns = document.querySelectorAll('button, a, [role="button"]');
-                                for (var i = 0; i < btns.length; i++) {
-                                    var txt = (btns[i].textContent || btns[i].getAttribute('aria-label') || '').toLowerCase();
-                                    if (txt.includes('manage') || txt.includes('widget')) {
-                                        var p = btns[i].closest('div[role="dialog"], div[class*="modal"], div[class*="popup"]');
-                                        if (p) { var c = p.querySelector('[aria-label*="close" i], button[class*="close"]'); if (c) c.click(); }
-                                    }
-                                }
-                                """,
-                                # Close any modal overlays
-                                """
-                                var closeBtns = document.querySelectorAll('[class*="close"], [class*="dismiss"], [aria-label*="close" i]');
-                                for (var i = 0; i < closeBtns.length; i++) {
-                                    if (closeBtns[i].offsetParent !== null) { closeBtns[i].click(); break; }
-                                }
-                                """
-                            ]
-                            for script in dismiss_scripts:
-                                driver.execute_script(script)
-                                time.sleep(0.1)
-                            self.log("    ✓ Popup dismissal completed", logging.DEBUG)
-                        except Exception as e:
-                            self.log(f"    ⚠️  Popup dismissal had issues: {e}", logging.DEBUG)
-                        
-                        try:
-                            search_input = WebDriverWait(driver, 10).until(
-                                EC.presence_of_element_located((By.ID, "NEW_ALMA_MENU_TOP_NAV_Search_Text"))
-                            )
-                            
-                            # Check if element is disabled and try to enable it via JavaScript
-                            is_disabled = driver.execute_script("return arguments[0].disabled;", search_input)
-                            if is_disabled:
-                                self.log("    ⚠️  Search field is disabled, attempting to enable via JavaScript...", logging.DEBUG)
-                                driver.execute_script("arguments[0].disabled = false;", search_input)
-                                time.sleep(0.5)
-                            
-                            # Use JavaScript to clear and set value (more reliable than .clear() when elements are finicky)
-                            driver.execute_script("arguments[0].value = '';", search_input)
-                            driver.execute_script("arguments[0].value = arguments[1];", search_input, rep_id)
-                            # Trigger input event so Angular/framework detects the change
-                            driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", search_input)
-                            self.log("    ✓ Entered representation ID in search field", logging.DEBUG)
-                            
-                            # Press ENTER to initiate search (use JavaScript to be safe)
-                            driver.execute_script("""
-                                var e = new KeyboardEvent('keydown', {'key': 'Enter', 'code': 'Enter', 'keyCode': 13, bubbles: true});
-                                arguments[0].dispatchEvent(e);
-                            """, search_input)
-                            self.log("    ✓ Search initiated (pressed ENTER)", logging.DEBUG)
-                        except TimeoutException:
-                            self.log("    ✗ Could not find search input field with id='NEW_ALMA_MENU_TOP_NAV_Search_Text'", logging.ERROR)
-                            self.log("    → You need to inspect the page and update the selector in app.py", logging.ERROR)
-                            self.log("    → Check the saved HTML file in ~/Downloads/alma_page_debug_*.html", logging.ERROR)
-                            raise
-                        except Exception as e:
-                            self.log(f"    ✗ Error interacting with search field: {str(e)}", logging.ERROR)
-                            self.log(f"    → This may be due to popups/widgets blocking interaction", logging.ERROR)
-                            self.log(f"    → Try manually closing any popups in the browser and restart", logging.ERROR)
-                            raise
-                        
-                        # Wait for search results to load
-                        self.log("    Waiting for search results to load...", logging.DEBUG)
-                        time.sleep(10)  # Give the page more time to load and render results
-                        
-                        # Step 3: Click on "Digital Representations (X)" link
-                        self.log("  Step 3: Opening Digital Representations...", logging.DEBUG)
-                        self.log("    Waiting for Digital Representations link to be clickable...", logging.DEBUG)
-                        
-                        try:
-                            # Primary: Try case-insensitive text search (most reliable)
-                            try:
-                                digital_reps_link = WebDriverWait(driver, 15).until(
-                                    EC.element_to_be_clickable((By.XPATH, "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'digital representation')]"))
-                                )
-                                self.log("    ✓ Found Digital Reps link (case-insensitive text)", logging.DEBUG)
-                            except TimeoutException:
-                                # Fallback 1: Try partial link text
-                                try:
-                                    digital_reps_link = WebDriverWait(driver, 5).until(
-                                        EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Digital Representation"))
-                                    )
-                                    self.log("    ✓ Found Digital Reps link (partial link text)", logging.DEBUG)
-                                except TimeoutException:
-                                    # Fallback 2: Try the ex-link with span class (sometimes obscured)
-                                    digital_reps_link = WebDriverWait(driver, 5).until(
-                                        EC.element_to_be_clickable((By.XPATH, "//ex-link[.//span[contains(@class, 'sel-smart-link-nggeneralsectiontitleall_titles_details_digital_representations')]]"))
-                                    )
-                                    self.log("    ✓ Found Digital Reps link (ex-link/span selector)", logging.DEBUG)
-                        except TimeoutException:
-                            # All methods failed
-                            self.log("    ✗ Digital Representations link not found with any selector", logging.ERROR)
-                            
-                            # # Debug: Save screenshot and page source (COMMENTED OUT - fills up Downloads)
-                            # screenshot_file = Path.home() / "Downloads" / f"alma_no_digreps_{mms_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                            # driver.save_screenshot(str(screenshot_file))
-                            # self.log(f"    📸 Screenshot saved: {screenshot_file}")
-                            # 
-                            # page_source = driver.page_source
-                            # html_file = Path.home() / "Downloads" / f"alma_no_digreps_{mms_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-                            # with open(html_file, 'w', encoding='utf-8') as f:
-                            #     f.write(page_source)
-                            # self.log(f"    📄 Page HTML saved: {html_file}")
-                            # 
-                            # # Check if "No results" message appears
-                            # if "no results" in page_source.lower() or "no records found" in page_source.lower():
-                            #     self.log("    ℹ️  Search returned no results - record may not exist or search settings incorrect", logging.WARNING)
-                            
-                            # Try alternative selectors
-                            self.log("    Attempting one more alternative selector...", logging.WARNING)
-                            try:
-                                # Last resort: find any element with "digital" in text
-                                digital_reps_link = driver.find_element(By.XPATH, "//*[contains(text(), 'Digital')]")
-                                self.log("    ✓ Found using last resort selector (any element with 'Digital')", logging.WARNING)
-                            except NoSuchElementException:
-                                self.log("    ✗ Could not find Digital Representations link with any selector", logging.ERROR)
-                                raise TimeoutException("Digital Representations link not found after trying all selectors")
-                        
-                        # Additional wait to ensure any overlays/animations are complete
-                        time.sleep(1)
-                        
-                        # Scroll element into view
-                        driver.execute_script("arguments[0].scrollIntoView(true);", digital_reps_link)
-                        time.sleep(0.5)  # Brief pause after scrolling
-                        
-                        # Try regular click first
-                        try:
-                            digital_reps_link.click()
-                            self.log("    ✓ Opened Digital Representations", logging.DEBUG)
-                        except Exception as e:
-                            # If regular click fails, use JavaScript click
-                            self.log(f"    Regular click blocked ({e}), using JavaScript click...", logging.DEBUG)
-                            driver.execute_script("arguments[0].click();", digital_reps_link)
-                            self.log("    ✓ Opened Digital Representations (via JavaScript)", logging.DEBUG)
-                        
-                        # Wait for modal/window to appear
-                        time.sleep(2)
-                        
-                        # Check for and close any overlay/popup that might obscure the content
-                        self.log("    Checking for overlay popups...", logging.DEBUG)
-                        try:
-                            # Look for close button (X) with class "sel-id-ex-svg-icon-close"
-                            close_button = driver.find_element(By.CSS_SELECTOR, ".sel-id-ex-svg-icon-close")
-                            close_button.click()
-                            self.log("    ✓ Closed overlay popup", logging.DEBUG)
-                            time.sleep(1)  # Wait for overlay to close
-                        except NoSuchElementException:
-                            self.log("    ℹ️  No overlay popup detected (this is normal)", logging.DEBUG)
-                        except Exception as e:
-                            self.log(f"    ⚠️  Could not close overlay: {e}", logging.DEBUG)
-                        
-                        # # Debug: Save screenshot of Digital Representations modal (COMMENTED OUT - fills up Downloads)
-                        # try:
-                        #     screenshot_file = Path.home() / "Downloads" / f"alma_digreps_modal_{rep_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                        #     driver.save_screenshot(str(screenshot_file))
-                        #     self.log(f"    📸 Digital Reps modal screenshot: {screenshot_file}")
-                        #     
-                        #     html_file = Path.home() / "Downloads" / f"alma_digreps_modal_{rep_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-                        #     with open(html_file, 'w', encoding='utf-8') as f:
-                        #         f.write(driver.page_source)
-                        #     self.log(f"    📄 Digital Reps modal HTML: {html_file}")
-                        # except Exception as debug_err:
-                        #     self.log(f"    ⚠️ Could not save debug files: {debug_err}", logging.WARNING)
-                        
-                        # Step 4: Click on the specific representation ID link
-                        self.log(f"  Step 4: Looking for representation {rep_id}...", logging.DEBUG)
-                        
-                        try:
-                            # Try multiple strategies to find the representation ID link
-                            # Strategy 1: Exact link text
-                            try:
-                                rep_link = WebDriverWait(driver, 2).until(
-                                    EC.element_to_be_clickable((By.LINK_TEXT, rep_id))
-                                )
-                                self.log("    ✓ Found rep ID using exact link text")
-                            except TimeoutException:
-                                # Strategy 2: Partial link text (in case there's extra formatting)
-                                try:
-                                    rep_link = WebDriverWait(driver, 2).until(
-                                        EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, rep_id))
-                                    )
-                                    self.log("    ✓ Found rep ID using partial link text")
-                                except TimeoutException:
-                                    # Strategy 3: XPath - any clickable element containing the rep ID
-                                    try:
-                                        rep_link = WebDriverWait(driver, 2).until(
-                                            EC.element_to_be_clickable((By.XPATH, f"//*[contains(text(), '{rep_id}')]"))
-                                        )
-                                        self.log("    ✓ Found rep ID using XPath text search")
-                                    except TimeoutException:
-                                        # Strategy 4: Try finding in a table/list structure
-                                        rep_link = WebDriverWait(driver, 2).until(
-                                            EC.element_to_be_clickable((By.XPATH, f"//a[contains(., '{rep_id}')]"))
-                                        )
-                                        self.log("    ✓ Found rep ID using XPath anchor search")
-                            
-                            rep_link.click()
-                            self.log("    ✓ Clicked representation link", logging.DEBUG)
-                        except TimeoutException:
-                            self.log(f"    ✗ Could not find representation ID {rep_id} on page", logging.ERROR)
-                            self.log(f"    → Check screenshot/HTML files saved above", logging.ERROR)
-                            self.log(f"    → The representation might not exist or modal didn't load", logging.ERROR)
-                            raise
+                        # Steps 3-4: Navigate to the specific representation (shared helper method)
+                        self._navigate_to_representation(driver, rep_id)
                         
                         # Wait for representation page to load
                         time.sleep(2)
@@ -4396,105 +4558,12 @@ class AlmaBibEditor:
             # Track successful uploads
             successful_mms_ids = set()
             
-            # Launch Firefox via GeckoDriver for automation
-            self.log("Starting Firefox browser for automation...")
-            self.log("Note: Selenium will launch a NEW Firefox window (cannot attach to existing sessions)", logging.DEBUG)
-            self.log("", logging.DEBUG)
-            
-            # Configure Firefox options
+            # Setup browser (shared helper method)
             try:
-                from selenium.webdriver.firefox.service import Service
+                driver = self._setup_selenium_browser()
                 
-                options = webdriver.FirefoxOptions()
-                options.set_preference("browser.sessionstore.resume_from_crash", False)
-                options.set_preference("full-screen-api.enabled", False)
-                options.set_preference("signon.rememberSignons", False)
-                options.set_preference("cookiebanners.service.mode", 2)
-                options.set_preference("cookiebanners.service.mode.privateBrowsing", 2)
-                options.add_argument("--width=1400")
-                options.add_argument("--height=1000")
-                
-                service = Service()
-                
-                self.log("Launching Firefox via GeckoDriver...", logging.DEBUG)
-                driver = webdriver.Firefox(service=service, options=options)
-                self.log("✓ Firefox launched successfully")
-                
-                # Navigate to Alma SAML/SSO login page
-                target_url = "https://grinnell.alma.exlibrisgroup.com/SAML"
-                self.log("Navigating to Alma SSO login page...", logging.DEBUG)
-                driver.get(target_url)
-                
-                self.log("")
-                self.log("=" * 70)
-                self.log("⏸️  PLEASE LOG INTO ALMA NOW (via Grinnell SSO)")
-                self.log("=" * 70)
-                self.log("1. Complete the SSO login process in the Firefox window")
-                self.log("2. Complete DUO authentication if prompted")
-                self.log("3. Wait for the Alma home page to fully load")
-                self.log("")
-                self.log("4. ⚙️  CONFIGURE THE SEARCH BAR (at top of page):")
-                self.log("   • Click the search dropdown (left side)")
-                self.log("   • Select: 'Digital titles'")
-                self.log("   • Click the field dropdown (middle)")
-                self.log("   • Select: 'Representation ID' or 'Representation PID'")
-                self.log("   • Leave the search box EMPTY")
-                self.log("")
-                self.log("5. Automation will begin automatically in 60 seconds...")
-                self.log("")
-                self.log("(If you need more time, the system will pause for 30 more seconds)")
-                self.log("(Or use the Kill Switch and restart Function 11b)")
-                self.log("")
-                
-                # Give user time to log in via SSO + DUO
-                time.sleep(60)
-                
-                # Focus Firefox and dismiss popups (same as Function 14b)
-                self.log("\n" + "=" * 70, logging.DEBUG)
-                self.log("FOCUSING FIREFOX AND DISMISSING POPUPS", logging.DEBUG)
-                self.log("=" * 70, logging.DEBUG)
-                
-                for attempt in range(3):
-                    self.log(f"\nFocus attempt {attempt + 1}/3...", logging.DEBUG)
-                    
-                    try:
-                        import subprocess
-                        subprocess.run(['osascript', '-e', 'tell application "Firefox" to activate'], 
-                                     capture_output=True, timeout=5)
-                        self.log(f"  ✓ Firefox activated via AppleScript", logging.DEBUG)
-                        time.sleep(1)
-                        
-                        driver.maximize_window()
-                        driver.switch_to.window(driver.current_window_handle)
-                        driver.execute_script("window.focus();")
-                        self.log(f"  ✓ Window maximized and focused", logging.DEBUG)
-                        time.sleep(0.5)
-                        
-                        actions = ActionChains(driver)
-                        actions.send_keys(Keys.ESCAPE)
-                        actions.perform()
-                        time.sleep(0.3)
-                        
-                        actions = ActionChains(driver)
-                        actions.send_keys(Keys.TAB)
-                        actions.send_keys(Keys.RETURN)
-                        actions.perform()
-                        time.sleep(0.3)
-                        
-                        self.log(f"  ✓ Keyboard popup dismissal attempted", logging.DEBUG)
-                        
-                    except Exception as e:
-                        self.log(f"  ⚠️  Focus attempt {attempt + 1} had issues: {e}", logging.DEBUG)
-                    
-                    time.sleep(0.5)
-                
-                self.log("=" * 70, logging.DEBUG)
-                
-                current_url = driver.current_url
-                self.log(f"\nCurrent URL: {current_url}", logging.DEBUG)
-                self.log("", logging.DEBUG)
-                
-                self.log("Starting automated JPG uploads...")
+                # Perform initial login and focus (shared helper method)
+                self._perform_initial_alma_login(driver)
             except Exception as e:
                 return False, f"Could not start Firefox: {str(e)}. Please ensure GeckoDriver is installed (brew install geckodriver).", 0, 0, None
             
@@ -4538,201 +4607,11 @@ class AlmaBibEditor:
                         continue
                     
                     try:
-                        # Step 1: Wait for page to be ready
-                        self.log("  Step 1: Waiting for Alma page to load...", logging.DEBUG)
+                        # Steps 1-2: Search for representation (shared helper method)
+                        self._search_for_representation(driver, rep_id)
                         
-                        try:
-                            WebDriverWait(driver, 10).until(
-                                EC.presence_of_element_located((By.TAG_NAME, "body"))
-                            )
-                        except TimeoutException:
-                            self.log("    ⏸️  Page not ready yet - waiting 30 more seconds for login...", logging.WARNING)
-                            time.sleep(30)
-                            WebDriverWait(driver, 10).until(
-                                EC.presence_of_element_located((By.TAG_NAME, "body"))
-                            )
-                        
-                        # Step 2: Search for representation
-                        self.log(f"  Step 2: Searching for representation {rep_id}...", logging.DEBUG)
-                        self.log("    ℹ️  Using retained search settings", logging.DEBUG)
-                        
-                        # Dismiss popups
-                        self.log("    Dismissing any interfering popups...", logging.DEBUG)
-                        try:
-                            dismiss_scripts = [
-                                "if (document.activeElement) { var e = new KeyboardEvent('keydown', {'key': 'Escape', 'code': 'Escape', 'keyCode': 27}); document.activeElement.dispatchEvent(e); }",
-                                """
-                                var btns = document.querySelectorAll('button, a, [role="button"]');
-                                for (var i = 0; i < btns.length; i++) {
-                                    var txt = (btns[i].textContent || btns[i].getAttribute('aria-label') || '').toLowerCase();
-                                    if (txt.includes('manage') || txt.includes('widget')) {
-                                        var p = btns[i].closest('div[role="dialog"], div[class*="modal"], div[class*="popup"]');
-                                        if (p) { var c = p.querySelector('[aria-label*="close" i], button[class*="close"]'); if (c) c.click(); }
-                                    }
-                                }
-                                """,
-                                """
-                                var closeBtns = document.querySelectorAll('[class*="close"], [class*="dismiss"], [aria-label*="close" i]');
-                                for (var i = 0; i < closeBtns.length; i++) {
-                                    if (closeBtns[i].offsetParent !== null) { closeBtns[i].click(); break; }
-                                }
-                                """
-                            ]
-                            for script in dismiss_scripts:
-                                driver.execute_script(script)
-                                time.sleep(0.1)
-                            self.log("    ✓ Popup dismissal completed", logging.DEBUG)
-                        except Exception as e:
-                            self.log(f"    ⚠️  Popup dismissal had issues: {e}", logging.DEBUG)
-                        
-                        # Enter search term
-                        try:
-                            search_input = WebDriverWait(driver, 10).until(
-                                EC.presence_of_element_located((By.ID, "NEW_ALMA_MENU_TOP_NAV_Search_Text"))
-                            )
-                            
-                            is_disabled = driver.execute_script("return arguments[0].disabled;", search_input)
-                            if is_disabled:
-                                self.log("    ⚠️  Search field is disabled, attempting to enable via JavaScript...", logging.DEBUG)
-                                driver.execute_script("arguments[0].disabled = false;", search_input)
-                                time.sleep(0.5)
-                            
-                            driver.execute_script("arguments[0].value = '';", search_input)
-                            driver.execute_script("arguments[0].value = arguments[1];", search_input, rep_id)
-                            driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", search_input)
-                            self.log("    ✓ Entered representation ID in search field", logging.DEBUG)
-                            
-                            driver.execute_script("""
-                                var e = new KeyboardEvent('keydown', {'key': 'Enter', 'code': 'Enter', 'keyCode': 13, bubbles: true});
-                                arguments[0].dispatchEvent(e);
-                            """, search_input)
-                            self.log("    ✓ Search initiated (pressed ENTER)", logging.DEBUG)
-                        except TimeoutException:
-                            self.log("    ✗ Could not find search input field", logging.ERROR)
-                            raise
-                        
-                        # Wait for search results
-                        self.log("    Waiting for search results to load...", logging.DEBUG)
-                        time.sleep(10)
-                        
-                        # Step 3: Click on Digital Representations link
-                        self.log("  Step 3: Opening Digital Representations...", logging.DEBUG)
-                        self.log("    Waiting for Digital Representations link to be clickable...", logging.DEBUG)
-                        
-                        try:
-                            # Primary: Try case-insensitive text search (most reliable)
-                            try:
-                                digital_reps_link = WebDriverWait(driver, 15).until(
-                                    EC.element_to_be_clickable((By.XPATH, "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'digital representation')]"))
-                                )
-                                self.log("    ✓ Found Digital Reps link (case-insensitive text)", logging.DEBUG)
-                            except TimeoutException:
-                                # Fallback 1: Try partial link text
-                                try:
-                                    digital_reps_link = WebDriverWait(driver, 5).until(
-                                        EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Digital Representation"))
-                                    )
-                                    self.log("    ✓ Found Digital Reps link (partial link text)", logging.DEBUG)
-                                except TimeoutException:
-                                    # Fallback 2: Try the ex-link with span class
-                                    digital_reps_link = WebDriverWait(driver, 5).until(
-                                        EC.element_to_be_clickable((By.XPATH, "//ex-link[.//span[contains(@class, 'sel-smart-link-nggeneralsectiontitleall_titles_details_digital_representations')]]"))
-                                    )
-                                    self.log("    ✓ Found Digital Reps link (ex-link/span selector)", logging.DEBUG)
-                        except TimeoutException:
-                            # All methods failed
-                            self.log("    ✗ Digital Representations link not found with any selector", logging.ERROR)
-                            
-                            # Try alternative selector as last resort
-                            self.log("    Attempting last resort selector...", logging.WARNING)
-                            try:
-                                digital_reps_link = driver.find_element(By.XPATH, "//*[contains(text(), 'Digital')]")
-                                self.log("    ✓ Found using last resort selector (any element with 'Digital')", logging.WARNING)
-                            except NoSuchElementException:
-                                self.log("    ✗ Could not find Digital Representations link with any selector", logging.ERROR)
-                                raise TimeoutException("Digital Representations link not found after trying all selectors")
-                        
-                        # Additional wait to ensure any overlays/animations are complete
-                        time.sleep(1)
-                        
-                        # Scroll element into view
-                        driver.execute_script("arguments[0].scrollIntoView(true);", digital_reps_link)
-                        time.sleep(0.5)
-                        
-                        # Try regular click first
-                        try:
-                            digital_reps_link.click()
-                            self.log("    ✓ Clicked Digital Reps link", logging.DEBUG)
-                        except Exception as click_err:
-                            # If regular click fails, use JavaScript
-                            self.log(f"    ⚠️ Regular click failed ({click_err}), trying JavaScript...", logging.DEBUG)
-                            driver.execute_script("arguments[0].click();", digital_reps_link)
-                            self.log("    ✓ Clicked Digital Reps link (JavaScript)", logging.DEBUG)
-                        
-                        time.sleep(2)
-                        
-                        # Verify the Digital Representations section actually opened
-                        self.log("    ⏳ Waiting for Digital Representations section to load...", logging.DEBUG)
-                        try:
-                            # Wait for representation content to appear
-                            WebDriverWait(driver, 10).until(
-                                lambda d: d.find_element(By.XPATH, "//*[contains(@class, 'representation') or contains(@id, 'representation') or contains(text(), 'Representation')]")
-                            )
-                            self.log("    ✓ Digital Representations section loaded", logging.DEBUG)
-                        except TimeoutException:
-                            self.log("    ⚠️ Digital Representations section may not have opened, trying click again...", logging.WARNING)
-                            # Try clicking again with JavaScript
-                            driver.execute_script("arguments[0].click();", digital_reps_link)
-                            time.sleep(3)
-                            self.log("    ✓ Attempted second click", logging.DEBUG)
-                        
-                        # Wait for any modal backdrops to disappear
-                        self.log("    ⏳ Waiting for modal backdrops to clear...", logging.DEBUG)
-                        try:
-                            # Wait for modal backdrop to become invisible or be removed
-                            WebDriverWait(driver, 10).until(
-                                EC.invisibility_of_element_located((By.CSS_SELECTOR, "div.modal-backdrop"))
-                            )
-                            self.log("    ✓ Modal backdrop cleared", logging.DEBUG)
-                        except TimeoutException:
-                            # If still there, try to remove it via JavaScript
-                            self.log("    ⚠️ Modal backdrop still present, removing via JavaScript...", logging.WARNING)
-                            driver.execute_script("""
-                                var backdrops = document.querySelectorAll('div.modal-backdrop');
-                                for (var i = 0; i < backdrops.length; i++) {
-                                    backdrops[i].remove();
-                                }
-                            """)
-                            time.sleep(0.5)
-                        
-                        # Step 4: Click on the specific representation ID link
-                        self.log(f"  Step 4: Looking for representation {rep_id}...", logging.DEBUG)
-                        
-                        try:
-                            try:
-                                rep_link = WebDriverWait(driver, 10).until(
-                                    EC.element_to_be_clickable((By.LINK_TEXT, rep_id))
-                                )
-                                self.log(f"    ✓ Found representation link (exact text)", logging.DEBUG)
-                            except TimeoutException:
-                                rep_link = WebDriverWait(driver, 5).until(
-                                    EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, rep_id))
-                                )
-                                self.log(f"    ✓ Found representation link (partial text)", logging.DEBUG)
-                            
-                            # Try clicking, but if it's intercepted, use JavaScript
-                            try:
-                                rep_link.click()
-                                self.log("    ✓ Clicked representation link", logging.DEBUG)
-                            except Exception as click_err:
-                                self.log(f"    ⚠️ Normal click failed ({str(click_err)}), using JavaScript...", logging.WARNING)
-                                driver.execute_script("arguments[0].click();", rep_link)
-                                self.log("    ✓ Clicked representation link (via JavaScript)", logging.DEBUG)
-                            
-                            time.sleep(3)
-                        except TimeoutException:
-                            self.log("    ✗ Could not find representation link", logging.ERROR)
-                            raise
+                        # Steps 3-4: Navigate to the specific representation (shared helper method)
+                        self._navigate_to_representation(driver, rep_id)
                         
                         # Step 5: Click "Files List" tab
                         self.log(f"  Step 5: Opening Files List tab...", logging.DEBUG)
@@ -4901,10 +4780,55 @@ class AlmaBibEditor:
                             # Send file path to input (send_keys works on file inputs)
                             self.log(f"    📎 Sending file path to input element...", logging.DEBUG)
                             upload_input.send_keys(str(file_path.absolute()))
-                            self.log(f"    ✓ File selected: {file_path.name}", logging.DEBUG)
+                            self.log(f"    ✓ File path sent to input", logging.DEBUG)
                             
-                            # Wait for file to be ready
+                            # Wait for upload to complete
+                            # After send_keys, the file needs to be uploaded which can take several seconds
+                            self.log(f"    ⏳ Waiting for file upload to complete...", logging.DEBUG)
+                            
+                            # Strategy 1: Wait for progress indicators to disappear (common in upload UIs)
+                            upload_complete = False
+                            max_wait_seconds = 30  # Maximum time to wait for upload
+                            wait_interval = 0.5
+                            elapsed = 0
+                            
+                            while elapsed < max_wait_seconds and not upload_complete:
+                                try:
+                                    # Check if there's a progress bar or spinner
+                                    progress_indicators = driver.execute_script("""
+                                        var indicators = document.querySelectorAll('[class*="progress"], [class*="spinner"], [class*="loading"]');
+                                        var visible = [];
+                                        for (var i = 0; i < indicators.length; i++) {
+                                            if (indicators[i].offsetParent !== null) {
+                                                visible.push(indicators[i].className);
+                                            }
+                                        }
+                                        return visible.length;
+                                    """)
+                                    
+                                    if progress_indicators == 0:
+                                        # No visible progress indicators, might be done
+                                        # Wait a bit more to be sure
+                                        time.sleep(1)
+                                        upload_complete = True
+                                        self.log(f"    ✓ No progress indicators detected, upload appears complete", logging.DEBUG)
+                                    else:
+                                        self.log(f"    ⏳ Upload in progress ({progress_indicators} indicators visible)...", logging.DEBUG)
+                                        time.sleep(wait_interval)
+                                        elapsed += wait_interval
+                                except Exception as e:
+                                    # If we can't detect progress, wait a fixed amount
+                                    self.log(f"    ⚠️ Could not detect upload progress: {e}", logging.DEBUG)
+                                    time.sleep(2)
+                                    upload_complete = True
+                                    break
+                            
+                            if not upload_complete:
+                                self.log(f"    ⚠️ Upload did not complete within {max_wait_seconds}s, proceeding anyway...", logging.WARNING)
+                            
+                            # Additional wait to ensure file is fully processed
                             time.sleep(2)
+                            self.log(f"    ✓ File upload ready: {file_path.name}", logging.DEBUG)
                             
                             # Click Save button inside iframe
                             self.log(f"    💾 Clicking Save button in iframe...", logging.DEBUG)
