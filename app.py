@@ -2012,7 +2012,7 @@ class AlmaBibEditor:
     
     def analyze_sound_records_by_decade(self, mms_ids: list, output_file: str, progress_callback=None) -> tuple[bool, str]:
         """
-        Function 13: Analyze sound recordings by decade
+        Function 12: Analyze sound recordings by decade
         Examines records where dc:type is "sound", extracts dc:date or dcterms:created (year), 
         determines the decade, and exports to CSV grouped by decade.
         
@@ -2967,6 +2967,338 @@ class AlmaBibEditor:
                     pass
             return False, f"Error uploading thumbnail: {str(e)}"
     
+    def prepare_tiff_jpg_representations(self, mms_ids: list, tiff_csv: str = "all_single_tiffs_with_local_paths.csv", 
+                                         progress_callback=None) -> tuple[bool, str, str | None]:
+        """
+        Function 11a: Prepare TIFF/JPG representations for Alma (Create representations & process files)
+        
+        For each MMS ID:
+        1. Look up TIFF file path from CSV
+        2. Create empty JPG representation in Alma (or find existing empty one)
+        3. Create JPG derivative from TIFF
+        4. Save JPG to timestamped output directory
+        5. Create CSV mapping MMS IDs to representation IDs
+        
+        This follows the same pattern as Function 14a (prepare_thumbnails).
+        
+        Args:
+            mms_ids: List of MMS IDs to process
+            tiff_csv: CSV file with MMS ID and Local Path columns
+            progress_callback: Optional callback function(current, total) for progress updates
+            
+        Returns:
+            tuple: (success: bool, message: str, csv_file_path: str | None)
+        """
+        from pathlib import Path
+        from datetime import datetime
+        import csv
+        
+        # Create timestamped output directory in Downloads folder
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        downloads_dir = Path.home() / "Downloads"
+        output_dir = downloads_dir / f"CABB_tiff_jpg_prep_{timestamp}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.log(f"Starting Function 11a: Prepare TIFF/JPG Representations")
+        self.log(f"Processing {len(mms_ids)} MMS ID(s)")
+        self.log(f"TIFF CSV: {tiff_csv}")
+        self.log(f"Output directory: {output_dir.absolute()}")
+        
+        if not self.api_key:
+            return False, "API Key not configured", None
+        
+        # Verify TIFF CSV exists
+        tiff_csv_path = Path(tiff_csv)
+        if not tiff_csv_path.exists():
+            return False, f"TIFF CSV not found: {tiff_csv}", None
+        
+        # Check if Pillow is available for JPG creation
+        try:
+            from PIL import Image
+        except ImportError:
+            return False, "Pillow library not installed. Run: pip install Pillow", None
+        
+        try:
+            # Read TIFF CSV to get local paths
+            self.log(f"Reading TIFF paths from {tiff_csv}")
+            tiff_paths = {}
+            with open(tiff_csv, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    mms_id = row.get('MMS ID', '').strip()
+                    local_path = row.get('Local Path', '').strip()
+                    if mms_id and local_path:
+                        tiff_paths[mms_id] = local_path
+            
+            self.log(f"Found {len(tiff_paths)} records with local paths")
+            
+            # Initialize CSV data collection
+            csv_data = []
+            
+            # Process each MMS ID
+            success_count = 0
+            failed_count = 0
+            no_path_count = 0
+            no_file_count = 0
+            total = len(mms_ids)
+            
+            for idx, mms_id in enumerate(mms_ids, 1):
+                if self.kill_switch:
+                    self.log("Operation cancelled by user", logging.WARNING)
+                    break
+                
+                if progress_callback:
+                    progress_callback(idx, total)
+                
+                self.log(f"\nProcessing {idx}/{total}: MMS {mms_id}")
+                
+                # Check if we have a local path for this MMS ID
+                if mms_id not in tiff_paths:
+                    self.log(f"  ✗ No local path found in {tiff_csv}", logging.WARNING)
+                    no_path_count += 1
+                    continue
+                
+                local_path = tiff_paths[mms_id]
+                source_tiff = Path(local_path)
+                
+                # Check if source file exists
+                if not source_tiff.exists():
+                    self.log(f"  ✗ File not found: {local_path}", logging.ERROR)
+                    no_file_count += 1
+                    failed_count += 1
+                    continue
+                
+                file_size = source_tiff.stat().st_size
+                self.log(f"  ✓ Found TIFF: {source_tiff.name} ({file_size / 1024 / 1024:.2f} MB)")
+                
+                # Prepare JPG representation and file
+                prep_success, prep_result = self._prepare_jpg_from_tiff_representation(
+                    mms_id,
+                    str(source_tiff),
+                    source_tiff.name,
+                    output_dir
+                )
+                
+                if prep_success:
+                    # prep_result is a dict with rep_id, processed_file, message
+                    rep_id = prep_result['rep_id']
+                    processed_file = prep_result['processed_file']
+                    
+                    self.log(f"  ✓ {prep_result['message']}")
+                    self.log(f"    Rep ID: {rep_id}")
+                    self.log(f"    Processed file: {processed_file}")
+                    
+                    # Add to CSV data with full paths
+                    csv_data.append({
+                        'mms_id': mms_id,
+                        'rep_id': rep_id,
+                        'jpg_filename': str(output_dir / processed_file),  # Full path to JPG file
+                        'tiff_filename': str(source_tiff)  # Full path to original TIFF
+                    })
+                    
+                    success_count += 1
+                else:
+                    self.log(f"  ✗ {prep_result}", logging.ERROR)
+                    failed_count += 1
+            
+            # Write CSV file with results
+            csv_file_path = None
+            if csv_data:
+                csv_file = output_dir / f"tiff_jpg_representations_{timestamp}.csv"
+                csv_file_path = str(csv_file.absolute())
+                with open(csv_file, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.DictWriter(f, fieldnames=['mms_id', 'rep_id', 'jpg_filename', 'tiff_filename'])
+                    writer.writeheader()
+                    writer.writerows(csv_data)
+                
+                self.log(f"\n✓ Created CSV file: {csv_file_path}")
+                self.log(f"  Contains {len(csv_data)} entries")
+            
+            # Final summary
+            message = f"TIFF/JPG preparation complete: {success_count} prepared, {failed_count} failed, "
+            message += f"{no_path_count} no path, {no_file_count} file not found"
+            if csv_file_path:
+                message += f"\nCSV file: {csv_file_path}"
+            message += f"\nOutput directory: {output_dir.absolute()}"
+            self.log(message)
+            return True, message, csv_file_path
+            
+        except Exception as e:
+            error_msg = f"Error preparing TIFF/JPG representations: {str(e)}"
+            self.log(error_msg, logging.ERROR)
+            import traceback
+            self.log(traceback.format_exc(), logging.DEBUG)
+            return False, error_msg, None
+    
+    def _prepare_jpg_from_tiff_representation(self, mms_id: str, tiff_path: str, tiff_filename: str, output_dir) -> tuple[bool, dict | str]:
+        """
+        Create a JPG representation and prepare the JPG file from TIFF (without uploading).
+        
+        This creates a representation with usage_type DERIVATIVE_COPY, converts TIFF to JPG,
+        and saves it to the output directory.
+        
+        Args:
+            mms_id: The MMS ID of the bibliographic record
+            tiff_path: Full path to the TIFF file
+            tiff_filename: Original TIFF filename
+            output_dir: Path object for output directory
+            
+        Returns:
+            tuple: (success: bool, result: dict or error_message: str)
+                   result dict contains: {'rep_id': str, 'processed_file': str, 'message': str}
+        """
+        from pathlib import Path
+        from PIL import Image
+        
+        try:
+            # Create clean JPG filename from TIFF basename
+            tiff_stem = Path(tiff_filename).stem
+            jpg_filename = f"{tiff_stem}.jpg"
+            
+            self.log(f"Starting JPG preparation from TIFF for MMS {mms_id}")
+            self.log(f"  Source TIFF: {tiff_filename}")
+            self.log(f"  Path: {tiff_path}")
+            
+            # Verify file exists
+            if not Path(tiff_path).exists():
+                return False, f"File not found: {tiff_path}"
+            
+            file_size = Path(tiff_path).stat().st_size
+            self.log(f"  File size: {file_size} bytes ({file_size / 1024 / 1024:.2f} MB)")
+            
+            # Step 1: Check for existing JPG representation
+            api_url = self._get_alma_api_url()
+            rep_url = f"{api_url}/almaws/v1/bibs/{mms_id}/representations"
+            
+            headers = {
+                'Authorization': f'apikey {self.api_key}',
+                'Accept': 'application/json'
+            }
+            
+            # Fetch existing representations
+            self.log(f"Checking for existing JPG representation for {mms_id}")
+            response = requests.get(rep_url, headers=headers)
+            
+            existing_rep_id = None
+            jpg_position = None
+            total_reps = 0
+            
+            if response.status_code == 200:
+                reps_data = response.json()
+                representations = reps_data.get('representation', [])
+                total_reps = len(representations)
+                
+                # Look for existing DERIVATIVE_COPY representation with "JPG" in label
+                for idx, rep in enumerate(representations):
+                    label = rep.get('label', '')
+                    usage_type = rep.get('usage_type', {}).get('value', '')
+                    
+                    if usage_type == 'DERIVATIVE_COPY' and ('JPG' in label or 'jpg' in label):
+                        # Check if this representation has files
+                        files = rep.get('files', {})
+                        has_files = False
+                        if isinstance(files, dict):
+                            file_list = files.get('representation_file', [])
+                            if file_list:
+                                has_files = True
+                        
+                        if not has_files:
+                            existing_rep_id = rep.get('id')
+                            jpg_position = idx
+                            self.log(f"  Found existing empty JPG representation: {existing_rep_id}")
+                            self.log(f"  Position: {idx + 1} of {total_reps} representations")
+                            break
+            
+            # Step 2: Create representation only if one doesn't already exist
+            if existing_rep_id:
+                rep_id = existing_rep_id
+                self.log(f"Reusing existing representation ID: {rep_id}")
+                
+                if jpg_position is not None:
+                    if jpg_position == 0:
+                        self.log(f"  ✓ JPG representation is in first position", logging.INFO)
+                    else:
+                        self.log(f"  ⚠️ WARNING: JPG representation is at position {jpg_position + 1}, not first!", logging.WARNING)
+                        self.log(f"  Alma may not use this as the primary display.", logging.WARNING)
+            else:
+                # Warn if creating new representation when others already exist
+                if total_reps > 0:
+                    self.log(f"  ⚠️ NOTE: Creating new JPG representation, but {total_reps} representation(s) already exist", logging.WARNING)
+                    self.log(f"  The new JPG will be placed at the end (position {total_reps + 1})", logging.WARNING)
+                    self.log(f"  Alma may not use this as the primary display.", logging.WARNING)
+                
+                rep_data = {
+                    "label": f"JPG derivative - {jpg_filename}",
+                    "usage_type": {"value": "DERIVATIVE_COPY"},
+                    "library": {"value": "MAIN"},
+                    "public_note": "JPG derivative created from TIFF (prepared for upload)"
+                }
+                
+                headers_create = {
+                    'Authorization': f'apikey {self.api_key}',
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                }
+                
+                self.log(f"Creating new JPG representation for {mms_id}")
+                response = requests.post(rep_url, headers=headers_create, json=rep_data)
+                
+                if response.status_code not in [200, 201]:
+                    self.log(f"  Response body: {response.text}", logging.ERROR)
+                    return False, f"Failed to create representation: HTTP {response.status_code}"
+                
+                rep_response = response.json()
+                rep_id = rep_response.get('id')
+                self.log(f"Created representation ID: {rep_id}")
+                
+                if total_reps == 0:
+                    self.log(f"  ✓ JPG representation created as first (and only) representation", logging.INFO)
+            
+            # Step 3: Create JPG from TIFF
+            self.log(f"Creating JPG from TIFF...")
+            output_file = output_dir / jpg_filename
+            
+            try:
+                with Image.open(tiff_path) as img:
+                    # Handle 16-bit images (I, I;16, I;16B) - convert to 8-bit first
+                    if img.mode in ('I', 'I;16', 'I;16B', 'I;16L', 'I;16N'):
+                        # Properly scale 16-bit to 8-bit by dividing by 256
+                        img = img.point(lambda x: x / 256).convert('L').convert('RGB')
+                    # Convert to RGB if necessary
+                    elif img.mode in ('RGBA', 'LA', 'P'):
+                        rgb_img = Image.new('RGB', img.size, (255, 255, 255))
+                        if img.mode == 'P':
+                            img = img.convert('RGBA')
+                        rgb_img.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
+                        img = rgb_img
+                    elif img.mode == 'L':
+                        # Grayscale to RGB
+                        img = img.convert('RGB')
+                    elif img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    
+                    # Save as JPG with high quality
+                    img.save(output_file, 'JPEG', quality=95, optimize=True)
+                    
+                    jpg_size = output_file.stat().st_size
+                    self.log(f"  ✓ Created JPG: {jpg_filename} ({jpg_size / 1024 / 1024:.2f} MB)")
+            
+            except Exception as e:
+                self.log(f"  ✗ JPG creation failed: {str(e)}", logging.ERROR)
+                return False, f"Error creating JPG: {str(e)}"
+            
+            return True, {
+                'rep_id': rep_id,
+                'processed_file': jpg_filename,
+                'message': f"{'Reused existing' if existing_rep_id else 'Created'} representation and JPG prepared (Rep ID: {rep_id})"
+            }
+            
+        except Exception as e:
+            self.log(f"Exception in _prepare_jpg_from_tiff_representation: {str(e)}", logging.ERROR)
+            import traceback
+            self.log(traceback.format_exc(), logging.ERROR)
+            return False, f"Error preparing JPG from TIFF: {str(e)}"
+    
     def _prepare_thumbnail_representation(self, mms_id: str, thumbnail_path: str, filename: str, identifier: str, output_dir) -> tuple[bool, dict]:
         """
         Create a thumbnail representation and prepare the file (without uploading).
@@ -3370,14 +3702,14 @@ class AlmaBibEditor:
                 self.log("2. Complete DUO authentication if prompted")
                 self.log("3. Wait for the Alma home page to fully load")
                 self.log("")
-                self.log("⚠️  IMPORTANT: Configure the search bar BEFORE automation starts:")
+                self.log("4. ⚙️  CONFIGURE THE SEARCH BAR (at top of page):")
                 self.log("   • Click the search dropdown (left side)")
                 self.log("   • Select: 'Digital titles'")
                 self.log("   • Click the field dropdown (middle)")
                 self.log("   • Select: 'Representation ID' or 'Representation PID'")
                 self.log("   • Leave the search box EMPTY")
                 self.log("")
-                self.log("4. Automation will begin automatically in 60 seconds...")
+                self.log("5. Automation will begin automatically in 60 seconds...")
                 self.log("")
                 self.log("(If you need more time, the system will pause for 30 more seconds)")
                 self.log("(Or use the Kill Switch and restart Function 14b)")
@@ -3985,6 +4317,728 @@ class AlmaBibEditor:
             
             return True, message, success_count, failed_count, failed_csv_path
             
+        except Exception as e:
+            error_msg = f"Error in selenium upload: {str(e)}"
+            self.log(error_msg, logging.ERROR)
+            import traceback
+            self.log(traceback.format_exc(), logging.ERROR)
+            return False, error_msg, 0, 0, None
+        finally:
+            # Restore original min log level
+            self.min_log_level = original_min_level
+    
+    def upload_jpg_selenium(self, csv_file_path: str, progress_callback=None, log_level: str = "INFO") -> tuple[bool, str, int, int, str | None]:
+        """
+        Function 11b: Upload JPG files to Alma representations using Selenium
+        
+        This function reads a CSV file (from Function 11a) containing:
+        - mms_id: The MMS ID
+        - rep_id: The representation ID
+        - jpg_filename: Full path to processed JPG file
+        - tiff_filename: Full path to original TIFF file (for reference)
+        
+        It then uses Selenium to control Firefox and upload each JPG file via the Alma UI.
+        
+        Args:
+            csv_file_path: Path to CSV file from Function 11a
+            progress_callback: Optional callback function(current, total) for progress updates
+            log_level: Minimum log level to display (ERROR, WARNING, INFO, DEBUG)
+            
+        Returns:
+            tuple: (success: bool, message: str, success_count: int, failed_count: int, failed_csv_path: str | None)
+        """
+        # Convert log level string to logging constant
+        min_log_level = getattr(logging, log_level, logging.INFO)
+        # Store original min level to restore later
+        original_min_level = self.min_log_level
+        # Set temporary min level for this function
+        self.min_log_level = min_log_level
+        
+        # Suppress noisy loggers from Selenium and urllib3
+        logging.getLogger('selenium.webdriver.remote.remote_connection').setLevel(logging.WARNING)
+        logging.getLogger('urllib3.connectionpool').setLevel(logging.WARNING)
+        
+        import csv
+        from pathlib import Path
+        from selenium import webdriver
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.keys import Keys
+        from selenium.webdriver.common.action_chains import ActionChains
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.support.ui import Select
+        from selenium.common.exceptions import TimeoutException, NoSuchElementException
+        import time
+        
+        try:
+            self.log(f"Starting Function 11b: Upload JPG Files via Selenium")
+            self.log(f"Log level: {log_level}")
+            self.log(f"Reading CSV file: {csv_file_path}", logging.DEBUG)
+            
+            # Read CSV file
+            csv_path = Path(csv_file_path)
+            if not csv_path.exists():
+                return False, f"CSV file not found: {csv_file_path}", 0, 0, None
+            
+            records = []
+            fieldnames = None
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                fieldnames = reader.fieldnames
+                for row in reader:
+                    records.append(row)
+            
+            if not records:
+                return False, "No records found in CSV file", 0, 0, None
+            
+            self.log(f"Loaded {len(records)} record(s) from CSV")
+            
+            # Track successful uploads
+            successful_mms_ids = set()
+            
+            # Launch Firefox via GeckoDriver for automation
+            self.log("Starting Firefox browser for automation...")
+            self.log("Note: Selenium will launch a NEW Firefox window (cannot attach to existing sessions)", logging.DEBUG)
+            self.log("", logging.DEBUG)
+            
+            # Configure Firefox options
+            try:
+                from selenium.webdriver.firefox.service import Service
+                
+                options = webdriver.FirefoxOptions()
+                options.set_preference("browser.sessionstore.resume_from_crash", False)
+                options.set_preference("full-screen-api.enabled", False)
+                options.set_preference("signon.rememberSignons", False)
+                options.set_preference("cookiebanners.service.mode", 2)
+                options.set_preference("cookiebanners.service.mode.privateBrowsing", 2)
+                options.add_argument("--width=1400")
+                options.add_argument("--height=1000")
+                
+                service = Service()
+                
+                self.log("Launching Firefox via GeckoDriver...", logging.DEBUG)
+                driver = webdriver.Firefox(service=service, options=options)
+                self.log("✓ Firefox launched successfully")
+                
+                # Navigate to Alma SAML/SSO login page
+                target_url = "https://grinnell.alma.exlibrisgroup.com/SAML"
+                self.log("Navigating to Alma SSO login page...", logging.DEBUG)
+                driver.get(target_url)
+                
+                self.log("")
+                self.log("=" * 70)
+                self.log("⏸️  PLEASE LOG INTO ALMA NOW (via Grinnell SSO)")
+                self.log("=" * 70)
+                self.log("1. Complete the SSO login process in the Firefox window")
+                self.log("2. Complete DUO authentication if prompted")
+                self.log("3. Wait for the Alma home page to fully load")
+                self.log("")
+                self.log("4. ⚙️  CONFIGURE THE SEARCH BAR (at top of page):")
+                self.log("   • Click the search dropdown (left side)")
+                self.log("   • Select: 'Digital titles'")
+                self.log("   • Click the field dropdown (middle)")
+                self.log("   • Select: 'Representation ID' or 'Representation PID'")
+                self.log("   • Leave the search box EMPTY")
+                self.log("")
+                self.log("5. Automation will begin automatically in 60 seconds...")
+                self.log("")
+                self.log("(If you need more time, the system will pause for 30 more seconds)")
+                self.log("(Or use the Kill Switch and restart Function 11b)")
+                self.log("")
+                
+                # Give user time to log in via SSO + DUO
+                time.sleep(60)
+                
+                # Focus Firefox and dismiss popups (same as Function 14b)
+                self.log("\n" + "=" * 70, logging.DEBUG)
+                self.log("FOCUSING FIREFOX AND DISMISSING POPUPS", logging.DEBUG)
+                self.log("=" * 70, logging.DEBUG)
+                
+                for attempt in range(3):
+                    self.log(f"\nFocus attempt {attempt + 1}/3...", logging.DEBUG)
+                    
+                    try:
+                        import subprocess
+                        subprocess.run(['osascript', '-e', 'tell application "Firefox" to activate'], 
+                                     capture_output=True, timeout=5)
+                        self.log(f"  ✓ Firefox activated via AppleScript", logging.DEBUG)
+                        time.sleep(1)
+                        
+                        driver.maximize_window()
+                        driver.switch_to.window(driver.current_window_handle)
+                        driver.execute_script("window.focus();")
+                        self.log(f"  ✓ Window maximized and focused", logging.DEBUG)
+                        time.sleep(0.5)
+                        
+                        actions = ActionChains(driver)
+                        actions.send_keys(Keys.ESCAPE)
+                        actions.perform()
+                        time.sleep(0.3)
+                        
+                        actions = ActionChains(driver)
+                        actions.send_keys(Keys.TAB)
+                        actions.send_keys(Keys.RETURN)
+                        actions.perform()
+                        time.sleep(0.3)
+                        
+                        self.log(f"  ✓ Keyboard popup dismissal attempted", logging.DEBUG)
+                        
+                    except Exception as e:
+                        self.log(f"  ⚠️  Focus attempt {attempt + 1} had issues: {e}", logging.DEBUG)
+                    
+                    time.sleep(0.5)
+                
+                self.log("=" * 70, logging.DEBUG)
+                
+                current_url = driver.current_url
+                self.log(f"\nCurrent URL: {current_url}", logging.DEBUG)
+                self.log("", logging.DEBUG)
+                
+                self.log("Starting automated JPG uploads...")
+            except Exception as e:
+                return False, f"Could not start Firefox: {str(e)}. Please ensure GeckoDriver is installed (brew install geckodriver).", 0, 0, None
+            
+            success_count = 0
+            failed_count = 0
+            failed_records = []
+            
+            try:
+                for idx, record in enumerate(records):
+                    if self.kill_switch:
+                        self.log("Kill switch activated - stopping processing", logging.WARNING)
+                        break
+                    
+                    current = idx + 1
+                    if progress_callback:
+                        progress_callback(current, len(records))
+                    
+                    mms_id = record['mms_id']
+                    rep_id = record['rep_id']
+                    jpg_filename = record['jpg_filename']
+                    
+                    self.log(f"\n[{current}/{len(records)}] Processing MMS ID: {mms_id}")
+                    self.log(f"  Rep ID: {rep_id}", logging.DEBUG)
+                    self.log(f"  File: {jpg_filename}", logging.DEBUG)
+                    
+                    # Verify file exists
+                    file_path = Path(jpg_filename)
+                    if not file_path.exists():
+                        self.log(f"  ✗ File not found: {jpg_filename}", logging.ERROR)
+                        failed_count += 1
+                        failed_records.append(record)
+                        continue
+                    
+                    # Verify file is not empty
+                    file_size = file_path.stat().st_size
+                    if file_size == 0:
+                        self.log(f"  ⚠️  File is empty (0 bytes): {jpg_filename}", logging.WARNING)
+                        self.log(f"    → Skipping zero-byte file", logging.WARNING)
+                        failed_count += 1
+                        failed_records.append(record)
+                        continue
+                    
+                    try:
+                        # Step 1: Wait for page to be ready
+                        self.log("  Step 1: Waiting for Alma page to load...", logging.DEBUG)
+                        
+                        try:
+                            WebDriverWait(driver, 10).until(
+                                EC.presence_of_element_located((By.TAG_NAME, "body"))
+                            )
+                        except TimeoutException:
+                            self.log("    ⏸️  Page not ready yet - waiting 30 more seconds for login...", logging.WARNING)
+                            time.sleep(30)
+                            WebDriverWait(driver, 10).until(
+                                EC.presence_of_element_located((By.TAG_NAME, "body"))
+                            )
+                        
+                        # Step 2: Search for representation
+                        self.log(f"  Step 2: Searching for representation {rep_id}...", logging.DEBUG)
+                        self.log("    ℹ️  Using retained search settings", logging.DEBUG)
+                        
+                        # Dismiss popups
+                        self.log("    Dismissing any interfering popups...", logging.DEBUG)
+                        try:
+                            dismiss_scripts = [
+                                "if (document.activeElement) { var e = new KeyboardEvent('keydown', {'key': 'Escape', 'code': 'Escape', 'keyCode': 27}); document.activeElement.dispatchEvent(e); }",
+                                """
+                                var btns = document.querySelectorAll('button, a, [role="button"]');
+                                for (var i = 0; i < btns.length; i++) {
+                                    var txt = (btns[i].textContent || btns[i].getAttribute('aria-label') || '').toLowerCase();
+                                    if (txt.includes('manage') || txt.includes('widget')) {
+                                        var p = btns[i].closest('div[role="dialog"], div[class*="modal"], div[class*="popup"]');
+                                        if (p) { var c = p.querySelector('[aria-label*="close" i], button[class*="close"]'); if (c) c.click(); }
+                                    }
+                                }
+                                """,
+                                """
+                                var closeBtns = document.querySelectorAll('[class*="close"], [class*="dismiss"], [aria-label*="close" i]');
+                                for (var i = 0; i < closeBtns.length; i++) {
+                                    if (closeBtns[i].offsetParent !== null) { closeBtns[i].click(); break; }
+                                }
+                                """
+                            ]
+                            for script in dismiss_scripts:
+                                driver.execute_script(script)
+                                time.sleep(0.1)
+                            self.log("    ✓ Popup dismissal completed", logging.DEBUG)
+                        except Exception as e:
+                            self.log(f"    ⚠️  Popup dismissal had issues: {e}", logging.DEBUG)
+                        
+                        # Enter search term
+                        try:
+                            search_input = WebDriverWait(driver, 10).until(
+                                EC.presence_of_element_located((By.ID, "NEW_ALMA_MENU_TOP_NAV_Search_Text"))
+                            )
+                            
+                            is_disabled = driver.execute_script("return arguments[0].disabled;", search_input)
+                            if is_disabled:
+                                self.log("    ⚠️  Search field is disabled, attempting to enable via JavaScript...", logging.DEBUG)
+                                driver.execute_script("arguments[0].disabled = false;", search_input)
+                                time.sleep(0.5)
+                            
+                            driver.execute_script("arguments[0].value = '';", search_input)
+                            driver.execute_script("arguments[0].value = arguments[1];", search_input, rep_id)
+                            driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", search_input)
+                            self.log("    ✓ Entered representation ID in search field", logging.DEBUG)
+                            
+                            driver.execute_script("""
+                                var e = new KeyboardEvent('keydown', {'key': 'Enter', 'code': 'Enter', 'keyCode': 13, bubbles: true});
+                                arguments[0].dispatchEvent(e);
+                            """, search_input)
+                            self.log("    ✓ Search initiated (pressed ENTER)", logging.DEBUG)
+                        except TimeoutException:
+                            self.log("    ✗ Could not find search input field", logging.ERROR)
+                            raise
+                        
+                        # Wait for search results
+                        self.log("    Waiting for search results to load...", logging.DEBUG)
+                        time.sleep(10)
+                        
+                        # Step 3: Click on Digital Representations link
+                        self.log("  Step 3: Opening Digital Representations...", logging.DEBUG)
+                        self.log("    Waiting for Digital Representations link to be clickable...", logging.DEBUG)
+                        
+                        try:
+                            # Primary: Try case-insensitive text search (most reliable)
+                            try:
+                                digital_reps_link = WebDriverWait(driver, 15).until(
+                                    EC.element_to_be_clickable((By.XPATH, "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'digital representation')]"))
+                                )
+                                self.log("    ✓ Found Digital Reps link (case-insensitive text)", logging.DEBUG)
+                            except TimeoutException:
+                                # Fallback 1: Try partial link text
+                                try:
+                                    digital_reps_link = WebDriverWait(driver, 5).until(
+                                        EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Digital Representation"))
+                                    )
+                                    self.log("    ✓ Found Digital Reps link (partial link text)", logging.DEBUG)
+                                except TimeoutException:
+                                    # Fallback 2: Try the ex-link with span class
+                                    digital_reps_link = WebDriverWait(driver, 5).until(
+                                        EC.element_to_be_clickable((By.XPATH, "//ex-link[.//span[contains(@class, 'sel-smart-link-nggeneralsectiontitleall_titles_details_digital_representations')]]"))
+                                    )
+                                    self.log("    ✓ Found Digital Reps link (ex-link/span selector)", logging.DEBUG)
+                        except TimeoutException:
+                            # All methods failed
+                            self.log("    ✗ Digital Representations link not found with any selector", logging.ERROR)
+                            
+                            # Try alternative selector as last resort
+                            self.log("    Attempting last resort selector...", logging.WARNING)
+                            try:
+                                digital_reps_link = driver.find_element(By.XPATH, "//*[contains(text(), 'Digital')]")
+                                self.log("    ✓ Found using last resort selector (any element with 'Digital')", logging.WARNING)
+                            except NoSuchElementException:
+                                self.log("    ✗ Could not find Digital Representations link with any selector", logging.ERROR)
+                                raise TimeoutException("Digital Representations link not found after trying all selectors")
+                        
+                        # Additional wait to ensure any overlays/animations are complete
+                        time.sleep(1)
+                        
+                        # Scroll element into view
+                        driver.execute_script("arguments[0].scrollIntoView(true);", digital_reps_link)
+                        time.sleep(0.5)
+                        
+                        # Try regular click first
+                        try:
+                            digital_reps_link.click()
+                            self.log("    ✓ Clicked Digital Reps link", logging.DEBUG)
+                        except Exception as click_err:
+                            # If regular click fails, use JavaScript
+                            self.log(f"    ⚠️ Regular click failed ({click_err}), trying JavaScript...", logging.DEBUG)
+                            driver.execute_script("arguments[0].click();", digital_reps_link)
+                            self.log("    ✓ Clicked Digital Reps link (JavaScript)", logging.DEBUG)
+                        
+                        time.sleep(2)
+                        
+                        # Verify the Digital Representations section actually opened
+                        self.log("    ⏳ Waiting for Digital Representations section to load...", logging.DEBUG)
+                        try:
+                            # Wait for representation content to appear
+                            WebDriverWait(driver, 10).until(
+                                lambda d: d.find_element(By.XPATH, "//*[contains(@class, 'representation') or contains(@id, 'representation') or contains(text(), 'Representation')]")
+                            )
+                            self.log("    ✓ Digital Representations section loaded", logging.DEBUG)
+                        except TimeoutException:
+                            self.log("    ⚠️ Digital Representations section may not have opened, trying click again...", logging.WARNING)
+                            # Try clicking again with JavaScript
+                            driver.execute_script("arguments[0].click();", digital_reps_link)
+                            time.sleep(3)
+                            self.log("    ✓ Attempted second click", logging.DEBUG)
+                        
+                        # Wait for any modal backdrops to disappear
+                        self.log("    ⏳ Waiting for modal backdrops to clear...", logging.DEBUG)
+                        try:
+                            # Wait for modal backdrop to become invisible or be removed
+                            WebDriverWait(driver, 10).until(
+                                EC.invisibility_of_element_located((By.CSS_SELECTOR, "div.modal-backdrop"))
+                            )
+                            self.log("    ✓ Modal backdrop cleared", logging.DEBUG)
+                        except TimeoutException:
+                            # If still there, try to remove it via JavaScript
+                            self.log("    ⚠️ Modal backdrop still present, removing via JavaScript...", logging.WARNING)
+                            driver.execute_script("""
+                                var backdrops = document.querySelectorAll('div.modal-backdrop');
+                                for (var i = 0; i < backdrops.length; i++) {
+                                    backdrops[i].remove();
+                                }
+                            """)
+                            time.sleep(0.5)
+                        
+                        # Step 4: Click on the specific representation ID link
+                        self.log(f"  Step 4: Looking for representation {rep_id}...", logging.DEBUG)
+                        
+                        try:
+                            try:
+                                rep_link = WebDriverWait(driver, 10).until(
+                                    EC.element_to_be_clickable((By.LINK_TEXT, rep_id))
+                                )
+                                self.log(f"    ✓ Found representation link (exact text)", logging.DEBUG)
+                            except TimeoutException:
+                                rep_link = WebDriverWait(driver, 5).until(
+                                    EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, rep_id))
+                                )
+                                self.log(f"    ✓ Found representation link (partial text)", logging.DEBUG)
+                            
+                            # Try clicking, but if it's intercepted, use JavaScript
+                            try:
+                                rep_link.click()
+                                self.log("    ✓ Clicked representation link", logging.DEBUG)
+                            except Exception as click_err:
+                                self.log(f"    ⚠️ Normal click failed ({str(click_err)}), using JavaScript...", logging.WARNING)
+                                driver.execute_script("arguments[0].click();", rep_link)
+                                self.log("    ✓ Clicked representation link (via JavaScript)", logging.DEBUG)
+                            
+                            time.sleep(3)
+                        except TimeoutException:
+                            self.log("    ✗ Could not find representation link", logging.ERROR)
+                            raise
+                        
+                        # Step 5: Click "Files List" tab
+                        self.log(f"  Step 5: Opening Files List tab...", logging.DEBUG)
+                        
+                        try:
+                            # Look for Files List tab - try multiple selectors
+                            files_list_tab = None
+                            try:
+                                # Try by ID first
+                                files_list_tab = WebDriverWait(driver, 10).until(
+                                    EC.element_to_be_clickable((By.ID, "A_NAV_LINK_cresource_editordigitalrep_tabsfiles_list_span"))
+                                )
+                                self.log("    ✓ Found Files List tab (by ID)", logging.DEBUG)
+                            except TimeoutException:
+                                # Try by text
+                                files_list_tab = WebDriverWait(driver, 5).until(
+                                    EC.element_to_be_clickable((By.XPATH, "//a[@role='tab'][contains(., 'Files List')]"))
+                                )
+                                self.log("    ✓ Found Files List tab (by text)", logging.DEBUG)
+                            
+                            files_list_tab.click()
+                            self.log("    ✓ Clicked Files List tab", logging.DEBUG)
+                            time.sleep(2)
+                        except TimeoutException:
+                            self.log("    ✗ Could not find Files List tab", logging.ERROR)
+                            raise
+                        
+                        # Step 6: Click "Add Files" link
+                        self.log(f"  Step 6: Clicking Add Files link...", logging.DEBUG)
+                        
+                        try:
+                            # Look for Add Files link
+                            add_files_link = None
+                            try:
+                                # Try finding by the icon and text
+                                add_files_link = WebDriverWait(driver, 10).until(
+                                    EC.element_to_be_clickable((By.XPATH, "//a[contains(@class, 'btn-link')][.//i[contains(@class, 'uxf-plus-circle')]][contains(., 'Add Files')]"))
+                                )
+                                self.log("    ✓ Found Add Files link (by icon+text)", logging.DEBUG)
+                            except TimeoutException:
+                                # Fallback: try just by text
+                                add_files_link = WebDriverWait(driver, 5).until(
+                                    EC.element_to_be_clickable((By.XPATH, "//a[contains(., 'Add Files')]"))
+                                )
+                                self.log("    ✓ Found Add Files link (by text)", logging.DEBUG)
+                            
+                            add_files_link.click()
+                            self.log("    ✓ Clicked Add Files link", logging.DEBUG)
+                            
+                            # Clicking "Add Files" triggers a page reload (loadPage function)
+                            # Wait for the page to reload and the file upload form to appear
+                            self.log("    ⏳ Waiting for page to reload with file upload form...", logging.DEBUG)
+                            time.sleep(5)  # Give page time to reload
+                            
+                            # Wait for page body to be ready
+                            try:
+                                WebDriverWait(driver, 15).until(
+                                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                                )
+                                self.log("    ✓ Page reloaded", logging.DEBUG)
+                            except TimeoutException:
+                                self.log("    ⚠️ Page reload timeout - continuing anyway", logging.WARNING)
+                        except TimeoutException:
+                            self.log("    ✗ Could not find Add Files link", logging.ERROR)
+                            raise
+                        
+                        # Step 7: Upload JPG file via the iframe
+                        self.log(f"  Step 7: Finding file upload iframe...", logging.DEBUG)
+                        
+                        try:
+                            # The file upload interface is in an iframe with title="fileUpload"
+                            # Wait for the iframe to appear
+                            self.log("    🔍 Looking for fileUpload iframe...", logging.DEBUG)
+                            file_upload_iframe = WebDriverWait(driver, 15).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, "iframe[title='fileUpload']"))
+                            )
+                            self.log(f"    ✓ Found file upload iframe", logging.DEBUG)
+                            
+                            # Switch to the iframe
+                            driver.switch_to.frame(file_upload_iframe)
+                            self.log(f"    ✓ Switched to iframe context", logging.DEBUG)
+                            time.sleep(2)  # Give iframe content time to load
+                            
+                            # Now look for the file input inside the iframe
+                            upload_input = None
+                            max_attempts = 15
+                            
+                            for attempt in range(max_attempts):
+                                self.log(f"    🔍 Attempt {attempt+1}/{max_attempts}: Looking for file input in iframe...", logging.DEBUG)
+                                
+                                try:
+                                    # Use JavaScript to search for the element in the iframe
+                                    upload_input = driver.execute_script("""
+                                        return document.getElementById('addFilesButton');
+                                    """)
+                                    
+                                    if upload_input:
+                                        self.log(f"    ✓ Found file upload input (id=addFilesButton) in iframe", logging.DEBUG)
+                                        break
+                                    else:
+                                        # Try alternative selectors
+                                        upload_input = driver.execute_script("""
+                                            var input = document.querySelector('input[type="file"][name="file"]');
+                                            if (!input) input = document.querySelector('input.fileinput-button');
+                                            if (!input) input = document.querySelector('input[type="file"]');
+                                            return input;
+                                        """)
+                                        
+                                        if upload_input:
+                                            attrs = driver.execute_script("""
+                                                return {id: arguments[0].id, name: arguments[0].name, class: arguments[0].className};
+                                            """, upload_input)
+                                            self.log(f"    ✓ Found file input via JavaScript: {attrs}", logging.DEBUG)
+                                            break
+                                except Exception as e:
+                                    self.log(f"    ⚠️ Attempt {attempt+1} failed: {e}", logging.DEBUG)
+                                
+                                # Wait before next attempt
+                                time.sleep(1)
+                            
+                            if not upload_input:
+                                self.log("    ✗ Could not find file upload input in iframe after waiting", logging.ERROR)
+                                
+                                # List all input elements for debugging (still in iframe context)
+                                try:
+                                    all_inputs = driver.execute_script("return document.querySelectorAll('input').length;")
+                                    file_inputs = driver.execute_script("return document.querySelectorAll('input[type=\"file\"]').length;")
+                                    self.log(f"    ℹ️  Found {all_inputs} input elements total in iframe", logging.DEBUG)
+                                    self.log(f"    ℹ️  Found {file_inputs} file input elements in iframe", logging.DEBUG)
+                                    
+                                    # Get details of all file inputs
+                                    file_input_details = driver.execute_script("""
+                                        var inputs = document.querySelectorAll('input[type="file"]');
+                                        var details = [];
+                                        for (var i = 0; i < Math.min(inputs.length, 5); i++) {
+                                            details.push({
+                                                id: inputs[i].id,
+                                                name: inputs[i].name,
+                                                class: inputs[i].className,
+                                                visible: inputs[i].offsetParent !== null
+                                            });
+                                        }
+                                        return details;
+                                    """)
+                                    
+                                    for idx, details in enumerate(file_input_details):
+                                        self.log(f"    📋 File input {idx+1}: {details}", logging.DEBUG)
+                                except Exception as list_err:
+                                    self.log(f"    ⚠️ Could not list inputs: {list_err}", logging.WARNING)
+                                
+                                # Switch back to default content before saving page source
+                                driver.switch_to.default_content()
+                                
+                                # Save page source
+                                try:
+                                    from datetime import datetime
+                                    debug_html = Path.home() / "Downloads" / f"alma_iframe_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                                    with open(debug_html, 'w', encoding='utf-8') as f:
+                                        f.write(driver.page_source)
+                                    self.log(f"    📄 Page source saved to: {debug_html}", logging.ERROR)
+                                except Exception as debug_err:
+                                    self.log(f"    ⚠️ Could not save debug HTML: {debug_err}", logging.WARNING)
+                                
+                                raise TimeoutException("File upload input not found in iframe")
+                            
+                            # Send file path to input (send_keys works on file inputs)
+                            self.log(f"    📎 Sending file path to input element...", logging.DEBUG)
+                            upload_input.send_keys(str(file_path.absolute()))
+                            self.log(f"    ✓ File selected: {file_path.name}", logging.DEBUG)
+                            
+                            # Wait for file to be ready
+                            time.sleep(2)
+                            
+                            # Click Save button inside iframe
+                            self.log(f"    💾 Clicking Save button in iframe...", logging.DEBUG)
+                            iframe_save_clicked = False
+                            
+                            # Try multiple selectors for the Save button
+                            save_button_selectors = [
+                                "button[type='submit']",
+                                "input[type='submit']",
+                                "button.btn-primary",
+                                "//button[contains(text(), 'Save')]",
+                                "//input[@type='submit']",
+                                "//button[@type='submit']"
+                            ]
+                            
+                            for selector in save_button_selectors:
+                                try:
+                                    if selector.startswith('//'):
+                                        iframe_save_button = driver.find_element(By.XPATH, selector)
+                                    else:
+                                        iframe_save_button = driver.find_element(By.CSS_SELECTOR, selector)
+                                    
+                                    if iframe_save_button.is_displayed():
+                                        iframe_save_button.click()
+                                        self.log(f"    ✓ Clicked Save button in iframe using selector: {selector}", logging.DEBUG)
+                                        iframe_save_clicked = True
+                                        break
+                                except Exception as e:
+                                    continue
+                            
+                            if not iframe_save_clicked:
+                                self.log(f"    ⚠️ Could not find Save button in iframe with standard selectors, trying JavaScript...", logging.WARNING)
+                                # JavaScript fallback - click any visible submit button
+                                clicked = driver.execute_script("""
+                                    var buttons = document.querySelectorAll('button[type="submit"], input[type="submit"], button.btn-primary');
+                                    for (var i = 0; i < buttons.length; i++) {
+                                        if (buttons[i].offsetParent !== null) {
+                                            buttons[i].click();
+                                            return true;
+                                        }
+                                    }
+                                    return false;
+                                """)
+                                if clicked:
+                                    self.log(f"    ✓ Clicked Save button in iframe via JavaScript", logging.DEBUG)
+                                else:
+                                    self.log(f"    ✗ Could not find any Save button in iframe", logging.ERROR)
+                            
+                            # Wait for save to process
+                            time.sleep(3)
+                            
+                            # Switch back to default content
+                            driver.switch_to.default_content()
+                            self.log(f"    ✓ Switched back to main page context", logging.DEBUG)
+                            
+                            # Wait for page to update
+                            time.sleep(2)
+                            
+                            # Step 8: Click Save button on main page
+                            self.log(f"  Step 8: Saving on main page...", logging.DEBUG)
+                            
+                            # First, dismiss any modal that might be obscuring the Save button
+                            try:
+                                modal = driver.find_element(By.ID, "myModal")
+                                if modal.is_displayed():
+                                    self.log("    ⚠️ Modal detected, attempting to dismiss...", logging.DEBUG)
+                                    driver.execute_script("arguments[0].classList.remove('show'); arguments[0].style.display = 'none';", modal)
+                                    time.sleep(1)
+                                    self.log("    ✓ Modal dismissed", logging.DEBUG)
+                            except Exception:
+                                pass  # No modal to dismiss
+                            
+                            try:
+                                save_button = WebDriverWait(driver, 10).until(
+                                    EC.presence_of_element_located((By.ID, "PAGE_BUTTONS_cbuttonsave"))
+                                )
+                                
+                                # Use JavaScript click to avoid interception
+                                driver.execute_script("arguments[0].click();", save_button)
+                                self.log("    ✓ Clicked Save button on main page", logging.DEBUG)
+                                
+                                # Wait for save to complete
+                                time.sleep(3)
+                                
+                                self.log(f"  ✓ Successfully uploaded JPG for MMS {mms_id}")
+                                success_count += 1
+                                successful_mms_ids.add(mms_id)
+                                
+                            except TimeoutException:
+                                self.log("    ✗ Could not find Save button", logging.ERROR)
+                                failed_count += 1
+                                failed_records.append(record)
+                        
+                        except Exception as upload_err:
+                            self.log(f"  ✗ Upload failed: {str(upload_err)}", logging.ERROR)
+                            failed_count += 1
+                            failed_records.append(record)
+                    
+                    except Exception as e:
+                        self.log(f"  ✗ Error processing record: {str(e)}", logging.ERROR)
+                        failed_count += 1
+                        failed_records.append(record)
+                
+                # Create failed CSV if there were failures
+                failed_csv_path = None
+                if failed_records:
+                    from datetime import datetime
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    failed_csv_file = csv_path.parent / f"failed_jpg_uploads_{timestamp}.csv"
+                    failed_csv_path = str(failed_csv_file.absolute())
+                    
+                    with open(failed_csv_file, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.DictWriter(f, fieldnames=fieldnames)
+                        writer.writeheader()
+                        writer.writerows(failed_records)
+                    
+                    self.log(f"\n✗ Created failed uploads CSV: {failed_csv_path}")
+                
+                message = f"JPG upload complete: {success_count} uploaded, {failed_count} failed"
+                if failed_csv_path:
+                    message += f"\nFailed CSV: {failed_csv_path}"
+                
+                self.log(message)
+                self.log("\n⚠️  Firefox window left open for review - please close manually when done")
+                
+                return True, message, success_count, failed_count, failed_csv_path
+            
+            except Exception as e:
+                error_msg = f"Error during upload process: {str(e)}"
+                self.log(error_msg, logging.ERROR)
+                import traceback
+                self.log(traceback.format_exc(), logging.ERROR)
+                return False, error_msg, success_count, failed_count, None
+        
         except Exception as e:
             error_msg = f"Error in selenium upload: {str(e)}"
             self.log(error_msg, logging.ERROR)
@@ -5001,6 +6055,7 @@ def main(page: ft.Page):
             page.update()
         
         # Export to CSV
+        storage.record_function_usage("function_8_export_identifiers")
         success, message = editor.export_identifier_csv(
             editor.set_members,
             output_file,
@@ -5037,6 +6092,7 @@ def main(page: ft.Page):
             page.update()
         
         # Validate Handles
+        storage.record_function_usage("function_9_validate_handles")
         success, message = editor.validate_handles_to_csv(
             editor.set_members,
             output_file,
@@ -5100,120 +6156,356 @@ def main(page: ft.Page):
             add_log_message("💡 Tip: Open in Excel/Sheets - Handle column will be clickable")
     
     def on_function_11_click(e):
-        """Handle Function 11: Identify Single TIFF Representations"""
-        # Determine if processing single MMS ID or set
-        if not editor.set_members or len(editor.set_members) == 0:
-            # Try single MMS ID
+        """Handle Function 11a: Prepare TIFF/JPG Representations (Part 1 of 2)"""
+        # Determine if batch or single mode
+        is_batch = editor.set_members and len(editor.set_members) > 0
+        
+        if not is_batch:
+            # Single record mode
             if not mms_id_input.value:
                 update_status("Please enter an MMS ID or load a set", True)
                 return
-            mms_ids = [mms_id_input.value.strip()]
-            add_log_message(f"Analyzing single MMS ID: {mms_ids[0]}")
+            mms_ids_to_process = [mms_id_input.value]
+            record_info = f"MMS ID: {mms_id_input.value}"
         else:
-            mms_ids = editor.set_members
-            add_log_message(f"Analyzing {len(mms_ids)} records from set")
+            # Batch mode
+            mms_ids_to_process = editor.set_members
+            record_info = f"Records to process: {len(editor.set_members)}"
         
-        # Generate timestamped filename
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = f"single_tiff_objects_{timestamp}.csv"
-        
-        add_log_message(f"Identifying objects with single TIFF representations...")
-        update_status(f"Analyzing {len(mms_ids)} record(s)...", False)
-        
-        # Show progress bar
-        set_progress_bar.visible = True
-        set_progress_bar.value = 0
-        set_progress_text.visible = True
-        set_progress_text.value = f"Processing: 0/{len(editor.set_members)} records"
-        page.update()
-        
-        def progress_update(current, total):
-            progress = current / total
-            set_progress_bar.value = progress
-            set_progress_text.value = f"Processing: {current}/{total} records ({progress*100:.1f}%)"
-            status_text.value = f"Analyzing representations: {current}/{total} records ({progress*100:.1f}%)"
+        # Show warning dialog
+        def proceed_with_prep(e):
+            warning_dialog.open = False
             page.update()
+            
+            if is_batch:
+                add_log_message(f"Starting TIFF/JPG preparation for {len(mms_ids_to_process)} records")
+                update_status(f"Preparing TIFF/JPG representations for {len(mms_ids_to_process)} records...", False)
+                
+                # Show progress bar
+                set_progress_bar.visible = True
+                set_progress_bar.value = 0
+                set_progress_text.visible = True
+                set_progress_text.value = f"Processing: 0/{len(mms_ids_to_process)} records"
+                page.update()
+                
+                def progress_update(current, total):
+                    progress = current / total
+                    set_progress_bar.value = progress
+                    set_progress_text.value = f"Processing: {current}/{total} records ({progress*100:.1f}%)"
+                    status_text.value = f"Preparing TIFF/JPG reps: {current}/{total} records ({progress*100:.1f}%)"
+                    page.update()
+            else:
+                add_log_message(f"Starting TIFF/JPG preparation for MMS ID: {mms_ids_to_process[0]}")
+                update_status(f"Preparing TIFF/JPG representation for {mms_ids_to_process[0]}...", False)
+                progress_update = None
+            
+            # Prepare TIFF/JPG representations (Part 1 - create reps and process files)
+            storage.record_function_usage("function_11a_prepare_tiff_jpg")
+            success, message, csv_file_path = editor.prepare_tiff_jpg_representations(
+                mms_ids_to_process,
+                progress_callback=progress_update
+            )
+            
+            # Hide progress bar (if it was shown)
+            if is_batch:
+                set_progress_bar.visible = False
+                set_progress_text.visible = False
+                page.update()
+            
+            update_status(message, not success)
+            if success:
+                # Auto-populate Set ID field with CSV path for Function 11b
+                if csv_file_path:
+                    set_id_input.value = csv_file_path
+                    add_log_message(f"📋 CSV path copied to Set ID field for Function 11b")
+                    page.update()
+                
+                if is_batch:
+                    add_log_message(f"TIFF/JPG preparation complete")
+                    add_log_message("💡 Check the logs for details on prepared files and any failures")
+                else:
+                    add_log_message("TIFF/JPG preparation complete for single record")
         
-        # Identify single TIFF objects
-        storage.record_function_usage("function_11_identify_single_tiff")
-        success, message = editor.identify_single_tiff_objects(
-            mms_ids,
-            output_file,
-            progress_callback=progress_update,
-            create_jpg=False
+        def cancel_prep(e):
+            warning_dialog.open = False
+            page.update()
+            add_log_message("TIFF/JPG preparation cancelled by user")
+        
+        warning_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("⚠️ WARNING: Alma Data Modification", weight=ft.FontWeight.BOLD),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text(
+                        "This will create JPG representations in Alma and prepare JPG files from TIFFs.",
+                        size=14
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        record_info,
+                        weight=ft.FontWeight.BOLD
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "Function: 11a - Prepare TIFF/JPG Representations (Part 1 of 2)",
+                        italic=True,
+                        color=ft.Colors.GREY_700
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "This action will PERMANENTLY create JPG representations in Alma. "
+                        "JPG derivatives will be created from TIFF files found in all_single_tiffs_with_local_paths.csv. "
+                        "Note: This only creates representations and prepares files. Actual file upload will be done in Function 11b.",
+                        size=13
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "Do you want to continue?",
+                        weight=ft.FontWeight.BOLD
+                    ),
+                ]),
+                padding=10,
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel_prep),
+                ft.TextButton(
+                    "Proceed",
+                    on_click=proceed_with_prep,
+                    style=ft.ButtonStyle(
+                        color=ft.Colors.WHITE,
+                        bgcolor=ft.Colors.RED_700,
+                    ),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
         )
         
-        # Hide progress bar
-        set_progress_bar.visible = False
-        set_progress_text.visible = False
-        page.update()
-        
-        update_status(message, not success)
-        if success:
-            add_log_message(f"Single TIFF analysis complete: {output_file}")
-            add_log_message("💡 Tip: Use Alma's derivative creation tools or download TIFFs manually for JPG conversion")
+        page.open(warning_dialog)
     
     def on_function_12_click(e):
-        """Handle Function 12: Process TIFFs for Import"""
-        # Determine if processing single MMS ID or set
-        if not editor.set_members or len(editor.set_members) == 0:
-            # Try single MMS ID mode
-            if not mms_id_input.value:
-                update_status("Please enter an MMS ID or load a set", True)
-                return
-            mms_ids = [mms_id_input.value.strip()]
-            add_log_message(f"Processing single MMS ID: {mms_ids[0]}")
-        else:
-            mms_ids = editor.set_members
-            add_log_message(f"Processing {len(mms_ids)} records from set")
+        """Handle Function 11b: Upload JPG Files via Selenium (Part 2 of 2)"""
+        # Get CSV file path from Set ID field
+        csv_path = set_id_input.value.strip() if set_id_input.value else ""
         
-        # Get optional CSV path from Set ID field (only if it looks like a file path)
-        alma_export_csv = None
-        if set_id_input.value:
-            value = set_id_input.value.strip()
-            # Only use as CSV path if it has .csv extension or contains path separators
-            if '.csv' in value.lower() or '/' in value or '\\' in value:
-                alma_export_csv = value
+        if not csv_path:
+            update_status("Please enter the CSV file path from Function 11a in the Set ID field", True)
+            return
         
-        add_log_message(f"Function 12: Processing TIFFs for Import...")
-        update_status(f"Processing {len(mms_ids)} record(s)...", False)
+        if not csv_path.endswith('.csv'):
+            update_status("Please provide a valid CSV file path (must end with .csv)", True)
+            return
         
-        # Show progress bar
-        set_progress_bar.visible = True
-        set_progress_bar.value = 0
-        set_progress_text.visible = True
-        set_progress_text.value = f"Processing: 0/{len(mms_ids)} records"
-        page.update()
-        
-        def progress_update(current, total):
-            progress = current / total
-            set_progress_bar.value = progress
-            set_progress_text.value = f"Processing: {current}/{total} records ({progress*100:.1f}%)"
-            status_text.value = f"Processing TIFFs: {current}/{total} records ({progress*100:.1f}%)"
+        # Show warning dialog
+        def proceed_with_upload(e):
+            warning_dialog.open = False
             page.update()
+            
+            add_log_message(f"Starting JPG upload via Selenium")
+            add_log_message(f"CSV file: {csv_path}")
+            update_status(f"Uploading JPG files via Firefox...", False)
+            
+            # Show progress bar
+            set_progress_bar.visible = True
+            set_progress_bar.value = 0
+            set_progress_text.visible = True
+            set_progress_text.value = f"Initializing..."
+            page.update()
+            
+            def progress_update(current, total):
+                progress = current / total
+                set_progress_bar.value = progress
+                set_progress_text.value = f"Processing: {current}/{total} records ({progress*100:.1f}%)"
+                status_text.value = f"Uploading JPG files: {current}/{total} records ({progress*100:.1f}%)"
+                page.update()
+            
+            # Upload via Selenium
+            storage.record_function_usage("function_11b_upload_jpg")
+            
+            # Get log level from dropdown
+            selected_log_level = log_level_dropdown.value if log_level_dropdown.value else "INFO"
+            
+            success, message, success_count, failed_count, failed_csv_path = editor.upload_jpg_selenium(
+                csv_path,
+                progress_callback=progress_update,
+                log_level=selected_log_level
+            )
+            
+            # Hide progress bar
+            set_progress_bar.visible = False
+            set_progress_text.visible = False
+            page.update()
+            
+            update_status(message, not success)
+            if success:
+                # Auto-populate Set ID field with failed CSV path if there were failures
+                if failed_csv_path:
+                    set_id_input.value = failed_csv_path
+                    add_log_message(f"📋 Failed CSV path copied to Set ID field for retry")
+                    page.update()
+                
+                add_log_message(f"JPG upload complete")
+                add_log_message("💡 Firefox has been left open for your review")
+            else:
+                add_log_message(f"Upload failed or incomplete - check logs for details")
+            
+            # Show completion dialog
+            from pathlib import Path as PathLib
+            csv_path_obj = PathLib(csv_path)
+            temp_dir = csv_path_obj.parent
+            
+            def close_completion_dialog(e):
+                completion_dialog.open = False
+                page.update()
+            
+            def delete_temp_directory(e):
+                """Delete the temporary directory after user confirmation"""
+                import shutil
+                try:
+                    shutil.rmtree(temp_dir)
+                    add_log_message(f"✓ Deleted temporary directory: {temp_dir}")
+                    update_status(f"Temporary directory deleted: {temp_dir}", False)
+                except Exception as delete_error:
+                    add_log_message(f"✗ Error deleting directory: {str(delete_error)}", logging.ERROR)
+                    update_status(f"Error deleting directory: {str(delete_error)}", True)
+                finally:
+                    completion_dialog.open = False
+                    page.update()
+            
+            # Build completion dialog content
+            completion_content = [
+                ft.Text(
+                    "Upload Process Complete",
+                    size=16,
+                    weight=ft.FontWeight.BOLD
+                ),
+                ft.Container(height=10),
+                ft.Text(f"✓ Successfully uploaded: {success_count}", color=ft.Colors.GREEN_700),
+                ft.Text(f"✗ Failed uploads: {failed_count}", 
+                        color=ft.Colors.RED_700 if failed_count > 0 else ft.Colors.GREY_600),
+                ft.Container(height=10),
+                ft.Text(f"Temporary directory:", weight=ft.FontWeight.BOLD),
+                ft.Text(str(temp_dir), size=12, italic=True),
+            ]
+            
+            # Add delete option only if no errors
+            completion_actions = [
+                ft.TextButton("Close", on_click=close_completion_dialog)
+            ]
+            
+            if failed_count == 0 and success_count > 0:
+                completion_content.append(ft.Container(height=10))
+                completion_content.append(
+                    ft.Text(
+                        "Since all uploads were successful, would you like to delete the temporary directory?",
+                        size=13,
+                        italic=True
+                    )
+                )
+                completion_actions.insert(0, ft.TextButton(
+                    "Delete Temp Directory",
+                    on_click=delete_temp_directory,
+                    style=ft.ButtonStyle(
+                        color=ft.Colors.WHITE,
+                        bgcolor=ft.Colors.ORANGE_700
+                    )
+                ))
+            else:
+                completion_content.append(ft.Container(height=10))
+                completion_content.append(
+                    ft.Text(
+                        "⚠️ Some uploads failed. The temporary directory has been preserved for review.",
+                        size=12,
+                        color=ft.Colors.ORANGE_700
+                    )
+                )
+            
+            completion_dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("🎉 Upload Complete", weight=ft.FontWeight.BOLD),
+                content=ft.Container(
+                    content=ft.Column(completion_content),
+                    padding=20
+                ),
+                actions=completion_actions,
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+            
+            page.open(completion_dialog)
         
-        # Process TIFFs
-        storage.record_function_usage("function_12_process_tiffs")
-        success, message = editor.process_tiffs_for_import(
-            mms_ids,
-            tiff_csv="all_single_tiffs_with_local_paths.csv",
-            alma_export_csv=alma_export_csv,
-            for_import_dir="For-Import",
-            progress_callback=progress_update
+        def cancel_upload(e):
+            warning_dialog.open = False
+            page.update()
+            add_log_message("JPG upload cancelled by user")
+        
+        warning_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("⚠️ WARNING: Browser Automation", weight=ft.FontWeight.BOLD),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text(
+                        "This will upload JPG files to Alma using browser automation (Selenium).",
+                        size=14
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        f"CSV file: {csv_path}",
+                        weight=ft.FontWeight.BOLD
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "Function: 11b - Upload JPG Files (Part 2 of 2)",
+                        italic=True,
+                        color=ft.Colors.GREY_700
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "⚠️ IMPORTANT: Close all Firefox windows before proceeding!",
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.RED_700,
+                        size=14
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "How it works:\n\n"
+                        "1. Click Proceed below\n\n"
+                        "2. Selenium will launch a NEW Firefox window\n\n"
+                        "3. You'll have 60 seconds to log into Alma via Grinnell SSO + DUO\n\n"
+                        "4. If you need more time, automation will pause 30 additional seconds\n\n"
+                        "5. Automation begins automatically\n\n"
+                        "Do not interact with Firefox during uploads.\n\n"
+                        "Note: Selenium cannot use your existing Firefox session—\n"
+                        "it must launch its own window.",
+                        size=13
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "Do you want to continue?",
+                        weight=ft.FontWeight.BOLD
+                    ),
+                ]),
+                padding=20
+            ),
+            actions=[
+                ft.TextButton(
+                    "Cancel",
+                    on_click=cancel_upload
+                ),
+                ft.TextButton(
+                    "Proceed",
+                    on_click=proceed_with_upload,
+                    style=ft.ButtonStyle(
+                        color=ft.Colors.WHITE,
+                        bgcolor=ft.Colors.RED_700
+                    )
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
         )
         
-        # Hide progress bar
-        set_progress_bar.visible = False
-        set_progress_text.visible = False
-        page.update()
-        
-        update_status(message, not success)
-        if success:
-            add_log_message("Function 12 complete: TIFFs processed and JPGs created")
+        page.open(warning_dialog)
     
-    def on_function_13_click(e):
-        """Handle Function 13: Analyze Sound Records by Decade"""
+    def on_function_12_sound_click(e):
+        """Handle Function 12: Analyze Sound Records by Decade"""
         if not editor.set_members or len(editor.set_members) == 0:
             update_status("Please load a set first", True)
             return
@@ -5241,7 +6533,7 @@ def main(page: ft.Page):
             page.update()
         
         # Analyze sound records by decade
-        storage.record_function_usage("function_13_sound_by_decade")
+        storage.record_function_usage("function_12_sound_by_decade")
         success, message = editor.analyze_sound_records_by_decade(
             editor.set_members,
             output_file,
@@ -5257,6 +6549,80 @@ def main(page: ft.Page):
         if success:
             add_log_message(f"Sound records decade analysis complete: {output_file}")
             add_log_message("💡 Tip: Sort by Decade column to group records for sub-collection distribution")
+    
+    def on_function_13_placeholder_click(e):
+        """Handle Function 13 Placeholder - Explain why 13 is skipped"""
+        
+        def close_dialog(e):
+            placeholder_dialog.open = False
+            page.update()
+        
+        placeholder_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("🔢 Why No Function 13?", weight=ft.FontWeight.BOLD),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text(
+                        "Triskaidekaphobia",
+                        size=18,
+                        weight=ft.FontWeight.W_500,
+                        italic=True
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "The fear of the number 13 is common across many cultures. "
+                        "Buildings skip the 13th floor, airlines avoid row 13, and many people consider it unlucky.",
+                        size=14
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "In the spirit of tradition (and perhaps a bit of superstition), "
+                        "we've chosen to skip Function 13 in CABB.",
+                        size=14
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "Why tempt fate when manipulating bibliographic records?",
+                        size=14,
+                        italic=True,
+                        color=ft.Colors.GREY_700
+                    ),
+                    ft.Container(height=15),
+                    ft.Text(
+                        "Function 12: Sound Records by Decade",
+                        size=13,
+                        weight=ft.FontWeight.BOLD
+                    ),
+                    ft.Text(
+                        "Function 14a: Prepare Thumbnails",
+                        size=13,
+                        weight=ft.FontWeight.BOLD
+                    ),
+                    ft.Container(height=5),
+                    ft.Text(
+                        "➡️  We go straight from 12 to 14.",
+                        size=14,
+                        color=ft.Colors.BLUE_700
+                    ),
+                ]),
+                padding=20,
+                width=500
+            ),
+            actions=[
+                ft.TextButton(
+                    "Understood 😊",
+                    on_click=close_dialog,
+                    style=ft.ButtonStyle(
+                        color=ft.Colors.WHITE,
+                        bgcolor=ft.Colors.BLUE_700,
+                    )
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        page.open(placeholder_dialog)
+        add_log_message("ℹ️  Function 13 intentionally skipped (avoiding unlucky number)")
     
     def on_function_14_click(e):
         """Handle Function 14a: Prepare .clientThumb Thumbnails (Part 1 of 2)"""
@@ -5303,7 +6669,7 @@ def main(page: ft.Page):
                 progress_update = None
             
             # Prepare thumbnails (Part 1 - create reps and process files)
-            storage.record_function_usage("function_14_upload_thumbnails")
+            storage.record_function_usage("function_14a_prepare_thumbnails")
             success, message, csv_file_path = editor.upload_clientthumb_thumbnails(
                 mms_ids_to_process,
                 progress_callback=progress_update
@@ -5616,9 +6982,9 @@ def main(page: ft.Page):
         "function_8_export_identifiers",
         "function_9_validate_handles",
         "function_10_export_review",
-        "function_11_identify_single_tiff",
-        "function_12_process_tiffs",
-        "function_13_sound_by_decade",
+        "function_11a_prepare_tiff_jpg",
+        "function_11b_upload_jpg",
+        "function_12_sound_by_decade",
         "function_14a_prepare_thumbnails",
         "function_14b_upload_thumbnails"
     ]
@@ -5628,7 +6994,8 @@ def main(page: ft.Page):
         "function_2_clear_dc_relation",
         "function_4_filter_pre1930",
         "function_6_replace_rights",
-        "function_7_add_grinnell_id"
+        "function_7_add_grinnell_id",
+        "function_13_placeholder"
     ]
     
     functions = {
@@ -5692,23 +7059,29 @@ def main(page: ft.Page):
             "handler": on_function_10_click,
             "help_file": "FUNCTION_10_EXPORT_REVIEW.md"
         },
-        "function_11_identify_single_tiff": {
-            "label": "11: Identify Single TIFF Representations",
+        "function_11a_prepare_tiff_jpg": {
+            "label": "11a: Prepare TIFF/JPG Representations (Part 1 of 2)",
             "icon": "🖼️",
             "handler": on_function_11_click,
-            "help_file": "FUNCTION_11_IDENTIFY_SINGLE_TIFF.md"
+            "help_file": "FUNCTION_11a_IDENTIFY_SINGLE_TIFF.md"
         },
-        "function_12_process_tiffs": {
-            "label": "12: Process TIFFs & Create JPG Derivatives",
+        "function_11b_upload_jpg": {
+            "label": "11b: Upload JPG Files (Part 2 of 2)",
             "icon": "📸",
             "handler": on_function_12_click,
-            "help_file": "FUNCTION_12_PROCESS_TIFFS.md"
+            "help_file": "FUNCTION_11b_PROCESS_TIFFS.md"
         },
-        "function_13_sound_by_decade": {
-            "label": "13: Analyze Sound Records by Decade",
+        "function_12_sound_by_decade": {
+            "label": "12: Analyze Sound Records by Decade",
             "icon": "🎵",
-            "handler": on_function_13_click,
-            "help_file": "FUNCTION_13_SOUND_BY_DECADE.md"
+            "handler": on_function_12_sound_click,
+            "help_file": "FUNCTION_12_SOUND_BY_DECADE.md"
+        },
+        "function_13_placeholder": {
+            "label": "13: (Intentionally Left Blank)",
+            "icon": "⊘",
+            "handler": on_function_13_placeholder_click,
+            "help_file": "FUNCTION_13_PLACEHOLDER.md"
         },
         "function_14a_prepare_thumbnails": {
             "label": "14a: Prepare Thumbnails (Part 1 of 2)",
@@ -5947,7 +7320,6 @@ def main(page: ft.Page):
                                 label="Select Function to Execute",
                                 hint_text="Functions ordered by most recently used",
                                 width=500,
-                                max_menu_height=400,
                                 options=[],
                                 on_change=lambda e: execute_selected_function(e.control.value)
                             ),
@@ -5959,7 +7331,6 @@ def main(page: ft.Page):
                                 label="Select Inactive Function",
                                 hint_text="Less frequently used",
                                 width=500,
-                                max_menu_height=400,
                                 options=[],
                                 on_change=lambda e: execute_selected_function(e.control.value)
                             ),
