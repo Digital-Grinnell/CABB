@@ -657,3 +657,86 @@ def add_grinnell_identifier(editor, mms_id: str) -> tuple[bool, str]:
         editor.log(f"Error processing record {mms_id}: {str(e)}", logging.ERROR)
         editor.log(f"Full traceback:\n{error_details}", logging.DEBUG)
         return False, f"Error processing record {mms_id}: {str(e)}"
+
+
+# ============================================================================
+# PERMANENTLY DISABLED FUNCTIONS
+# ============================================================================
+
+"""
+FUNCTION 12 (formerly 11b - upload_jpg_selenium)
+ARCHIVED AND DISABLED - February 2025
+
+NOTE: Function 11 (formerly 11a - prepare_tiff_jpg_representations) is ACTIVE and working.
+Only the Selenium-based file upload function has been permanently disabled.
+
+This function has been permanently disabled and removed from active use due to
+insurmountable automation challenges with Alma's file upload system.
+
+TECHNICAL ISSUES ENCOUNTERED WITH SELENIUM FILE UPLOAD:
+- Alma's iframe-based file upload mechanism does not accept automated file selection
+  via Selenium's send_keys() method
+- File selection dialogs require system-level automation (AppleScript on macOS)
+- AppleScript requires macOS Accessibility permissions for UI automation
+- Even with permissions, the upload process proved unreliable and error-prone
+- Files appeared to upload but were not actually attached to representations
+- Alma's upload timeout requires clicking Save immediately after upload completes
+
+WHAT FUNCTION 11 (ACTIVE) DOES:
+- Creates empty JPG representations in Alma via API
+- Converts TIFF files to JPG format using Pillow
+- Saves JPG files to a timestamped directory
+- Creates CSV mapping file (mms_id, rep_id, jpg_filename, tiff_filename)
+
+WHAT FUNCTION 12 (DISABLED) WAS SUPPOSED TO DO:
+- Read the CSV from Function 11
+- Use Selenium to automate Firefox browser
+- Navigate to each representation in Alma
+- Upload the corresponding JPG file via the UI
+- This part FAILED and has been abandoned
+
+WHY SELENIUM UPLOAD WAS ABANDONED:
+After extensive debugging and multiple automation approaches, it became clear that
+Alma's design intentionally prevents automated file uploads. The mind-numbing and
+error-prone task of attaching digital files to empty representations must be done
+manually by a human operator.
+
+ORIGINAL CODE LOCATION:
+The Selenium upload implementation (~600+ lines) has been removed from app.py and archived
+in git history. Function 11 (preparation) remains active in app.py.
+
+If Alma's file upload system is ever updated to support automation, or if alternative
+approaches become viable, the Selenium code can be recovered from git:
+
+    git log --all --full-history -- app.py | grep -B5 "upload_jpg_selenium"
+    
+Key commits containing the Selenium implementation:
+- Last working version before deletion: Check git log for "FUNCTION 12 DISABLED"
+- Original implementation: Circa January-February 2025
+
+CURRENT STATE:
+- Function 11 (prepare_tiff_jpg_representations): ACTIVE - Creates reps and JPG files
+- Function 12 (upload_jpg_selenium): DISABLED - Selenium approach abandoned
+
+ALTERNATIVE APPROACHES BEING EXPLORED:
+The user is working on a new approach for file upload that doesn't rely on Selenium.
+Stay tuned for updates.
+
+MANUAL WORKAROUND (until new solution is implemented):
+Users who need to upload JPG files to Alma representations should:
+1. ✅ Run Function 11 to create empty representations and prepare JPG files (AUTOMATED)
+2. ✅ Function 11 outputs a CSV with file paths and representation IDs (AUTOMATED)
+3. ❌ Log into Alma manually
+4. ❌ Navigate to each representation manually
+5. ❌ Click Add Files manually
+6. ❌ Select file in system dialog manually
+7. ❌ Click Save manually (twice - once in iframe, once on main page)
+8. ❌ Repeat for each file
+
+"Said human must accept their fate and faithfully serve the evil that is Alma,
+toiling in clickity, click, click, click hell for eternity."
+
+For more details, see:
+- FUNCTION_11_IDENTIFY_SINGLE_TIFF.md (for preparation workflow - WORKING)
+- FUNCTION_12_***FAILED***_ADD_JPG_REPS.md (for failed upload attempt documentation)
+"""
