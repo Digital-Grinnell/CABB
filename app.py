@@ -5476,6 +5476,176 @@ class AlmaBibEditor:
             self.log(traceback.format_exc(), logging.ERROR)
             return False, error_msg
     
+    def analyze_identifier_match(self, mms_ids: list, progress_callback=None) -> tuple[bool, str, str | None]:
+        """
+        Function 15: Analyze dc:identifier fields for MMS ID matching
+        
+        Processes MMS IDs and categorizes them based on whether they have a dc:identifier
+        that exactly matches the MMS ID. Creates up to three CSV files in a temporary directory:
+        1. identifier_matching_{timestamp}.csv - Records WITH matching dc:identifier
+        2. identifier_non_matching_{timestamp}.csv - Records WITHOUT matching dc:identifier
+        3. identifier_failed_{timestamp}.csv - Records that failed to process (with error messages)
+        
+        Args:
+            mms_ids: List of MMS IDs to analyze
+            progress_callback: Optional callback function(current, total) for progress updates
+            
+        Returns:
+            tuple: (success: bool, message: str, output_dir_path: str | None)
+        """
+        import csv
+        from datetime import datetime
+        from pathlib import Path
+        
+        # Create timestamped output directory in Downloads folder
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        downloads_dir = Path.home() / "Downloads"
+        output_dir = downloads_dir / f"CABB_identifier_analysis_{timestamp}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        matching_file = output_dir / f"identifier_matching_{timestamp}.csv"
+        non_matching_file = output_dir / f"identifier_non_matching_{timestamp}.csv"
+        failed_file = output_dir / f"identifier_failed_{timestamp}.csv"
+        
+        self.log(f"Starting identifier match analysis for {len(mms_ids)} records")
+        self.log(f"Output directory: {output_dir.absolute()}")
+        self.log(f"Output files: {matching_file.name}, {non_matching_file.name}, {failed_file.name}")
+        
+        try:
+            matching_rows = []
+            non_matching_rows = []
+            failed_rows = []
+            
+            success_count = 0
+            failed_count = 0
+            total = len(mms_ids)
+            batch_size = 100  # Alma API supports up to 100 MMS IDs per batch call
+            
+            # Calculate total number of API calls
+            total_batches = (total + batch_size - 1) // batch_size
+            self.log(f"Using batch API calls: {total_batches} calls for {total} records")
+            
+            # Process in batches
+            for batch_start in range(0, total, batch_size):
+                # Check kill switch
+                if self.kill_switch:
+                    self.log("Process stopped by user")
+                    break
+                
+                batch_end = min(batch_start + batch_size, total)
+                batch_ids = mms_ids[batch_start:batch_end]
+                batch_num = (batch_start // batch_size) + 1
+                
+                self.log(f"Processing batch {batch_num}/{total_batches}: records {batch_start+1}-{batch_end}")
+                
+                # Fetch batch of records
+                batch_records = self.fetch_bib_records_batch(batch_ids)
+                
+                # Process each record in the batch
+                for i in range(len(batch_ids)):
+                    record_index = batch_start + i + 1
+                    mms_id = batch_ids[i]
+                    
+                    try:
+                        # Check if record was successfully fetched
+                        if mms_id in batch_records:
+                            # Set as current record for field extraction
+                            self.current_record = batch_records[mms_id]
+                            
+                            # Extract all dc:identifier values
+                            identifiers = self._extract_dc_field("identifier", "dc")
+                            
+                            # Check if MMS ID is in the identifier list
+                            if mms_id in identifiers:
+                                # MMS ID matches - add to matching CSV
+                                matching_rows.append({
+                                    "MMS ID": mms_id,
+                                    "dc:identifier": mms_id
+                                })
+                                self.log(f"  ✓ {mms_id}: MATCH found", logging.DEBUG)
+                            else:
+                                # No match - add to non-matching CSV with all identifiers
+                                row = {"MMS ID": mms_id}
+                                for idx, identifier in enumerate(identifiers, start=1):
+                                    row[f"dc:identifier_{idx}"] = identifier
+                                non_matching_rows.append(row)
+                                self.log(f"  ⊘ {mms_id}: No match (found {len(identifiers)} identifiers)", logging.DEBUG)
+                            
+                            success_count += 1
+                        else:
+                            self.log(f"Record not returned in batch: {mms_id}", logging.WARNING)
+                            failed_rows.append({
+                                "MMS ID": mms_id,
+                                "Error": "Record not returned in batch API call"
+                            })
+                            failed_count += 1
+                        
+                        # Update progress
+                        if progress_callback:
+                            progress_callback(record_index, total)
+                        
+                        if record_index % 50 == 0:
+                            self.log(f"Analyzed {record_index}/{total} records")
+                            
+                    except Exception as e:
+                        self.log(f"Error analyzing {mms_id}: {str(e)}", logging.ERROR)
+                        failed_rows.append({
+                            "MMS ID": mms_id,
+                            "Error": str(e)
+                        })
+                        failed_count += 1
+            
+            # Write matching identifiers CSV
+            if matching_rows:
+                with open(matching_file, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=["MMS ID", "dc:identifier"])
+                    writer.writeheader()
+                    writer.writerows(matching_rows)
+                self.log(f"✓ Created {matching_file.name} with {len(matching_rows)} records")
+            else:
+                self.log("No records with matching dc:identifier found")
+            
+            # Write non-matching identifiers CSV
+            if non_matching_rows:
+                # Determine maximum number of identifiers across all rows
+                max_identifiers = 0
+                for row in non_matching_rows:
+                    num_identifiers = len([k for k in row.keys() if k.startswith("dc:identifier_")])
+                    max_identifiers = max(max_identifiers, num_identifiers)
+                
+                # Build fieldnames
+                fieldnames = ["MMS ID"]
+                for i in range(1, max_identifiers + 1):
+                    fieldnames.append(f"dc:identifier_{i}")
+                
+                with open(non_matching_file, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(non_matching_rows)
+                self.log(f"✓ Created {non_matching_file.name} with {len(non_matching_rows)} records")
+            else:
+                self.log("All records have matching dc:identifier!")
+            
+            # Write failed records CSV
+            if failed_rows:
+                with open(failed_file, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=["MMS ID", "Error"])
+                    writer.writeheader()
+                    writer.writerows(failed_rows)
+                self.log(f"✓ Created {failed_file.name} with {len(failed_rows)} failed records")
+            else:
+                self.log("No failed records!")
+            
+            message = f"Analysis complete: {len(matching_rows)} with matching ID, {len(non_matching_rows)} without match, {failed_count} failed. Output directory: {output_dir.absolute()}"
+            self.log(message)
+            self.log(f"API efficiency: {total_batches} batch calls vs {total} individual calls (saved {total - total_batches} calls)")
+            return True, message, str(output_dir.absolute())
+                
+        except Exception as e:
+            error_msg = f"Error in identifier match analysis: {str(e)}"
+            self.log(error_msg, logging.ERROR)
+            return False, error_msg, None
+    
     def _get_alma_domain(self) -> str:
         """
         Get the Alma domain for the institution.
@@ -7028,6 +7198,68 @@ def main(page: ft.Page):
         
         page.open(warning_dialog)
     
+    def on_function_15_click(e):
+        """Handle Function 15: Analyze dc:identifier Match"""
+        # Determine if batch or single mode
+        is_batch = editor.set_members and len(editor.set_members) > 0
+        
+        if not is_batch:
+            # Single record mode
+            if not mms_id_input.value:
+                update_status("Please enter an MMS ID or load a set", True)
+                return
+            mms_ids_to_process = [mms_id_input.value]
+        else:
+            # Batch mode
+            mms_ids_to_process = editor.set_members
+        
+        add_log_message(f"Starting dc:identifier match analysis for {len(mms_ids_to_process)} record(s)")
+        update_status(f"Analyzing dc:identifier fields for {len(mms_ids_to_process)} record(s)...", False)
+        
+        if is_batch:
+            # Show progress bar for batch processing
+            set_progress_bar.visible = True
+            set_progress_bar.value = 0
+            set_progress_text.visible = True
+            set_progress_text.value = f"Processing: 0/{len(mms_ids_to_process)} records"
+            page.update()
+            
+            def progress_update(current, total):
+                progress = current / total
+                set_progress_bar.value = progress
+                set_progress_text.value = f"Processing: {current}/{total} records ({progress*100:.1f}%)"
+                status_text.value = f"Analyzing identifiers: {current}/{total} records ({progress*100:.1f}%)"
+                page.update()
+        else:
+            progress_update = None
+        
+        # Analyze identifier match
+        storage.record_function_usage("function_15_analyze_identifier_match")
+        success, message, output_dir = editor.analyze_identifier_match(
+            mms_ids_to_process,
+            progress_callback=progress_update
+        )
+        
+        # Hide progress bar (if it was shown)
+        if is_batch:
+            set_progress_bar.visible = False
+            set_progress_text.visible = False
+            page.update()
+        
+        update_status(message, not success)
+        if success:
+            # Auto-populate Set ID field with output directory path
+            if output_dir:
+                set_id_input.value = output_dir
+                add_log_message(f"📋 Output directory path copied to Set ID field")
+                page.update()
+            
+            add_log_message("dc:identifier match analysis complete")
+            add_log_message("💡 Tip: Check the output directory for up to three CSV files:")
+            add_log_message("    - identifier_matching_*.csv: Records with MMS ID in dc:identifier")
+            add_log_message("    - identifier_non_matching_*.csv: Records without MMS ID match")
+            add_log_message("    - identifier_failed_*.csv: Records that failed to process (if any)")
+    
     # Function definitions with metadata
     # Active functions - frequently used
     active_functions = [
@@ -7040,7 +7272,8 @@ def main(page: ft.Page):
         "function_11_prepare_tiff_jpg",
         "function_12_sound_by_decade",
         "function_14a_prepare_thumbnails",
-        "function_14b_upload_thumbnails"
+        "function_14b_upload_thumbnails",
+        "function_15_analyze_identifier_match"
     ]
     
     # Inactive functions - less frequently used
@@ -7149,6 +7382,12 @@ def main(page: ft.Page):
             "icon": "⬆️",
             "handler": on_function_14b_click,
             "help_file": "FUNCTION_14b_UPLOAD_THUMBNAILS.md"
+        },
+        "function_15_analyze_identifier_match": {
+            "label": "15: Analyze dc:identifier Match with MMS ID",
+            "icon": "🔍",
+            "handler": on_function_15_click,
+            "help_file": "FUNCTION_15_ANALYZE_IDENTIFIER_MATCH.md"
         }
     }
     
