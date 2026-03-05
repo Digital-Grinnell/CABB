@@ -3026,8 +3026,11 @@ class AlmaBibEditor:
             with open(tiff_csv, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    mms_id = row.get('MMS ID', '').strip()
-                    local_path = row.get('Local Path', '').strip()
+                    mms_id = (row.get('MMS ID') or '').strip()
+                    # Skip comment lines (lines starting with #)
+                    if mms_id.startswith('#'):
+                        continue
+                    local_path = (row.get('Local Path') or '').strip()
                     if mms_id and local_path:
                         tiff_paths[mms_id] = local_path
             
@@ -3052,6 +3055,28 @@ class AlmaBibEditor:
                     progress_callback(idx, total)
                 
                 self.log(f"\nProcessing {idx}/{total}: MMS {mms_id}")
+                
+                # Fetch bib record to get Handle.net dc:identifier
+                fetch_success, fetch_message = self.fetch_bib_record(mms_id)
+                if not fetch_success:
+                    self.log(f"  ✗ Failed to fetch bib record: {fetch_message}", logging.ERROR)
+                    failed_count += 1
+                    continue
+                
+                # Extract Handle.net identifier
+                identifiers = self._extract_dc_field("identifier", "dc")
+                handle_identifier = ""
+                for identifier in identifiers:
+                    if identifier.startswith("http://hdl.handle.net/"):
+                        handle_identifier = identifier
+                        break
+                
+                if not handle_identifier:
+                    self.log(f"  ✗ No Handle.net identifier found in dc:identifier fields", logging.WARNING)
+                    failed_count += 1
+                    continue
+                
+                self.log(f"  ✓ Found Handle identifier: {handle_identifier}")
                 
                 # Check if we have a local path for this MMS ID
                 if mms_id not in tiff_paths:
@@ -3092,7 +3117,7 @@ class AlmaBibEditor:
                     
                     # Add to CSV data for Digital Uploader (dc:identifier and file_name_1)
                     csv_data.append({
-                        'dc:identifier': mms_id,
+                        'dc:identifier': handle_identifier,
                         'file_name_1': processed_file
                     })
                     
