@@ -5646,6 +5646,370 @@ class AlmaBibEditor:
             self.log(error_msg, logging.ERROR)
             return False, error_msg, None
     
+    def add_mms_id_identifier(self, mms_ids: list, progress_callback=None) -> tuple[bool, str, str | None]:
+        """
+        Function 16: Add MMS ID as dc:identifier
+        
+        Processes MMS IDs and adds the bare MMS ID as a dc:identifier field if not already present.
+        Creates up to three CSV files in a temporary directory:
+        1. mms_id_already_present_{timestamp}.csv - Records that already have MMS ID as dc:identifier
+        2. mms_id_added_{timestamp}.csv - Records that were updated with MMS ID dc:identifier
+        3. mms_id_failed_{timestamp}.csv - Records that failed to process (with error messages)
+        
+        Special handling for duplicates:
+        - If a record has TWO or more IDENTICAL dc:identifier values, REPLACE one with the MMS ID
+        - Otherwise, ADD the MMS ID as a new dc:identifier field
+        
+        Args:
+            mms_ids: List of MMS IDs to process
+            progress_callback: Optional callback function(current, total) for progress updates
+            
+        Returns:
+            tuple: (success: bool, message: str, output_dir_path: str | None)
+        """
+        import csv
+        from datetime import datetime
+        from pathlib import Path
+        
+        # Create timestamped output directory in Downloads folder
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        downloads_dir = Path.home() / "Downloads"
+        output_dir = downloads_dir / f"CABB_mms_id_identifier_{timestamp}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        already_present_file = output_dir / f"mms_id_already_present_{timestamp}.csv"
+        added_file = output_dir / f"mms_id_added_{timestamp}.csv"
+        failed_file = output_dir / f"mms_id_failed_{timestamp}.csv"
+        
+        self.log(f"Starting MMS ID identifier addition for {len(mms_ids)} records")
+        self.log(f"Output directory: {output_dir.absolute()}")
+        self.log(f"Output files: {already_present_file.name}, {added_file.name}, {failed_file.name}")
+        
+        try:
+            already_present_rows = []
+            added_rows = []
+            failed_rows = []
+            
+            success_count = 0
+            failed_count = 0
+            total = len(mms_ids)
+            batch_size = 100  # Alma API supports up to 100 MMS IDs per batch call
+            
+            # Calculate total number of API calls
+            total_batches = (total + batch_size - 1) // batch_size
+            self.log(f"Using batch API calls: {total_batches} calls for {total} records")
+            
+            # Process in batches
+            for batch_start in range(0, total, batch_size):
+                # Check kill switch
+                if self.kill_switch:
+                    self.log("Process stopped by user")
+                    break
+                
+                batch_end = min(batch_start + batch_size, total)
+                batch_ids = mms_ids[batch_start:batch_end]
+                batch_num = (batch_start // batch_size) + 1
+                
+                self.log(f"Processing batch {batch_num}/{total_batches}: records {batch_start+1}-{batch_end}")
+                
+                # Fetch batch of records
+                batch_records = self.fetch_bib_records_batch(batch_ids)
+                
+                # Process each record in the batch
+                for i in range(len(batch_ids)):
+                    record_index = batch_start + i + 1
+                    mms_id = batch_ids[i]
+                    
+                    try:
+                        # Check if record was successfully fetched
+                        if mms_id in batch_records:
+                            # Set as current record for field extraction
+                            self.current_record = batch_records[mms_id]
+                            
+                            # Extract all dc:identifier values
+                            identifiers = self._extract_dc_field("identifier", "dc")
+                            
+                            # Check if MMS ID is already in the identifier list
+                            if mms_id in identifiers:
+                                # MMS ID already present - add to report CSV
+                                already_present_rows.append({
+                                    "MMS ID": mms_id,
+                                    "dc:identifier": mms_id
+                                })
+                                self.log(f"  ⊘ {mms_id}: MMS ID already in dc:identifier", logging.DEBUG)
+                                success_count += 1
+                            else:
+                                # MMS ID not present - need to add it
+                                # Check for duplicate identifiers
+                                identifier_counts = {}
+                                for identifier in identifiers:
+                                    identifier_counts[identifier] = identifier_counts.get(identifier, 0) + 1
+                                
+                                # Find duplicates (count > 1)
+                                duplicates = {k: v for k, v in identifier_counts.items() if v > 1}
+                                
+                                if duplicates:
+                                    # Replace one duplicate with MMS ID
+                                    duplicate_to_replace = list(duplicates.keys())[0]
+                                    self.log(f"  Found duplicate identifier: {duplicate_to_replace} (appears {duplicates[duplicate_to_replace]} times)")
+                                    
+                                    # Update the record - replace one duplicate
+                                    update_success, update_message = self._replace_duplicate_identifier(
+                                        mms_id, duplicate_to_replace, mms_id
+                                    )
+                                    
+                                    if update_success:
+                                        added_rows.append({
+                                            "MMS ID": mms_id,
+                                            "Action": "Replaced duplicate",
+                                            "Old Value": duplicate_to_replace,
+                                            "New Value": mms_id
+                                        })
+                                        self.log(f"  ✓ {mms_id}: Replaced duplicate '{duplicate_to_replace}' with MMS ID", logging.DEBUG)
+                                        success_count += 1
+                                    else:
+                                        failed_rows.append({
+                                            "MMS ID": mms_id,
+                                            "Error": f"Failed to replace duplicate: {update_message}"
+                                        })
+                                        self.log(f"  ✗ {mms_id}: {update_message}", logging.ERROR)
+                                        failed_count += 1
+                                else:
+                                    # No duplicates - add MMS ID as new identifier
+                                    update_success, update_message = self._add_identifier_field(mms_id, mms_id)
+                                    
+                                    if update_success:
+                                        added_rows.append({
+                                            "MMS ID": mms_id,
+                                            "Action": "Added new identifier",
+                                            "Old Value": "",
+                                            "New Value": mms_id
+                                        })
+                                        self.log(f"  ✓ {mms_id}: Added MMS ID as new dc:identifier", logging.DEBUG)
+                                        success_count += 1
+                                    else:
+                                        failed_rows.append({
+                                            "MMS ID": mms_id,
+                                            "Error": f"Failed to add identifier: {update_message}"
+                                        })
+                                        self.log(f"  ✗ {mms_id}: {update_message}", logging.ERROR)
+                                        failed_count += 1
+                        else:
+                            self.log(f"Record not returned in batch: {mms_id}", logging.WARNING)
+                            failed_rows.append({
+                                "MMS ID": mms_id,
+                                "Error": "Record not returned in batch API call"
+                            })
+                            failed_count += 1
+                        
+                        # Update progress
+                        if progress_callback:
+                            progress_callback(record_index, total)
+                        
+                        if record_index % 50 == 0:
+                            self.log(f"Processed {record_index}/{total} records")
+                            
+                    except Exception as e:
+                        self.log(f"Error processing {mms_id}: {str(e)}", logging.ERROR)
+                        failed_rows.append({
+                            "MMS ID": mms_id,
+                            "Error": str(e)
+                        })
+                        failed_count += 1
+            
+            # Write already-present CSV
+            if already_present_rows:
+                with open(already_present_file, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=["MMS ID", "dc:identifier"])
+                    writer.writeheader()
+                    writer.writerows(already_present_rows)
+                self.log(f"✓ Created {already_present_file.name} with {len(already_present_rows)} records")
+            else:
+                self.log("No records with MMS ID already present")
+            
+            # Write added identifiers CSV
+            if added_rows:
+                with open(added_file, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=["MMS ID", "Action", "Old Value", "New Value"])
+                    writer.writeheader()
+                    writer.writerows(added_rows)
+                self.log(f"✓ Created {added_file.name} with {len(added_rows)} records")
+            else:
+                self.log("No records were updated")
+            
+            # Write failed records CSV
+            if failed_rows:
+                with open(failed_file, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=["MMS ID", "Error"])
+                    writer.writeheader()
+                    writer.writerows(failed_rows)
+                self.log(f"✓ Created {failed_file.name} with {len(failed_rows)} failed records")
+            else:
+                self.log("No failed records!")
+            
+            message = f"MMS ID identifier addition complete: {len(already_present_rows)} already present, {len(added_rows)} updated, {failed_count} failed. Output directory: {output_dir.absolute()}"
+            self.log(message)
+            self.log(f"API efficiency: {total_batches} batch calls vs {total} individual calls (saved {total - total_batches} calls)")
+            return True, message, str(output_dir.absolute())
+                
+        except Exception as e:
+            error_msg = f"Error in MMS ID identifier addition: {str(e)}"
+            self.log(error_msg, logging.ERROR)
+            return False, error_msg, None
+    
+    def _replace_duplicate_identifier(self, mms_id: str, old_value: str, new_value: str) -> tuple[bool, str]:
+        """
+        Replace one occurrence of a duplicate dc:identifier with a new value
+        
+        Args:
+            mms_id: The MMS ID of the record
+            old_value: The duplicate identifier value to replace
+            new_value: The new identifier value (typically the MMS ID)
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        try:
+            # Get the Alma API base URL
+            api_url = self._get_alma_api_url()
+            
+            # Fetch the record as XML
+            self.log(f"Fetching record {mms_id} for duplicate replacement", logging.DEBUG)
+            headers = {'Accept': 'application/xml'}
+            response = requests.get(
+                f"{api_url}/almaws/v1/bibs/{mms_id}?view=full&expand=None&apikey={self.api_key}",
+                headers=headers
+            )
+            
+            if response.status_code != 200:
+                return False, f"Failed to fetch record: {response.status_code}"
+            
+            # Parse XML
+            root = ET.fromstring(response.text)
+            
+            # Register namespaces
+            namespaces_to_register = {
+                'dc': 'http://purl.org/dc/elements/1.1/',
+                'dcterms': 'http://purl.org/dc/terms/',
+                'xsi': 'http://www.w3.org/2001/XMLSchema-instance'
+            }
+            for prefix, uri in namespaces_to_register.items():
+                ET.register_namespace(prefix, uri)
+            
+            # Find all dc:identifier elements
+            search_namespaces = {'dc': 'http://purl.org/dc/elements/1.1/'}
+            identifiers = root.findall('.//dc:identifier', search_namespaces)
+            
+            # Replace the first occurrence of old_value
+            replaced = False
+            for identifier in identifiers:
+                if identifier.text == old_value and not replaced:
+                    identifier.text = new_value
+                    replaced = True
+                    break
+            
+            if not replaced:
+                return False, f"Duplicate identifier '{old_value}' not found in record"
+            
+            # Convert back to XML
+            xml_bytes = ET.tostring(root, encoding='utf-8', method='xml')
+            
+            # Update the record
+            headers = {'Content-Type': 'application/xml'}
+            response = requests.put(
+                f"{api_url}/almaws/v1/bibs/{mms_id}?apikey={self.api_key}",
+                headers=headers,
+                data=xml_bytes
+            )
+            
+            if response.status_code == 200:
+                return True, f"Replaced duplicate identifier with {new_value}"
+            else:
+                return False, f"Failed to update record: {response.status_code} - {response.text}"
+                
+        except Exception as e:
+            return False, f"Exception during replacement: {str(e)}"
+    
+    def _add_identifier_field(self, mms_id: str, identifier_value: str) -> tuple[bool, str]:
+        """
+        Add a new dc:identifier field to a record
+        
+        Args:
+            mms_id: The MMS ID of the record
+            identifier_value: The identifier value to add (typically the MMS ID)
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        try:
+            # Get the Alma API base URL
+            api_url = self._get_alma_api_url()
+            
+            # Fetch the record as XML
+            self.log(f"Fetching record {mms_id} to add identifier", logging.DEBUG)
+            headers = {'Accept': 'application/xml'}
+            response = requests.get(
+                f"{api_url}/almaws/v1/bibs/{mms_id}?view=full&expand=None&apikey={self.api_key}",
+                headers=headers
+            )
+            
+            if response.status_code != 200:
+                return False, f"Failed to fetch record: {response.status_code}"
+            
+            # Parse XML
+            root = ET.fromstring(response.text)
+            
+            # Register namespaces
+            namespaces_to_register = {
+                'dc': 'http://purl.org/dc/elements/1.1/',
+                'dcterms': 'http://purl.org/dc/terms/',
+                'xsi': 'http://www.w3.org/2001/XMLSchema-instance'
+            }
+            for prefix, uri in namespaces_to_register.items():
+                ET.register_namespace(prefix, uri)
+            
+            # Find the parent element that contains dc:identifier elements
+            search_namespaces = {'dc': 'http://purl.org/dc/elements/1.1/'}
+            existing_identifiers = root.findall('.//dc:identifier', search_namespaces)
+            
+            if existing_identifiers:
+                # Find the parent of the first identifier
+                for parent in root.iter():
+                    if existing_identifiers[0] in list(parent):
+                        # Create new identifier element
+                        new_identifier = ET.Element('{http://purl.org/dc/elements/1.1/}identifier')
+                        new_identifier.text = identifier_value
+                        parent.append(new_identifier)
+                        break
+            else:
+                # No existing identifiers - find record element and add there
+                record_elem = root.find('.//{http://purl.org/dc/elements/1.1/}record')
+                if record_elem is None:
+                    # Try finding any element that could be the parent
+                    record_elem = root
+                new_identifier = ET.Element('{http://purl.org/dc/elements/1.1/}identifier')
+                new_identifier.text = identifier_value
+                record_elem.append(new_identifier)
+            
+            # Convert back to XML
+            xml_bytes = ET.tostring(root, encoding='utf-8', method='xml')
+            
+            # Update the record
+            headers = {'Content-Type': 'application/xml'}
+            response = requests.put(
+                f"{api_url}/almaws/v1/bibs/{mms_id}?apikey={self.api_key}",
+                headers=headers,
+                data=xml_bytes
+            )
+            
+            if response.status_code == 200:
+                return True, f"Added identifier {identifier_value}"
+            else:
+                return False, f"Failed to update record: {response.status_code} - {response.text}"
+                
+        except Exception as e:
+            return False, f"Exception during identifier addition: {str(e)}"
+    
     def _get_alma_domain(self) -> str:
         """
         Get the Alma domain for the institution.
@@ -7260,6 +7624,123 @@ def main(page: ft.Page):
             add_log_message("    - identifier_non_matching_*.csv: Records without MMS ID match")
             add_log_message("    - identifier_failed_*.csv: Records that failed to process (if any)")
     
+    def on_function_16_click(e):
+        """Handle Function 16: Add MMS ID as dc:identifier"""
+        # Determine if batch or single mode
+        is_batch = editor.set_members and len(editor.set_members) > 0
+        
+        if not is_batch:
+            # Single record mode
+            if not mms_id_input.value:
+                update_status("Please enter an MMS ID or load a set", True)
+                return
+            mms_ids_to_process = [mms_id_input.value]
+        else:
+            # Batch mode
+            mms_ids_to_process = editor.set_members
+        
+        # Show confirmation dialog
+        def proceed_with_update(e):
+            warning_dialog.open = False
+            page.update()
+            
+            add_log_message(f"Starting MMS ID identifier addition for {len(mms_ids_to_process)} record(s)")
+            update_status(f"Adding MMS ID as dc:identifier for {len(mms_ids_to_process)} record(s)...", False)
+            
+            if is_batch:
+                # Show progress bar for batch processing
+                set_progress_bar.visible = True
+                set_progress_bar.value = 0
+                set_progress_text.visible = True
+                set_progress_text.value = f"Processing: 0/{len(mms_ids_to_process)} records"
+                page.update()
+                
+                def progress_update(current, total):
+                    progress = current / total
+                    set_progress_bar.value = progress
+                    set_progress_text.value = f"Processing: {current}/{total} records ({progress*100:.1f}%)"
+                    status_text.value = f"Adding MMS ID identifiers: {current}/{total} records ({progress*100:.1f}%)"
+                    page.update()
+            else:
+                progress_update = None
+            
+            # Add MMS ID as identifier
+            storage.record_function_usage("function_16_add_mms_id_identifier")
+            success, message, output_dir = editor.add_mms_id_identifier(
+                mms_ids_to_process,
+                progress_callback=progress_update
+            )
+            
+            # Hide progress bar (if it was shown)
+            if is_batch:
+                set_progress_bar.visible = False
+                set_progress_text.visible = False
+                page.update()
+            
+            update_status(message, not success)
+            if success:
+                # Auto-populate Set ID field with output directory path
+                if output_dir:
+                    set_id_input.value = output_dir
+                    add_log_message(f"📋 Output directory path copied to Set ID field")
+                    page.update()
+                
+                add_log_message("MMS ID identifier addition complete")
+                add_log_message("💡 Tip: Check the output directory for up to three CSV files:")
+                add_log_message("    - mms_id_already_present_*.csv: Records already having MMS ID as dc:identifier")
+                add_log_message("    - mms_id_added_*.csv: Records updated with MMS ID dc:identifier")
+                add_log_message("    - mms_id_failed_*.csv: Records that failed to process (if any)")
+        
+        def cancel_update(e):
+            warning_dialog.open = False
+            page.update()
+            update_status("Operation cancelled by user", False)
+        
+        # Build warning message
+        if is_batch:
+            warning_msg = (
+                f"⚠️ WARNING: This will modify up to {len(mms_ids_to_process)} bibliographic record(s) in Alma.\n\n"
+                "Function: Add MMS ID as dc:identifier\n\n"
+                "This action will:\n"
+                "• Add the bare MMS ID as a dc:identifier field if not already present\n"
+                "• Replace one duplicate dc:identifier with the MMS ID if duplicates exist\n"
+                "• Create CSV files with results in a temporary directory\n\n"
+                "Do you want to continue?"
+            )
+        else:
+            warning_msg = (
+                f"⚠️ WARNING: This will modify the bibliographic record in Alma.\n\n"
+                f"MMS ID: {mms_ids_to_process[0]}\n"
+                "Function: Add MMS ID as dc:identifier\n\n"
+                "This action will add the MMS ID as a dc:identifier field if not already present.\n\n"
+                "Do you want to continue?"
+            )
+        
+        warning_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("⚠️ Confirm Data Modification", weight=ft.FontWeight.BOLD),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text(warning_msg, size=13),
+                ]),
+                padding=10,
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel_update),
+                ft.TextButton(
+                    "Proceed",
+                    on_click=proceed_with_update,
+                    style=ft.ButtonStyle(
+                        color=ft.Colors.WHITE,
+                        bgcolor=ft.Colors.RED_700,
+                    ),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        page.open(warning_dialog)
+    
     # Function definitions with metadata
     # Active functions - frequently used
     active_functions = [
@@ -7273,7 +7754,8 @@ def main(page: ft.Page):
         "function_12_sound_by_decade",
         "function_14a_prepare_thumbnails",
         "function_14b_upload_thumbnails",
-        "function_15_analyze_identifier_match"
+        "function_15_analyze_identifier_match",
+        "function_16_add_mms_id_identifier"
     ]
     
     # Inactive functions - less frequently used
@@ -7388,6 +7870,12 @@ def main(page: ft.Page):
             "icon": "🔍",
             "handler": on_function_15_click,
             "help_file": "FUNCTION_15_ANALYZE_IDENTIFIER_MATCH.md"
+        },
+        "function_16_add_mms_id_identifier": {
+            "label": "16: Add MMS ID as dc:identifier",
+            "icon": "🏷️",
+            "handler": on_function_16_click,
+            "help_file": "FUNCTION_16_ADD_MMS_ID_IDENTIFIER.md"
         }
     }
     
