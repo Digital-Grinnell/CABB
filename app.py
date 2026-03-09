@@ -3056,28 +3056,6 @@ class AlmaBibEditor:
                 
                 self.log(f"\nProcessing {idx}/{total}: MMS {mms_id}")
                 
-                # Fetch bib record to get Handle.net dc:identifier
-                fetch_success, fetch_message = self.fetch_bib_record(mms_id)
-                if not fetch_success:
-                    self.log(f"  ✗ Failed to fetch bib record: {fetch_message}", logging.ERROR)
-                    failed_count += 1
-                    continue
-                
-                # Extract Handle.net identifier
-                identifiers = self._extract_dc_field("identifier", "dc")
-                handle_identifier = ""
-                for identifier in identifiers:
-                    if identifier.startswith("http://hdl.handle.net/"):
-                        handle_identifier = identifier
-                        break
-                
-                if not handle_identifier:
-                    self.log(f"  ✗ No Handle.net identifier found in dc:identifier fields", logging.WARNING)
-                    failed_count += 1
-                    continue
-                
-                self.log(f"  ✓ Found Handle identifier: {handle_identifier}")
-                
                 # Check if we have a local path for this MMS ID
                 if mms_id not in tiff_paths:
                     self.log(f"  ✗ No local path found in {tiff_csv}", logging.WARNING)
@@ -3117,7 +3095,7 @@ class AlmaBibEditor:
                     
                     # Add to CSV data for Digital Uploader (dc:identifier and file_name_1)
                     csv_data.append({
-                        'dc:identifier': handle_identifier,
+                        'dc:identifier': mms_id,
                         'file_name_1': processed_file
                     })
                     
