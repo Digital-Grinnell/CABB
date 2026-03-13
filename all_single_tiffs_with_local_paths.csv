@@ -1,6 +1,4 @@
 MMS ID,S3 Path,Local Path
-991011589480304641,01GCL_INST/storage/alma/D8/70/17/64/57/B2/65/A4/3F/AC/A7/1C/13/E3/EF/79/grinnell_12271_OBJ.tiff,/Volumes/Acasis1TB/phpp-dcl/OBJ/grinnell_12271_OBJ.tiff
-991011589480504641,01GCL_INST/storage/alma/02/06/53/32/86/C8/B2/70/3A/D6/D3/5E/E5/9D/1E/61/grinnell_12268_OBJ.tiff,/Volumes/Acasis1TB/phpp-dcl/OBJ/grinnell_12268_OBJ.tiff
 991011589480604641,01GCL_INST/storage/alma/3D/72/BB/B5/30/86/CE/66/CC/12/B5/48/BA/A4/BA/E2/grinnell_12264_OBJ.tiff,/Volumes/Acasis1TB/phpp-dcl/OBJ/grinnell_12264_OBJ.tiff
 991011589480704641,01GCL_INST/storage/alma/D3/1A/24/0B/EF/8D/43/CD/11/73/A7/1A/C4/E7/AD/9C/grinnell_12250_OBJ.tiff,/Volumes/Acasis1TB/phpp-dcl/OBJ/grinnell_12250_OBJ.tiff
 991011589480804641,01GCL_INST/storage/alma/57/FE/5D/A5/E1/A7/E4/55/70/E2/39/48/44/62/59/92/grinnell_18898_OBJ.tiff,/Volumes/Acasis1TB/phpp-dcl/OBJ/grinnell_18898_OBJ.tiff
@@ -3351,3 +3349,6 @@ MMS ID,S3 Path,Local Path
 # 991011546753404641,01GCL_INST/storage/alma/A2/E9/2A/65/C2/F1/45/8B/B5/CD/27/60/3B/8E/CF/9D/grinnell_18457_OBJ.tiff,/Users/mcfatem/Library/CloudStorage/OneDrive-GrinnellCollege/Shared with Everyone/DG-Exports/postcards/grinnell_18457_OBJ.tiff
 # 991011546753504641,01GCL_INST/storage/alma/55/36/DC/4C/D6/2E/45/C4/2A/80/E6/45/08/DE/3D/D0/grinnell_18456_OBJ.tiff,/Users/mcfatem/Library/CloudStorage/OneDrive-GrinnellCollege/postcards/postcards/grinnell_18456_OBJ.tiff
 # 991011546753704641,01GCL_INST/storage/alma/17/AE/71/23/A5/1F/C9/42/55/58/EA/0A/14/C0/67/66/grinnell_18454_OBJ.tiff,/Users/mcfatem/Library/CloudStorage/OneDrive-GrinnellCollege/Shared with Everyone/DG-Exports/postcards/grinnell_18454_OBJ.tiff
+# Two more victims of Alma senselessness:
+# 991011589480304641,01GCL_INST/storage/alma/D8/70/17/64/57/B2/65/A4/3F/AC/A7/1C/13/E3/EF/79/grinnell_12271_OBJ.tiff,/Volumes/Acasis1TB/phpp-dcl/OBJ/grinnell_12271_OBJ.tiff
+# 991011589480504641,01GCL_INST/storage/alma/02/06/53/32/86/C8/B2/70/3A/D6/D3/5E/E5/9D/1E/61/grinnell_12268_OBJ.tiff,/Volumes/Acasis1TB/phpp-dcl/OBJ/grinnell_12268_OBJ.tiff

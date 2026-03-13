@@ -2970,17 +2970,21 @@ class AlmaBibEditor:
     def prepare_tiff_jpg_representations(self, mms_ids: list, tiff_csv: str = "all_single_tiffs_with_local_paths.csv", 
                                          progress_callback=None) -> tuple[bool, str, str | None]:
         """
-        Function 11: Prepare TIFF/JPG representations for Alma Digital Uploader (XML-based)
+        Function 11: Prepare TIFF/JPG representations for Alma Digital Uploader (CSV Harvard Method)
         
         For each MMS ID:
         1. Look up TIFF file path from CSV
         2. Create empty JPG representation in Alma (or find existing empty one)
-        3. Create subdirectory for the MMS ID
-        4. Create JPG derivative from TIFF
-        5. Create metadata.xml file with representation information
+        3. Create JPG derivative from TIFF
+        4. Add MMS ID and filename to values.csv
         
-        The output is designed for Alma's Digital Uploader using XML metadata files.
-        Each MMS ID gets its own subdirectory with metadata.xml and the JPG file.
+        The output is designed for Alma's Digital Uploader using Harvard's minimal CSV approach.
+        All JPG files are placed in a single flat directory with one values.csv file.
+        
+        CSV Format (ONLY 2 columns):
+            mms_id,file_name_1
+            991234567890104641,991234567890104641.jpg
+            992345678901104641,992345678901104641.jpg
         
         Args:
             mms_ids: List of MMS IDs to process
@@ -2993,7 +2997,6 @@ class AlmaBibEditor:
         from pathlib import Path
         from datetime import datetime
         import csv
-        import xml.etree.ElementTree as ET
         
         # Create timestamped output directory in Downloads folder
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -3001,10 +3004,11 @@ class AlmaBibEditor:
         output_dir = downloads_dir / f"CABB_digital_upload_{timestamp}"
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        self.log(f"Starting Function 11: Prepare TIFF/JPG Representations (XML-based)")
+        self.log(f"Starting Function 11: Prepare TIFF/JPG Representations (CSV Harvard Method)")
         self.log(f"Processing {len(mms_ids)} MMS ID(s)")
         self.log(f"TIFF CSV: {tiff_csv}")
         self.log(f"Output directory: {output_dir.absolute()}")
+        self.log(f"Format: Flat directory with values.csv (Harvard approach)")
         
         if not self.api_key:
             return False, "API Key not configured", None
@@ -3037,13 +3041,15 @@ class AlmaBibEditor:
             
             self.log(f"Found {len(tiff_paths)} records with local paths")
             
+            # Initialize CSV data structure for values.csv
+            csv_rows = []
+            
             # Process each MMS ID
             success_count = 0
             failed_count = 0
             no_path_count = 0
             no_file_count = 0
             total = len(mms_ids)
-            processed_mms_ids = []
             
             for idx, mms_id in enumerate(mms_ids, 1):
                 if self.kill_switch:
@@ -3074,17 +3080,13 @@ class AlmaBibEditor:
                 file_size = source_tiff.stat().st_size
                 self.log(f"  ✓ Found TIFF: {source_tiff.name} ({file_size / 1024 / 1024:.2f} MB)")
                 
-                # Create subdirectory for this MMS ID
-                mms_dir = output_dir / mms_id
-                mms_dir.mkdir(exist_ok=True)
-                
-                # Prepare JPG representation and file
+                # Prepare JPG representation and file (flat in output_dir, no subdirectories)
                 jpg_filename = f"{mms_id}.jpg"
-                prep_success, prep_result = self._prepare_jpg_from_tiff_representation_xml(
+                prep_success, prep_result = self._prepare_jpg_from_tiff_representation_csv(
                     mms_id,
                     str(source_tiff),
                     jpg_filename,
-                    mms_dir
+                    output_dir  # Flat directory - no subdirectories
                 )
                 
                 if prep_success:
@@ -3094,36 +3096,37 @@ class AlmaBibEditor:
                     
                     self.log(f"  ✓ {prep_result['message']}")
                     self.log(f"    Rep ID: {rep_id}")
-                    self.log(f"    Processed file: {processed_file}")
+                    self.log(f"    JPG file: {processed_file}")
                     
-                    # Create metadata.xml file for this MMS ID
-                    xml_success = self._create_metadata_xml(
-                        mms_dir,
-                        mms_id,
-                        rep_id,
-                        processed_file
-                    )
+                    # Add to CSV data (ONLY mms_id and file_name_1 columns)
+                    csv_rows.append({
+                        'mms_id': mms_id,
+                        'file_name_1': jpg_filename
+                    })
                     
-                    if xml_success:
-                        self.log(f"    ✓ Created metadata.xml")
-                        processed_mms_ids.append(mms_id)
-                        success_count += 1
-                    else:
-                        self.log(f"    ✗ Failed to create metadata.xml", logging.ERROR)
-                        failed_count += 1
+                    success_count += 1
                 else:
                     self.log(f"  ✗ {prep_result}", logging.ERROR)
                     failed_count += 1
             
-            # Create master README file with instructions
+            # Create values.csv file
             output_dir_path = None
-            if processed_mms_ids:
-                readme_content = self._create_uploader_readme(len(processed_mms_ids), timestamp)
+            if csv_rows:
+                values_csv = output_dir / "values.csv"
+                with open(values_csv, 'w', encoding='utf-8', newline='') as f:
+                    writer = csv.DictWriter(f, fieldnames=['mms_id', 'file_name_1'])
+                    writer.writeheader()
+                    writer.writerows(csv_rows)
+                
+                self.log(f"\n✓ Created values.csv with {len(csv_rows)} records")
+                
+                # Create master README file with instructions
+                readme_content = self._create_uploader_readme_csv(len(csv_rows), timestamp)
                 readme_file = output_dir / "README.txt"
                 with open(readme_file, 'w', encoding='utf-8') as f:
                     f.write(readme_content)
                 
-                self.log(f"\n✓ Created README.txt with upload instructions")
+                self.log(f"✓ Created README.txt with upload instructions")
                 output_dir_path = str(output_dir.absolute())
             
             # Final summary
@@ -3131,13 +3134,15 @@ class AlmaBibEditor:
             message += f"{no_path_count} no path, {no_file_count} file not found"
             if output_dir_path:
                 message += f"\n\n📂 Output directory: {output_dir_path}"
-                message += f"\n📦 Structure: {success_count} subdirectories, each with metadata.xml and JPG file"
+                message += f"\n📄 Created: values.csv + {success_count} JPG files"
+                message += f"\n📋 Format: Harvard minimal CSV (mms_id, file_name_1 only)"
                 message += f"\n\n⚠️ NEXT STEPS:"
-                message += f"\n1. Launch Alma and navigate to: Resources > Manage Digital Files > Digital Uploader"
-                message += f"\n2. Select profile: 'Add Digital Files to Existing Digital Representations'"
-                message += f"\n3. Upload the entire directory: {output_dir.name}"
-                message += f"\n4. Each metadata.xml controls file placement for its MMS ID"
-                message += f"\n5. See README.txt in the output directory for detailed instructions"
+                message += f"\n1. Launch Alma and navigate to: Resources > Advanced Tools > Digital Uploader"
+                message += f"\n2. Select profile: 'CABB Function 11 - Add ONE File to Existing Representation' (ID: 7848184990004641)"
+                message += f"\n3. Click 'Add new ingest' and give it a name"
+                message += f"\n4. DRAG AND DROP all files (values.csv + all JPG files) into the upload box"
+                message += f"\n5. Click 'Upload all', then 'Submit Selected', then 'Run MD Import'"
+                message += f"\n6. See README.txt in the output directory for detailed instructions"
             self.log(message)
             return True, message, output_dir_path
             
@@ -3450,7 +3455,6 @@ class AlmaBibEditor:
             bool: Success status
         """
         import xml.etree.ElementTree as ET
-        from xml.dom import minidom
         
         try:
             # Create root element
@@ -3468,15 +3472,13 @@ class AlmaBibEditor:
             file_element = ET.SubElement(root, 'file_name')
             file_element.text = filename
             
-            # Pretty print the XML
-            xml_string = ET.tostring(root, encoding='utf-8')
-            dom = minidom.parseString(xml_string)
-            pretty_xml = dom.toprettyxml(indent='  ', encoding='utf-8')
+            # Create the XML tree and write with declaration
+            tree = ET.ElementTree(root)
+            ET.indent(tree, space='  ', level=0)  # Pretty print with 2-space indent
             
             # Write to file
             metadata_file = output_dir / 'metadata.xml'
-            with open(metadata_file, 'wb') as f:
-                f.write(pretty_xml)
+            tree.write(metadata_file, encoding='utf-8', xml_declaration=True)
             
             return True
             
@@ -3591,6 +3593,238 @@ For questions, consult:
 - Your institution's Alma administrator
 """
         return readme
+    
+    def _create_uploader_readme_csv(self, count: int, timestamp: str) -> str:
+        """
+        Create README content with instructions for using the Digital Uploader (CSV Harvard Method).
+        
+        Args:
+            count: Number of records processed
+            timestamp: Timestamp string
+            
+        Returns:
+            str: README content
+        """
+        readme = f"""ALMA DIGITAL UPLOADER PACKAGE (Harvard CSV Method)
+Generated: {timestamp}
+Records: {count}
+
+DIRECTORY STRUCTURE
+===================
+This package contains {count} JPG files and ONE values.csv file in a FLAT directory.
+No subdirectories. Simple and clean.
+
+Files:
+  - values.csv: Maps MMS IDs to filenames (ONLY 2 columns)
+  - 991234567890104641.jpg
+  - 992345678901104641.jpg
+  - etc.
+
+VALUES.CSV FORMAT
+=================
+CRITICAL: Only 2 columns, NO bibliographic metadata fields!
+
+mms_id,file_name_1
+991234567890104641,991234567890104641.jpg
+992345678901104641,992345678901104641.jpg
+
+This minimal format prevents metadata destruction because:
+- No dc:title, dc:creator, dc:rights, or other bib fields
+- Only file placement information (which record, which file)
+- Profile set to "Do not override Originating System"
+
+UPLOAD INSTRUCTIONS (Harvard Method)
+=====================================
+1. Log into Alma
+
+2. Navigate to:
+   Resources > Advanced Tools > Digital Uploader
+
+3. Select Upload Profile:
+   Profile: "CABB Function 11 - Add ONE File to Existing Representation"
+   Profile ID: 7848184990004641
+   
+   This profile is configured to:
+   - Read minimal CSV (mms_id, file_name_1 only)
+   - Match records by MMS ID
+   - Add files to existing representations
+   - NOT modify bibliographic metadata ("Do not override Originating System")
+
+4. Add New Ingest:
+   - Click "Add new ingest" button (upper right)
+   - Give it a descriptive name (e.g., "CABB Batch {timestamp}")
+
+5. Upload Files:
+   - DRAG AND DROP all files into the upload box
+     (This means: values.csv + ALL JPG files)
+   - Wait for all files to show "Pending Upload" status
+   - Click "Upload all" button (upper right)
+   - Wait for all files to show "Uploaded" status
+   - Click "OK"
+
+6. Submit:
+   - Check the box next to your ingest row
+   - Click "Submit Selected"
+   - Wait for status to change to "Submitted"
+
+7. Run MD Import:
+   - Click "Run MD Import"
+   - Alma will process all records
+   - You'll receive email notification when complete
+
+8. Verify Upload:
+   - Wait for email confirmation
+   - Check a few records in Alma to confirm JPGs are attached
+   - Verify JPG displays in Digital Viewer
+   - Confirm bibliographic metadata was NOT modified
+   - Test in public interface (Primo/Discovery) after 15 minutes
+
+IMPORTANT NOTES
+===============
+- Maximum 1000 files per ingest (split larger batches)
+- Maximum 1 GB per file
+- Files are staged for 30 days
+- Process runs automatically every 15 minutes
+- Do NOT click "Run MD Import" twice - it will try to reload the same files!
+
+TROUBLESHOOTING
+================
+If Submit button is greyed out:
+  - Check values.csv format (exactly 2 columns, correct headers)
+  - Verify filenames in CSV match actual JPG files (no typos)
+  - Check for extra spaces or special characters in filenames
+
+If files don't appear in Alma:
+  - Check Monitor Jobs page for errors
+  - Verify MMS IDs exist in Alma
+  - Confirm representation IDs are valid
+  - Review upload log in Monitor Jobs
+
+If metadata was destroyed:
+  - This should NOT happen with this profile!
+  - Profile has "Do not override Originating System" enabled
+  - values.csv has NO bibliographic metadata columns
+  - Contact Ex Libris support immediately if this occurs
+
+AFTER SUCCESSFUL UPLOAD
+========================
+- Verify files in several Alma records
+- Test in public interface (wait 15 min for index update)
+- Check that bibliographic metadata is unchanged
+- Keep this directory until verification is complete
+- After verification, you can safely delete this directory
+
+REFERENCES
+==========
+- Harvard Wiki: https://harvardwiki.atlassian.net/wiki/spaces/LibraryStaffDoc/
+               pages/43394499/Alma-D+batch+uploader
+- FUNCTION_11_PREPARE_TIFF_JPG.md in CABB workspace
+- FUNCTION_11_CSV_PROFILE_SETUP.md in CABB workspace
+- Ex Libris Knowledge Center: Digital Uploader guides
+- Your institution's Alma administrator
+
+For questions, consult the references above or contact your Alma administrator.
+"""
+        return readme
+    
+    def _prepare_jpg_from_tiff_representation_csv(self, mms_id: str, tiff_path: str, jpg_filename: str, output_dir) -> tuple[bool, dict | str]:
+        """
+        Create a JPG representation and prepare the JPG file from TIFF for CSV-based upload (Harvard method).
+        
+        This creates or reuses a representation, converts TIFF to JPG, and saves it to the flat output directory.
+        Unlike the XML version, this does NOT create subdirectories or metadata.xml files.
+        
+        Args:
+            mms_id: The MMS ID of the bibliographic record
+            tiff_path: Full path to the TIFF file
+            jpg_filename: Desired JPG filename (e.g., "123456789.jpg")
+            output_dir: Path object for flat output directory (NOT a subdirectory)
+            
+        Returns:
+            tuple: (success: bool, result: dict or error_message: str)
+                   result dict contains: {'rep_id': str, 'processed_file': str, 'message': str}
+        """
+        from pathlib import Path
+        from PIL import Image
+        
+        try:
+            # Verify file exists
+            if not Path(tiff_path).exists():
+                return False, f"File not found: {tiff_path}"
+            
+            # Step 1: Check for existing JPG representation
+            api_url = self._get_alma_api_url()
+            rep_url = f"{api_url}/almaws/v1/bibs/{mms_id}/representations"
+            
+            headers = {
+                'Authorization': f'apikey {self.api_key}',
+                'Accept': 'application/json'
+            }
+            
+            # Fetch existing representations
+            response = requests.get(rep_url, headers=headers)
+            
+            existing_rep_id = None
+            
+            if response.status_code == 200:
+                rep_data = response.json()
+                if 'representation' in rep_data:
+                    for rep in rep_data['representation']:
+                        usage = rep.get('usage_type', {}).get('value', '')
+                        # Look for existing JPG/Derivative representation that's empty or has no files
+                        if usage in ['DERIVATIVE_COPY', 'VIEW']:
+                            rep_id = rep.get('id')
+                            files = rep.get('files', {}).get('file', [])
+                            if not files or len(files) == 0:
+                                existing_rep_id = rep_id
+                                break
+            
+            # Step 2: Create or reuse representation
+            if existing_rep_id:
+                rep_id = existing_rep_id
+                message = f"Reusing existing empty JPG representation"
+            else:
+                # Create new representation
+                create_url = f"{api_url}/almaws/v1/bibs/{mms_id}/representations"
+                headers_post = {
+                    'Authorization': f'apikey {self.api_key}',
+                    'Content-Type': 'application/json'
+                }
+                
+                rep_payload = {
+                    "usage_type": {"value": "DERIVATIVE_COPY"}
+                }
+                
+                create_response = requests.post(create_url, headers=headers_post, json=rep_payload)
+                
+                if create_response.status_code != 200:
+                    return False, f"Failed to create representation: {create_response.text}"
+                
+                rep_data = create_response.json()
+                rep_id = rep_data.get('id')
+                message = f"Created new JPG representation"
+            
+            # Step 3: Convert TIFF to JPG and save to flat output directory
+            jpg_output_path = output_dir / jpg_filename
+            
+            with Image.open(tiff_path) as img:
+                # Handle different image modes
+                if img.mode in ('I;16', 'I;16B'):
+                    img = img.point(lambda i: i * (1.0 / 256)).convert('L')
+                elif img.mode not in ('RGB', 'L'):
+                    img = img.convert('RGB')
+                
+                # Save as JPG with 95% quality
+                img.save(jpg_output_path, 'JPEG', quality=95)
+            
+            return True, {
+                'rep_id': rep_id,
+                'processed_file': jpg_filename,
+                'message': message
+            }
+            
+        except Exception as e:
+            return False, f"Error processing TIFF: {str(e)}"
     
     def _prepare_thumbnail_representation(self, mms_id: str, thumbnail_path: str, filename: str, identifier: str, output_dir) -> tuple[bool, dict]:
         """
