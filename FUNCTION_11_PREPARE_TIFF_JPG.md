@@ -2,14 +2,32 @@
 
 ## Overview
 
-**Function 11** prepares JPG derivative files from TIFF source files for upload to Alma Digital:
+**Function 11** prepares JPG derivative files from TIFF source files for upload to Alma Digital using XML metadata files:
 
 1. Creates empty DERIVATIVE_COPY representations in Alma with proper metadata
 2. Processes TIFF files (TIFF→JPEG conversion with intelligent format handling)
-3. Saves processed JPG files named as `{mms_id}.jpg` to a timestamped output directory
-4. Generates a `values.csv` file for use with Alma's Digital Uploader tool
+3. Creates subdirectories for each MMS ID
+4. Saves processed JPG files named as `{mms_id}.jpg` in subdirectories
+5. Generates individual `metadata.xml` files for each record
 
-**Important Note**: This function creates representations and prepares files but does **not** upload the actual files. File upload is completed using Alma's built-in **Digital Uploader** tool with the prepared directory and CSV file.
+**Important Note**: This function creates representations and prepares files but does **not** upload the actual files. File upload is completed using Alma's built-in **Digital Uploader** tool with the prepared directory structure and XML metadata files.
+
+**New in:** March 2026 - Switched from CSV overlay approach to XML-based approach to prevent data corruption.
+
+## Why XML Instead of CSV?
+
+**Problem with CSV Overlay:**
+The previous CSV-based approach used Alma's Digital Uploader with `values.csv` files. However, this method overlays entire records, destroying valuable existing metadata. When the CSV doesn't include all fields, Alma interprets missing values as deletions, causing data loss.
+
+**XML-Based Solution:**
+The new approach creates individual `metadata.xml` files for each record with explicit representation IDs. This:
+- **Targets specific representations** without affecting other metadata
+- **Preserves existing data** in the bibliographic record
+- **Prevents accidental deletions** of fields not in the upload
+- **Provides clear audit trail** (one XML per record)
+- **Allows granular error handling** (failed uploads don't affect other records)
+
+**Reference:** Harvard Wiki - [Alma Digital Uploader XML spec](https://harvardwiki.atlassian.net/wiki/spaces/LibraryStaffDoc/pages/43394499/Alma+Digital+Uploader+XML+spec+and+manual+process+via+Alma+UI)
 
 ## What It Does
 
@@ -18,9 +36,10 @@ This function processes bibliographic records that have corresponding TIFF files
 1. **Reads TIFF paths** from `all_single_tiffs_with_local_paths.csv`
 2. **Verifies files exist** on the local filesystem
 3. **Creates JPG representations** in Alma (or reuses existing empty ones)
-4. **Converts TIFF to JPG** with intelligent handling for various image formats
-5. **Saves JPG files** to a timestamped directory as `{mms_id}.jpg`
-6. **Creates values.csv** for Alma's Digital Uploader
+4. **Creates subdirectories** for each MMS ID
+5. **Converts TIFF to JPG** with intelligent handling for various image formats
+6. **Saves JPG files** to subdirectories as `{mms_id}.jpg`
+7. **Creates metadata.xml** for each record with MMS ID, representation ID, and filename
 
 ### CSV Input Structure
 
@@ -81,6 +100,7 @@ The function implements intelligent record filtering to avoid unnecessary proces
 2. **For Each MMS ID:**
    - Look up TIFF path from CSV
    - Verify TIFF file exists and is accessible
+   - Create subdirectory for MMS ID
    - Check for existing empty JPG representation in Alma
    - Create JPG representation in Alma (if needed) or reuse existing
    - Convert TIFF to JPG with special handling for:
@@ -88,13 +108,15 @@ The function implements intelligent record filtering to avoid unnecessary proces
      - **RGBA/LA/P modes**: Converts with white background to prevent transparency issues
      - **Grayscale images**: Converts to RGB for consistent display
      - **Uncommon formats**: Normalizes to standard RGB format
-   - Save JPG to output directory as `{mms_id}.jpg`
-   - Record entry in CSV for Digital Uploader
+   - Save JPG to subdirectory as `{mms_id}.jpg`
+   - Create `metadata.xml` in subdirectory with:
+     - MMS ID (dc_identifier)
+     - Representation ID (representation_id)
+     - JPG filename (file_name)
 
-3. **Generate values.csv**
-   - Creates CSV with columns:
-     - `dc:identifier`: The MMS ID
-     - `file_name_1`: JPG basename (e.g., `991234567890104641.jpg`)
+3. **Generate README.txt**
+   - Creates upload instructions file in root directory
+   - Includes troubleshooting tips and documentation links
 
 ## Requirements
 
@@ -127,30 +149,47 @@ The function implements intelligent record filtering to avoid unnecessary proces
 
 ### Directory Structure
 
-Function 11 creates a timestamped directory in `~/Downloads/`:
+Function 11 creates a timestamped directory in `~/Downloads/` with subdirectories for each MMS ID:
 
 ```
-~/Downloads/CABB_digital_upload_20260308_143052/
-├── values.csv
-├── 991234567890104641.jpg
-├── 991234567890204641.jpg
-└── 991234567890304641.jpg
+~/Downloads/CABB_digital_upload_20260313_143052/
+├── README.txt
+├── 991234567890104641/
+│   ├── metadata.xml
+│   └── 991234567890104641.jpg
+├── 991234567890204641/
+│   ├── metadata.xml
+│   └── 991234567890204641.jpg
+└── 991234567890304641/
+    ├── metadata.xml
+    └── 991234567890304641.jpg
 ```
 
-### values.csv Format
+### metadata.xml Format
 
-```csv
-dc:identifier,file_name_1
-991234567890104641,991234567890104641.jpg
-991234567890204641,991234567890204641.jpg
-991234567890304641,991234567890304641.jpg
+Each subdirectory contains a `metadata.xml` file with this structure:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<row>
+  <dc_identifier>991234567890104641</dc_identifier>
+  <representation_id>12345678910001_REP</representation_id>
+  <file_name>991234567890104641.jpg</file_name>
+</row>
 ```
 
-**Key Points:**
-- `dc:identifier`: MMS ID (matches Alma's identifier field)
-- `file_name_1`: JPG filename (relative to directory)
-- Column names are required by Alma's Digital Uploader
-- Order matches processing order
+**Key Elements:**
+- `dc_identifier`: MMS ID (tells Alma which bibliographic record)
+- `representation_id`: The representation ID created by this function
+- `file_name`: JPG filename (relative to subdirectory)
+
+### README.txt
+
+The output directory includes a `README.txt` file with:
+- Upload instructions
+- Directory structure explanation
+- Troubleshooting tips
+- Links to Alma documentation
 
 ### Image Processing Details
 
@@ -166,6 +205,169 @@ dc:identifier,file_name_1
 - **Transparency**: RGBA/LA images converted with white background
 - **Monochrome**: Grayscale (L mode) converted to RGB
 - **Indexed**: Palette (P mode) images expanded to full RGB
+
+## Creating the Alma Digital Import Profile
+
+**PREREQUISITE:** Before using Function 11, you must create a compatible Digital Import Profile in Alma. Follow these steps:
+
+### Profile Creation - Screen 1 of 5: Profile Details
+
+Navigate to: **Alma → Admin → Manage Import Profiles → Create Profile**
+
+**Profile Details Section:**
+- **Remote:** Unchecked
+- **Profile name:** `CABB Function 11 - Add Files to Existing Representations`
+- **Profile description:** `Adds file(s) -- generally a JPG -- to existing digital representations without modifying bibliographic metadata.`
+- **Cross walk:** No
+
+**Format Settings:**
+- **Physical source format:** XML
+- **Source format:** Dublin Core
+- **Metadata Filename:** `metadata.xml` ⚠️ **CRITICAL** - Must be exactly this
+- **Target format:** DigitalGrinnell Qualified DC (or your institution's DC format)
+- **Status:** Active
+
+**Scheduling Section:**
+- **Files to import:** New
+- **Scheduler status:** Inactive
+- **Scheduling:** Not scheduled
+
+✅ **Validation:** Ensure "Metadata Filename" is `metadata.xml` - this must match what Function 11 creates.
+
+Click **Next** to continue to Screen 2.
+
+---
+
+### Profile Creation - Screen 2 of 5: Filter and Normalization
+
+**Profile Type:** Digital ✅ (auto-populated)
+
+**Filter Section:**
+- **Filter out the data using:** Leave empty/blank
+  - We're not filtering records - all records in the upload should be processed
+
+**Normalization Section:**
+- **Correct the data for matching and cataloging using:** **`DCAP01 Bib Resequence And Clear em`** (empty fields)
+  - ⚠️ **IMPORTANT:** Alma requires a normalization rule selection
+  - Choose the LEAST invasive option: "DCAP01 Bib Resequence And Clear em[pty fields]"
+  - This rule only resequences fields and removes empty fields - it does NOT modify field values
+  - **Avoid** "normalize on save/SRU/search" options - those could alter data values
+  - Since this profile adds digital files (not bib records), normalization impact should be minimal
+  
+**Validation Excel Section:**
+- **Handle invalid data using:** (Keep default or most permissive option)
+
+✅ **Validation:** Normalization set to "DCAP01 Bib Resequence And Clear em" - the safest available option.
+
+Click **Next** to continue to Screen 3.
+
+---
+
+### Profile Creation - Screen 3 of 5: Match Profile and Actions
+
+**Match Profile Section:**
+- **Match Method:** `dc:identifier`
+  - This matches records using the dc_identifier field from metadata.xml (the MMS ID)
+- **Identifier Prefix:** Leave empty/blank
+
+**Match Actions Section:**
+- **Handling method:** Automatic ✅
+- **Upon match:** Overlay ✅
+  - This allows adding digital files to existing bibliographic records
+- **Allow bibliographic record deletion:** Unchecked ✅
+  - Never allow deletions through this profile
+
+**OVERLAY Settings:**
+- ✅ **CRITICAL:** Check **"Do not override Originating System"**
+  - This prevents the profile from modifying existing bibliographic metadata
+  - Only digital representation data will be modified (files added)
+
+**No Match Section:**
+- **Upon no match:** Do Not Import ✅
+  - If dc:identifier doesn't match an existing record, skip it
+  - This ensures we only modify records that exist in Alma
+
+✅ **Validation:** Match on dc:identifier with Overlay mode, "Do not override Originating System" checked, and "Do Not Import" on no match.
+
+Click **Next** to continue to Screen 4.
+
+---
+
+### Profile Creation - Screen 4 of 5: Management Tags
+
+**Set management tags for all the records imported using this profile**
+
+- **Suppress record/s from publish/delivery:** Unchecked ✅
+  - Condition: "Only for new re[cords]" (default)
+  
+- **Suppress record/s from external search:** Unchecked ✅
+  - Condition: "Only for new re[cords]" (default)
+  
+- **Synchronize with OCLC:** Don't publish ✅
+  - Condition: "Only for new re[cords]" (default)
+  
+- **Synchronize with Libraries Australia:** Don't publish ✅
+  - Condition: "Only for new re[cords]" (default)
+
+**Note:** These default settings are appropriate for this profile. Since we're adding digital files to **existing** bibliographic records (not creating new ones), these management tags will not affect the import process. All conditions are set to "Only for new re[cords]" which doesn't apply to overlay operations.
+
+✅ **Validation:** Leave all settings at their defaults - no changes needed.
+
+Click **Next** to continue to Screen 5.
+
+---
+
+### Profile Creation - Screen 5 of 5: Bibliographic Record Level and Representation Details
+
+**Bibliographic Record Level Section:**
+- **Default Collection:** `DG-OVERLAY` (or your institution's appropriate collection code)
+  - This should match your Digital Grinnell collection identifier
+
+**Representation Details Section:**
+- **Status:** Active ✅
+- **Usage Type:** `Derivative` ✅
+  - Standard usage type for access copies (JPGs derived from TIFFs)
+- **Library:** `Burling Library` (or your institution's library)
+- **Default access rights policy:** `Burling Library` (or your appropriate policy)
+- **Extract access rights from property:** Leave empty
+- **Extract note from property:** Leave empty
+- **Extract public note from property:** Leave empty
+- **Group files by regular expression:** Leave empty
+- **Extract label from property:** Leave empty
+
+**IMPORTANT: Click "Add Representation" Button**
+
+✅ **You MUST click "Add Representation"** to save/register the representation configuration.
+
+After filling out all the representation details (Usage Type: Derivative, Library, etc.), click the **"Add Representation"** button. This registers your representation configuration with the profile. The button acts like a "Submit" button for the representation definition.
+
+**After clicking "Add Representation", you should see:**
+- A table appears at the bottom of the screen showing your registered representation
+- The table should display:
+  - **Usage Type:** Derivative
+  - **Library:** Burling Library
+  - **Group files by:** (.*) 
+  - Active status indicator
+- The form fields reset to defaults (this is normal)
+
+**Note:** You only need to click it ONCE to add one representation type. If you later needed multiple representation types (e.g., both "Derivative" AND "Preservation"), you would fill out the form again with different settings and click "Add Representation" again. For Function 11, one representation is correct.
+
+✅ **Validation:** Verify your "Derivative" representation appears in the table at the bottom of the screen with "Burling Library" selected.
+
+Click **Save** to create the profile.
+
+---
+
+### Profile Successfully Created ✅
+
+**Profile Name:** CABB Function 11 - Add Files to Existing Representations  
+**Profile ID:** 7848175270004641  
+**Profile Type:** Digital Import Profile  
+**Status:** Active
+
+This profile is now ready to use with the Digital Uploader in Alma. When uploading directories prepared by Function 11, select this profile to add JPG files to existing representations without modifying bibliographic metadata.
+
+---
 
 ## How to Use
 
@@ -217,18 +419,26 @@ After processing completes:
 2. **Note the output directory path:**
    - Automatically shown in CABB status
    - Also auto-populated in the Set ID field
-   - Example: `~/Downloads/CABB_digital_upload_20260308_143052`
+   - Example: `~/Downloads/CABB_digital_upload_20260313_143052`
 
-3. **Verify output files:**
+3. **Verify output structure:**
    ```bash
    ls -lh ~/Downloads/CABB_digital_upload_*/
    ```
-   - Check that JPG files were created
-   - Verify `values.csv` contains expected entries
+   - Check that subdirectories were created (one per MMS ID)
+   - Verify each contains metadata.xml and a JPG file
 
-4. **Inspect JPG quality** (optional):
-   - Open a few JPG files to verify conversion quality
-   - Compare file sizes to originals (JPGs should be smaller)
+4. **Inspect a sample subdirectory:**
+   ```bash
+   ls -lh ~/Downloads/CABB_digital_upload_*/991234567890104641/
+   cat ~/Downloads/CABB_digital_upload_*/991234567890104641/metadata.xml
+   ```
+   - Verify XML structure is correct
+   - Check that MMS ID and representation ID are present
+
+5. **Review README.txt:**
+   - Read upload instructions
+   - Note any special considerations
 
 ### Step 5: Upload to Alma (Manual Step)
 
@@ -238,23 +448,33 @@ Function 11 prepares files but does **not** upload them. Complete the upload usi
    - Navigate to: **Resources → Manage Digital Files → Digital Uploader**
 
 2. **Select Upload Profile**
-   - Choose: **"Add Digital Files to Existing Digital Representations"**
-   - This profile uses the `values.csv` to match files to representations
+   - **REQUIRED:** You need a Digital Import Profile that supports:
+     - XML-based metadata files (not CSV)
+     - Subdirectory structure with `metadata.xml` in each folder
+     - Targeting by `representation_id` field
+     - Adding files to existing representations WITHOUT overlaying bibliographic metadata
+   
+   - **If you don't have this profile:** Contact your Alma administrator or Ex Libris support to create one
+   - Profile must read: `dc_identifier` (MMS ID), `representation_id` (target rep), and `file_name` (file to upload)
+   - **WARNING:** Do NOT use CSV-based overlay profiles - they will destroy your metadata!
 
 3. **Upload Directory**
    - Click **"Browse"** or **"Choose Files"**
    - Select the **entire directory** created by Function 11
-   - Example: `CABB_digital_upload_20260308_143052`
-   - Alma will read `values.csv` and match files accordingly
+   - Example: `CABB_digital_upload_20260313_143052`
+   - Alma will process each subdirectory and read its metadata.xml file
 
 4. **Start Upload**
    - Review the preview/validation screen
+   - Alma will show detected records and files
    - Click **"Submit"** to begin upload
    - Monitor upload progress in Alma
 
 5. **Verify Upload**
    - Check a few records in Alma to confirm JPGs are attached
    - Verify JPG displays correctly in Digital Viewer
+   - Review Alma's upload log for any errors
+   - Test in public interface (Primo/Discovery)
 
 ### Step 6: Cleanup (Optional)
 
@@ -494,19 +714,26 @@ JPG files are named using the MMS ID:
 **Why MMS ID?**
 - Guarantees unique filenames
 - Easy to trace back to source record
-- Matches the `dc:identifier` in values.csv
+- Matches the `dc_identifier` in metadata.xml
 - No dependency on original TIFF filename
 
-### CSV Mapping Logic
+### XML Metadata Logic
 
-The Digital Uploader uses `values.csv` to match files to representations:
+The Digital Uploader uses `metadata.xml` files to control file placement:
 
-1. Reads `dc:identifier` column (MMS ID)
-2. Looks up bibliographic record in Alma
-3. Finds digital representations for that bib record
-4. Uploads file from `file_name_1` column to the representation created by Function 11
+1. Reads each subdirectory
+2. Parses the `metadata.xml` file
+3. Reads `dc_identifier` to identify the bibliographic record
+4. Reads `representation_id` to identify the specific representation
+5. Uploads `file_name` to that representation
 
-**Important:** The MMS ID in `dc:identifier` must match the actual MMS ID in Alma, which is why Function 11 uses the bare MMS ID (not Handle URL or other identifier).
+**Structure Benefits:**
+- One subdirectory per record keeps files organized
+- XML format prevents data corruption (unlike CSV overlay)
+- Representation ID explicitly specifies target (no ambiguity)
+- Alma processes each subdirectory independently (better error handling)
+
+**Important:** The MMS ID in `dc_identifier` must match the actual MMS ID in Alma, and the `representation_id` must be a valid representation created by Function 11.
 
 ## Performance Considerations
 
@@ -577,11 +804,12 @@ Factors affecting processing time:
 ### Upload Issues (After Function 11)
 
 **Check:**
-1. values.csv format is correct (two columns, proper headers)
-2. Directory contains both values.csv and JPG files
+1. metadata.xml files are present in each subdirectory
+2. XML format is correct (proper tags and structure)
 3. Correct Digital Uploader profile selected
-4. MMS IDs in values.csv match Alma records
-5. Representations were created successfully (check Alma)
+4. MMS IDs in XML match Alma records
+5. Representation IDs are valid
+6. JPG files are readable and in correct locations
 
 ## Related Functions
 
@@ -599,6 +827,20 @@ Factors affecting processing time:
 
 ## FAQ
 
+### Q: What Digital Uploader profile do I need?
+
+**A:** You need a Digital Import Profile configured for:
+- **XML metadata files** (not CSV)
+- **Subdirectory structure** (each MMS ID in its own folder)
+- **Field mapping:** `dc_identifier` → MMS ID, `representation_id` → target representation, `file_name` → file to upload
+- **Behavior:** Add files to representations WITHOUT overlaying bibliographic metadata
+
+If you don't have this profile, contact your Alma administrator or Ex Libris support. Reference the Harvard Wiki documentation on XML-based Digital Uploader profiles.
+
+### Q: Why was the CSV approach replaced with XML?
+
+**A:** The CSV overlay approach was destroying valuable metadata by overlaying entire records. The XML-based approach explicitly targets specific representations using representation IDs, preventing data loss.
+
 ### Q: Why doesn't Function 11 upload files directly via API?
 
 **A:** Alma's API has limitations with binary file uploads. The Digital Uploader tool is Alma's recommended method for uploading files to representations and is more reliable than API-based approaches.
@@ -611,9 +853,12 @@ Factors affecting processing time:
 
 **A:** Function 11 will reuse existing empty DERIVATIVE_COPY representations if found. If representations now have files (from previous upload), it will create new representations. This can lead to duplicate representations, so verify before re-running.
 
-### Q: Can I edit the values.csv file?
+### Q: Can I edit the metadata.xml files?
 
-**A:** Yes, you can edit it before upload if needed. Just maintain the column structure (`dc:identifier`, `file_name_1`) and ensure MMS IDs and filenames are correct.
+**A:** Yes, but be careful. Maintain the XML structure and ensure:
+- MMS IDs match actual Alma records
+- Representation IDs are valid
+- Filenames match actual files in the directory
 
 ### Q: What if my TIFF files are in multiple directories?
 
@@ -623,15 +868,24 @@ Factors affecting processing time:
 
 **A:** No! Keep the directory until you've successfully uploaded files to Alma using the Digital Uploader. After upload is verified, you can safely delete it.
 
-### Q: Why use MMS ID instead of Handle URL in dc:identifier?
+### Q: Why use MMS ID instead of Handle URL in dc_identifier?
 
-**A:** The MMS ID is Alma's primary identifier for bibliographic records and is what the Digital Uploader expects in the `dc:identifier` column to match files to the correct records. Handle URLs are for external/public access.
+**A:** The MMS ID is Alma's primary identifier for bibliographic records and is what the Digital Uploader expects in the XML to match files to the correct records. Handle URLs are for external/public access.
 
-### Q: What's the difference between values.csv columns?
+### Q: What's the structure of metadata.xml?
 
 **A:**
-- `dc:identifier`: Tells Alma which bibliographic record to update (via MMS ID)
-- `file_name_1`: Tells Alma which file to attach to that record's representation
+```xml
+<row>
+  <dc_identifier>MMS_ID</dc_identifier>
+  <representation_id>REP_ID</representation_id>
+  <file_name>FILENAME.jpg</file_name>
+</row>
+```
+
+- `dc_identifier`: Tells Alma which bibliographic record
+- `representation_id`: Tells Alma which specific representation
+- `file_name`: Tells Alma which file to attach
 
 ### Q: Can I change the JPG quality setting?
 
@@ -645,18 +899,21 @@ Factors affecting processing time:
 
 ## Summary Workflow
 
-1. ✅ Prepare `all_single_tiffs_with_local_paths.csv` with MMS IDs and TIFF paths
-2. ✅ Load set (or enter single MMS ID) in CABB
-3. ✅ Run Function 11
-4. ✅ Review output directory and values.csv
-5. ✅ Log into Alma → Digital Uploader
-6. ✅ Select profile: "Add Digital Files to Existing Digital Representations"
-7. ✅ Upload the output directory
-8. ✅ Verify upload succeeded in Alma
-9. ✅ Clean up output directory
+1. ✅ **PREREQUISITE:** Ensure you have an XML-based Digital Import Profile (see FAQ above)
+2. ✅ Prepare `all_single_tiffs_with_local_paths.csv` with MMS IDs and TIFF paths
+3. ✅ Load set (or enter single MMS ID) in CABB
+4. ✅ Run Function 11
+5. ✅ Review output directory structure (subdirectories with metadata.xml and JPG files)
+6. ✅ Read README.txt for instructions
+7. ✅ Log into Alma → Digital Uploader
+8. ✅ Select your XML-based Digital Import Profile
+9. ✅ Upload the output directory
+10. ✅ Verify upload succeeded in Alma
+11. ✅ Clean up output directory after verification
 
 ---
 
-**Last Updated:** March 8, 2026  
-**Function Status:** Active and Maintained  
-**Related Functions:** Function 14a (Thumbnails)
+**Last Updated:** March 13, 2026  
+**Function Status:** Active and Maintained - XML-based approach  
+**Related Functions:** Function 14a (Thumbnails)  
+**Breaking Change:** Replaced CSV overlay with XML metadata (March 2026)
