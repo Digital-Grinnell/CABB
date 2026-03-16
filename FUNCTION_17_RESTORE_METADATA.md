@@ -1,71 +1,41 @@
-# Function 17: Restore Metadata from Previous Version
+# Function 17: FAILED - Restore Metadata from Previous Version
 
-## Overview
+## Status
 
-Function 17 attempts to restore Alma bibliographic metadata for one or more records by calling Alma API version-history endpoints.
+**FAILED / BLOCKED**
 
-For each MMS ID, CABB will:
-1. Fetch the record's version history
-2. Select the most recent non-current version
-3. Attempt a metadata restore to that version
-4. Write a detailed CSV report
+Function 17 is no longer considered operational.
 
-## Why This Function Exists
+## Failure Reason
 
-Function 11 CSV overlay workflows can overwrite or remove metadata unexpectedly. This function is intended as a bulk recovery path when records need to be rolled back to earlier metadata versions.
+After multiple implementation attempts (API + Selenium MDE automation + manual-recording path),
+Alma consistently blocks restore actions in the Versions UI (rows and restore controls remain
+disabled/unresponsive in active workflows). This prevents safe, repeatable bulk automation.
 
-## Important Safety Notes
+Because Alma does not provide a reliable bulk restore API endpoint for this path, this function
+is a dead end in CABB and has been marked failed.
 
-- This function modifies bibliographic metadata in Alma.
-- Always test with a small sample first.
-- Use the generated report CSV to verify outcomes.
-- If API restore is unavailable for your Alma environment, use manual fallback in MDE:
-  - View Related Data
-  - View Versions
-  - Restore Metadata
+## Current Behavior in CABB
 
-## Input Modes
+- The Function 17 button remains visible for historical context.
+- Running it returns a FAILED status message and does not execute restore automation.
 
-### Single Record
+## Recommendation
 
-- Enter one MMS ID in the MMS ID field
-- Run Function 17
+Use manual Alma workflows for one-off restorations, or request a supported bulk/API restore
+capability through Alma product channels.
 
-### Batch Mode
+## Why This Function Was Attempted
 
-- Load a Set or CSV of MMS IDs
-- Run Function 17 to process all loaded IDs
+Function 11 CSV overlay workflows can overwrite or remove metadata unexpectedly. Function 17 was
+intended as a bulk recovery path when records needed to be rolled back to earlier metadata versions.
 
-## Output
+## Historical Notes
 
-A timestamped report is created in:
+Previous attempts included:
 
-`~/Downloads/CABB_restore_metadata_YYYYMMDD_HHMMSS/`
+- Alma API version-history endpoint usage (`/bibs/{mms_id}/versions`) which returned HTTP 404.
+- Selenium-based MDE automation with login/DUO handling, iframe handling, and selector hardening.
+- Selenium IDE-assisted manual capture to stabilize per-record actions.
 
-Report file:
-
-`metadata_restore_report_YYYYMMDD_HHMMSS.csv`
-
-### Report Columns
-
-- `MMS ID`
-- `Status` (`Success` or `Failed`)
-- `Restored Version ID`
-- `Message`
-- `Manual Restore Hint`
-
-## Typical Failure Scenarios
-
-- API key lacks permissions for versions/restore operations
-- Versions endpoint not enabled in your Alma environment
-- Record has no usable prior version
-- Restore endpoint shape differs from your Alma tenant
-
-When failures occur, use the report CSV as your manual worklist.
-
-## Recommended Workflow
-
-1. Run Function 17 on 3-5 known affected records
-2. Inspect report CSV and verify records in Alma
-3. If successful, run on full set
-4. Manually restore any failures using MDE version history
+All approaches converged on the same Alma-side block at restore interaction time.

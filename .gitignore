@@ -48,6 +48,9 @@ Thumbs.db
 # Persistent storage
 persistent.json
 
+# Third-party extension binaries (downloaded on demand, not committed)
+*.xpi
+
 # Generated CSV exports
 *_export_*.csv
 
