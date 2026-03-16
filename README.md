@@ -36,7 +36,7 @@ The application supports both **single record** and **batch processing** (via Al
 
 ## Technology Stack
 
-- **Flet** - Modern Python framework for building user interfaces
+- **Flet 0.25.2** - Modern Python framework for building user interfaces (pinned — both `flet` and `flet-desktop` must be 0.25.2; newer versions may break `WebRenderer.HTML` or `Dropdown` initialization)
 - **requests** - HTTP library for direct Alma API calls
 - **python-dotenv** - Environment variable management
 - **Python 3.x** - Programming language
@@ -286,8 +286,8 @@ def new_editing_function(self, mms_id: str) -> tuple[bool, str]:
 ## Dependencies
 
 See `requirements.txt` for complete list:
-- `flet>=0.21.0` - UI framework
-- `almapipy>=0.4.0` - Alma API wrapper
+- `flet==0.25.2` - UI framework (**pinned** — must match `flet-desktop==0.25.2`)
+- `flet-desktop==0.25.2` - Desktop renderer (**pinned** — must match `flet` version)
 - `python-dotenv>=1.0.0` - Environment variable management
 
 ## API Documentation

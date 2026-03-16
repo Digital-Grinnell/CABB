@@ -6508,6 +6508,318 @@ For questions, consult the references above or contact your Alma administrator.
                 
         except Exception as e:
             return False, f"Exception during identifier addition: {str(e)}"
+
+    def restore_metadata_from_previous_version(self, mms_ids: list, progress_callback=None) -> tuple[bool, str, str | None]:
+        """
+        Function 17: Restore bibliographic metadata from previous versions.
+
+        For each MMS ID, this function attempts to:
+        1. Retrieve available versions from Alma API
+        2. Select the most recent non-current version
+        3. Restore metadata to that version via Alma API
+        4. Write a CSV audit report with per-record outcomes
+
+        Args:
+            mms_ids: List of MMS IDs to process
+            progress_callback: Optional callback function(current, total) for progress updates
+
+        Returns:
+            tuple: (success: bool, message: str, report_csv_path: str | None)
+        """
+        import csv
+        from datetime import datetime
+        from pathlib import Path
+
+        if not self.api_key:
+            return False, "API Key not configured. Please set ALMA_API_KEY in .env file", None
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        downloads_dir = Path.home() / "Downloads"
+        output_dir = downloads_dir / f"CABB_restore_metadata_{timestamp}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        report_file = output_dir / f"metadata_restore_report_{timestamp}.csv"
+
+        self.log(f"Starting Function 17: Restore metadata for {len(mms_ids)} record(s)")
+        self.log(f"Report file: {report_file}")
+
+        rows = []
+        success_count = 0
+        failed_count = 0
+        total = len(mms_ids)
+
+        for idx, mms_id in enumerate(mms_ids, start=1):
+            if self.kill_switch:
+                self.log("Kill switch activated - stopping restoration", logging.WARNING)
+                break
+
+            self.log(f"[{idx}/{total}] Restoring metadata for {mms_id}")
+
+            try:
+                ok, message, version_id = self._restore_single_record_from_version(mms_id)
+
+                rows.append({
+                    "MMS ID": mms_id,
+                    "Status": "Success" if ok else "Failed",
+                    "Restored Version ID": version_id or "",
+                    "Message": message,
+                    "Manual Restore Hint": "MDE > View Related Data > View Versions > Restore Metadata"
+                })
+
+                if ok:
+                    success_count += 1
+                    self.log(f"  ✓ {mms_id}: {message}")
+                else:
+                    failed_count += 1
+                    self.log(f"  ✗ {mms_id}: {message}", logging.ERROR)
+
+            except Exception as e:
+                failed_count += 1
+                err = f"Unexpected error: {str(e)}"
+                rows.append({
+                    "MMS ID": mms_id,
+                    "Status": "Failed",
+                    "Restored Version ID": "",
+                    "Message": err,
+                    "Manual Restore Hint": "MDE > View Related Data > View Versions > Restore Metadata"
+                })
+                self.log(f"  ✗ {mms_id}: {err}", logging.ERROR)
+
+            if progress_callback:
+                progress_callback(idx, total)
+
+        # Write report CSV
+        with open(report_file, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(
+                csvfile,
+                fieldnames=["MMS ID", "Status", "Restored Version ID", "Message", "Manual Restore Hint"]
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+
+        message = (
+            f"Metadata restore complete: {success_count} restored, {failed_count} failed. "
+            f"Report: {report_file}"
+        )
+        self.log(message)
+
+        if failed_count > 0:
+            self.log(
+                "For failed records, use manual fallback: MDE > View Related Data > View Versions > Restore Metadata",
+                logging.WARNING
+            )
+
+        return True, message, str(report_file)
+
+    def _restore_single_record_from_version(self, mms_id: str) -> tuple[bool, str, str | None]:
+        """
+        Restore one record by selecting the most recent non-current version.
+
+        Returns:
+            tuple: (success: bool, message: str, restored_version_id: str | None)
+        """
+        versions_ok, versions_msg, versions = self._fetch_record_versions(mms_id)
+        if not versions_ok:
+            return False, versions_msg, None
+
+        target_version = self._select_previous_version(versions)
+        if not target_version:
+            return False, "Could not determine a previous version to restore", None
+
+        version_id = str(target_version.get('id', '')).strip()
+        if not version_id:
+            return False, "Previous version found but has no usable version ID", None
+
+        restore_ok, restore_msg = self._attempt_restore_version(mms_id, version_id)
+        if restore_ok:
+            return True, restore_msg, version_id
+        return False, restore_msg, version_id
+
+    def _fetch_record_versions(self, mms_id: str) -> tuple[bool, str, list]:
+        """
+        Fetch version history for a bibliographic record.
+
+        Returns:
+            tuple: (success: bool, message: str, versions: list[dict])
+        """
+        api_url = self._get_alma_api_url()
+        url = f"{api_url}/almaws/v1/bibs/{mms_id}/versions?apikey={self.api_key}"
+
+        # Try JSON first, then XML
+        for accept in ("application/json", "application/xml"):
+            try:
+                response = requests.get(url, headers={"Accept": accept}, timeout=30)
+            except Exception as e:
+                return False, f"Error requesting versions endpoint: {str(e)}", []
+
+            if response.status_code == 200:
+                versions = self._parse_versions_response(response)
+                if not versions:
+                    return False, "Versions endpoint returned no parseable versions", []
+                return True, f"Found {len(versions)} version(s)", versions
+
+            if response.status_code in (401, 403):
+                return False, "API key lacks permission for bib versions endpoint", []
+
+            # 404 usually means endpoint unavailable in the institution/region/API tier
+            if response.status_code == 404:
+                continue
+
+            return False, f"Failed to fetch versions: HTTP {response.status_code}", []
+
+        return False, "Bib versions endpoint not available (HTTP 404)", []
+
+    def _parse_versions_response(self, response) -> list:
+        """
+        Parse version list from JSON or XML response.
+
+        Returns list of dicts with at least:
+        - id: str
+        - is_current: bool
+        """
+        versions = []
+
+        content_type = response.headers.get("Content-Type", "").lower()
+        if "json" in content_type:
+            try:
+                data = response.json()
+            except Exception:
+                return []
+
+            raw_items = data.get("version")
+            if raw_items is None:
+                # Fallback: search any list of dicts that look like versions
+                for value in data.values():
+                    if isinstance(value, list) and value and isinstance(value[0], dict):
+                        if any(("id" in item or "version_id" in item or "version" in item) for item in value):
+                            raw_items = value
+                            break
+
+            if raw_items is None:
+                return []
+
+            if isinstance(raw_items, dict):
+                raw_items = [raw_items]
+
+            for item in raw_items:
+                if not isinstance(item, dict):
+                    continue
+
+                version_id = item.get("version_id") or item.get("id") or item.get("version")
+                if version_id is None:
+                    continue
+
+                current_value = (
+                    item.get("is_current")
+                    if "is_current" in item
+                    else item.get("current", item.get("latest", False))
+                )
+
+                is_current = str(current_value).lower() in ("true", "1", "yes") if isinstance(current_value, str) else bool(current_value)
+
+                versions.append({
+                    "id": str(version_id).strip(),
+                    "is_current": is_current
+                })
+
+            return versions
+
+        # XML parsing fallback
+        try:
+            root = ET.fromstring(response.text)
+        except Exception:
+            return []
+
+        def local_name(tag: str) -> str:
+            return tag.split('}', 1)[-1] if '}' in tag else tag
+
+        for elem in root.iter():
+            if local_name(elem.tag).lower() != "version":
+                continue
+
+            version_id = elem.attrib.get("id") or elem.attrib.get("version_id") or ""
+            is_current = False
+
+            for child in elem:
+                child_name = local_name(child.tag).lower()
+                child_text = (child.text or "").strip()
+
+                if child_name in ("id", "version_id", "version") and child_text and not version_id:
+                    version_id = child_text
+                if child_name in ("is_current", "current", "latest"):
+                    is_current = child_text.lower() in ("true", "1", "yes")
+
+            if version_id:
+                versions.append({"id": str(version_id).strip(), "is_current": is_current})
+
+        # Deduplicate while preserving order
+        seen = set()
+        deduped = []
+        for version in versions:
+            key = (version["id"], version["is_current"])
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(version)
+
+        return deduped
+
+    def _select_previous_version(self, versions: list) -> Optional[dict]:
+        """
+        Select most recent non-current version when possible.
+        """
+        if not versions:
+            return None
+
+        def version_sort_key(v: dict):
+            version_id = str(v.get("id", "")).strip()
+            return int(version_id) if version_id.isdigit() else -1
+
+        sorted_versions = sorted(versions, key=version_sort_key, reverse=True)
+
+        for version in sorted_versions:
+            if not version.get("is_current", False):
+                return version
+
+        # Fallback if no current flag information is available
+        if len(sorted_versions) >= 2:
+            return sorted_versions[1]
+
+        return None
+
+    def _attempt_restore_version(self, mms_id: str, version_id: str) -> tuple[bool, str]:
+        """
+        Attempt restore against known Alma version-restore endpoint patterns.
+        """
+        api_url = self._get_alma_api_url()
+
+        candidates = [
+            f"{api_url}/almaws/v1/bibs/{mms_id}/versions/{version_id}/restore?apikey={self.api_key}",
+            f"{api_url}/almaws/v1/bibs/{mms_id}/versions/{version_id}?op=restore&apikey={self.api_key}",
+            f"{api_url}/almaws/v1/bibs/{mms_id}/versions/{version_id}?operation=restore&apikey={self.api_key}",
+            f"{api_url}/almaws/v1/bibs/{mms_id}/versions/{version_id}?action=restore&apikey={self.api_key}",
+        ]
+
+        last_error = "Unknown restore error"
+        for url in candidates:
+            try:
+                response = requests.post(url, headers={"Accept": "application/json"}, timeout=30)
+            except Exception as e:
+                last_error = str(e)
+                continue
+
+            if response.status_code in (200, 201, 202, 204):
+                return True, f"Restored to version {version_id}"
+
+            body = (response.text or "").strip()
+            if body:
+                body = body[:300]
+            last_error = f"HTTP {response.status_code}" + (f": {body}" if body else "")
+
+            # Authorization errors should stop retrying alternate URL shapes
+            if response.status_code in (401, 403):
+                break
+
+        return False, f"Restore API call failed for version {version_id} ({last_error})"
     
     def _get_alma_domain(self) -> str:
         """
@@ -8239,6 +8551,119 @@ def main(page: ft.Page):
         )
         
         page.open(warning_dialog)
+
+    def on_function_17_click(e):
+        """Handle Function 17: Restore Metadata from Previous Version"""
+        # Determine if batch or single mode
+        is_batch = editor.set_members and len(editor.set_members) > 0
+
+        if not is_batch:
+            # Single record mode
+            if not mms_id_input.value:
+                update_status("Please enter an MMS ID or load a set", True)
+                return
+            mms_ids_to_process = [mms_id_input.value]
+            record_info = f"MMS ID: {mms_id_input.value}"
+        else:
+            # Batch mode
+            mms_ids_to_process = editor.set_members
+            record_info = f"Records to process: {len(editor.set_members)}"
+
+        def proceed_with_restore(e):
+            warning_dialog.open = False
+            page.update()
+
+            add_log_message(f"Starting metadata restore for {len(mms_ids_to_process)} record(s)")
+            update_status(f"Restoring metadata for {len(mms_ids_to_process)} record(s)...", False)
+
+            if is_batch:
+                # Show progress bar for batch processing
+                set_progress_bar.visible = True
+                set_progress_bar.value = 0
+                set_progress_text.visible = True
+                set_progress_text.value = f"Processing: 0/{len(mms_ids_to_process)} records"
+                page.update()
+
+                def progress_update(current, total):
+                    progress = current / total
+                    set_progress_bar.value = progress
+                    set_progress_text.value = f"Processing: {current}/{total} records ({progress*100:.1f}%)"
+                    status_text.value = f"Restoring metadata: {current}/{total} records ({progress*100:.1f}%)"
+                    page.update()
+            else:
+                progress_update = None
+
+            storage.record_function_usage("function_17_restore_metadata")
+            success, message, report_csv = editor.restore_metadata_from_previous_version(
+                mms_ids_to_process,
+                progress_callback=progress_update
+            )
+
+            if is_batch:
+                set_progress_bar.visible = False
+                set_progress_text.visible = False
+                page.update()
+
+            update_status(message, not success)
+
+            if report_csv:
+                set_id_input.value = report_csv
+                add_log_message("📋 Report CSV path copied to Set ID field")
+                page.update()
+
+            if success:
+                add_log_message("Metadata restore attempt complete")
+                add_log_message("💡 Review the report CSV for per-record outcomes")
+                add_log_message("💡 Failed records can be restored manually in MDE > View Related Data > View Versions")
+
+        def cancel_restore(e):
+            warning_dialog.open = False
+            page.update()
+            update_status("Metadata restore cancelled by user", False)
+
+        warning_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("⚠️ Confirm Metadata Restore", weight=ft.FontWeight.BOLD),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text(
+                        "This will attempt to restore each record to its most recent prior metadata version.",
+                        size=14
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(record_info, weight=ft.FontWeight.BOLD),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "Function: 17 - Restore Metadata from Previous Version",
+                        italic=True,
+                        color=ft.Colors.GREY_700
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "This action modifies bibliographic metadata in Alma. "
+                        "A CSV report will be created listing successes/failures and manual fallback guidance.",
+                        size=13
+                    ),
+                    ft.Container(height=10),
+                    ft.Text("Do you want to continue?", weight=ft.FontWeight.BOLD),
+                ]),
+                padding=10,
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel_restore),
+                ft.TextButton(
+                    "Proceed",
+                    on_click=proceed_with_restore,
+                    style=ft.ButtonStyle(
+                        color=ft.Colors.WHITE,
+                        bgcolor=ft.Colors.RED_700,
+                    ),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        page.open(warning_dialog)
     
     # Function definitions with metadata
     # Active functions - frequently used
@@ -8254,7 +8679,8 @@ def main(page: ft.Page):
         "function_14a_prepare_thumbnails",
         "function_14b_upload_thumbnails",
         "function_15_analyze_identifier_match",
-        "function_16_add_mms_id_identifier"
+        "function_16_add_mms_id_identifier",
+        "function_17_restore_metadata"
     ]
     
     # Inactive functions - less frequently used
@@ -8375,6 +8801,12 @@ def main(page: ft.Page):
             "icon": "🏷️",
             "handler": on_function_16_click,
             "help_file": "FUNCTION_16_ADD_MMS_ID_IDENTIFIER.md"
+        },
+        "function_17_restore_metadata": {
+            "label": "17: Restore Metadata from Previous Version",
+            "icon": "♻️",
+            "handler": on_function_17_click,
+            "help_file": "FUNCTION_17_RESTORE_METADATA.md"
         }
     }
     
