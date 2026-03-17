@@ -1,41 +1,60 @@
-# Function 17: FAILED - Restore Metadata from Previous Version
+# Function 17: Restore Metadata from Previous Version
 
 ## Status
 
-**FAILED / BLOCKED**
+ACTIVE IN BRANCH: Chrome-Selenium
 
-Function 17 is no longer considered operational.
+Function 17 is enabled in this branch and now launches Chrome via Selenium.
 
-## Failure Reason
+## Purpose
 
-After multiple implementation attempts (API + Selenium MDE automation + manual-recording path),
-Alma consistently blocks restore actions in the Versions UI (rows and restore controls remain
-disabled/unresponsive in active workflows). This prevents safe, repeatable bulk automation.
+Restore bibliographic metadata from a previous version in Alma by automating the MDE flow:
 
-Because Alma does not provide a reliable bulk restore API endpoint for this path, this function
-is a dead end in CABB and has been marked failed.
+1. Search record by MMS number
+2. Open record in Metadata Editor (MDE)
+3. Open Record Actions > View Related Data > View Versions
+4. Restore the most recent prior (non-current) version
+5. Write per-record results to a CSV report
 
-## Current Behavior in CABB
+## Prerequisites
 
-- The Function 17 button remains visible for historical context.
-- Running it returns a FAILED status message and does not execute restore automation.
+- Chrome installed
+- ChromeDriver installed on macOS:
+	- brew install --cask chromedriver
+- Valid Alma SSO access
+- DUO device available
 
-## Recommendation
+Optional environment variables for SSO prefill:
 
-Use manual Alma workflows for one-off restorations, or request a supported bulk/API restore
-capability through Alma product channels.
+- SSO_USERNAME
+- SSO_PASSWORD
 
-## Why This Function Was Attempted
+## Expected Runtime Behavior
 
-Function 11 CSV overlay workflows can overwrite or remove metadata unexpectedly. Function 17 was
-intended as a bulk recovery path when records needed to be rolled back to earlier metadata versions.
+- CABB opens a new Chrome window for Selenium.
+- You complete SSO/DUO if needed.
+- Before processing, set Alma search bar to:
+	- Search type: All titles
+	- Search field: MMS number
+- Function processes one or many records and writes a CSV report to Downloads.
 
-## Historical Notes
+## Current Notes
 
-Previous attempts included:
+- The Alma REST API endpoint /bibs/{mms_id}/versions is still unavailable (404 in this environment), so Function 17 uses UI automation.
+- Function 17 is configured to run direct Selenium automation in Chrome without a manual recorder handoff.
 
-- Alma API version-history endpoint usage (`/bibs/{mms_id}/versions`) which returned HTTP 404.
-- Selenium-based MDE automation with login/DUO handling, iframe handling, and selector hardening.
-- Selenium IDE-assisted manual capture to stabilize per-record actions.
+## Output
 
-All approaches converged on the same Alma-side block at restore interaction time.
+Report directory pattern:
+
+- ~/Downloads/CABB_restore_metadata_YYYYMMDD_HHMMSS/
+
+Report file pattern:
+
+- metadata_restore_report_YYYYMMDD_HHMMSS.csv
+
+CSV columns:
+
+- MMS ID
+- Status
+- Message

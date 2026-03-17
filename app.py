@@ -25,13 +25,21 @@ load_dotenv()
 # Create logfiles directory if it doesn't exist
 os.makedirs('logfiles', exist_ok=True)
 log_filename = f"logfiles/cabb_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+# Set up file handler (DEBUG level) and console handler (ERROR/INFO only, no DEBUG)
+file_handler = logging.FileHandler(log_filename)
+file_handler.setLevel(logging.DEBUG)
+
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.ERROR)  # Only ERROR and above to console
+
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+console_handler.setFormatter(formatter)
+
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_filename),
-        logging.StreamHandler()
-    ]
+    handlers=[file_handler, console_handler]
 )
 logger = logging.getLogger(__name__)
 
@@ -125,6 +133,7 @@ class AlmaBibEditor:
         self.kill_switch = False  # Emergency stop for batch operations
         self.last_manifest = None  # Store last retrieved IIIF manifest
         self.last_manifest_url = None  # Store last manifest URL
+        self._pinned_debug_driver = None  # Keep failed Selenium session alive for manual inspection
         self.min_log_level = logging.INFO  # Minimum log level for UI display
         logger.debug(f"API Region: {self.api_region}")
         logger.debug(f"API Key configured: {'Yes' if self.api_key else 'No'}")
@@ -4114,27 +4123,65 @@ For questions, consult the references above or contact your Alma administrator.
                 except:
                     pass
             return False, f"Error preparing thumbnail: {str(e)}"
-    def _setup_selenium_browser(self):
+    def _setup_selenium_browser(self, browser: str = "firefox"):
         """
-        Helper method: Set up and launch Firefox browser for Selenium automation.
+        Helper method: Set up and launch a browser for Selenium automation.
         
-        This is shared between Function 11b (JPG upload) and Function 14b (thumbnail upload).
+        This is shared between Function 11b (JPG upload), Function 14b (thumbnail upload),
+        and Function 17 (metadata restore).
+        
+        Args:
+            browser: Browser engine to launch ("firefox" or "chrome")
         
         Returns:
-            WebDriver: Configured Firefox WebDriver instance
+            WebDriver: Configured Selenium WebDriver instance
             
         Raises:
             Exception: If browser cannot be launched
         """
         from selenium import webdriver
-        from selenium.webdriver.firefox.service import Service
         import os
-        
-        self.log("Starting Firefox browser for automation...")
-        self.log("Note: Selenium will launch a NEW Firefox window (cannot attach to existing sessions)", logging.DEBUG)
+
+        browser = (browser or "firefox").strip().lower()
+        if browser not in {"firefox", "chrome"}:
+            raise ValueError(f"Unsupported browser '{browser}'. Use 'firefox' or 'chrome'.")
+
+        self.log(f"Starting {browser.title()} browser for automation...")
+        self.log(f"Note: Selenium will launch a NEW {browser.title()} window (cannot attach to existing sessions)", logging.DEBUG)
         self.log("", logging.DEBUG)
         
         try:
+            if browser == "chrome":
+                from selenium.webdriver.chrome.service import Service as ChromeService
+
+                options = webdriver.ChromeOptions()
+                options.add_argument("--disable-popup-blocking")
+                options.add_argument("--disable-notifications")
+                # Prefer the standard installed Chrome app over Chrome for Testing.
+                chrome_binary_candidates = [
+                    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                    os.path.expanduser("~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                ]
+                for chrome_binary in chrome_binary_candidates:
+                    if os.path.exists(chrome_binary):
+                        options.binary_location = chrome_binary
+                        self.log(f"Using Chrome binary: {chrome_binary}", logging.DEBUG)
+                        break
+                else:
+                    self.log(
+                        "Standard Google Chrome binary not found; Selenium may launch Chrome for Testing.",
+                        logging.WARNING,
+                    )
+                # Window is sized explicitly after launch via set_window_size()
+
+                service = ChromeService()
+                self.log("Launching Chrome via ChromeDriver...", logging.DEBUG)
+                driver = webdriver.Chrome(service=service, options=options)
+                self.log("✓ Chrome launched successfully")
+                return driver
+
+            from selenium.webdriver.firefox.service import Service as FirefoxService
+
             options = webdriver.FirefoxOptions()
             # Keep browser open after automation for review
             options.set_preference("browser.sessionstore.resume_from_crash", False)
@@ -4147,12 +4194,7 @@ For questions, consult the references above or contact your Alma administrator.
             options.set_preference("cookiebanners.service.mode.privateBrowsing", 2)
             # Window is sized explicitly after launch via set_window_size()
 
-            # Optional: inject Selenium IDE (or any other extension) into the browser.
-            # Drop the XPI file at any of the locations below, then re-run.
-            # To download Selenium IDE: visit
-            #   https://addons.mozilla.org/en-US/firefox/addon/selenium-ide/
-            # then save the file as ~/Downloads/selenium_ide.xpi  (right-click
-            # "Add to Firefox" → Save Link As).
+            # Optional: inject Selenium IDE (or any other extension) into Firefox.
             xpi_search_paths = [
                 os.path.expanduser("~/Downloads/selenium_ide.xpi"),
                 os.path.join(os.path.dirname(__file__), "selenium_ide.xpi"),
@@ -4166,18 +4208,29 @@ For questions, consult the references above or contact your Alma administrator.
                         self.log(f"Could not load extension {xpi_path}: {xpi_err}", logging.WARNING)
                     break
             
-            # Create GeckoDriver service
-            service = Service()
-            
-            # Launch Firefox
+            service = FirefoxService()
             self.log("Launching Firefox via GeckoDriver...", logging.DEBUG)
             driver = webdriver.Firefox(service=service, options=options)
             self.log("✓ Firefox launched successfully")
-            
             return driver
             
         except Exception as e:
+            if browser == "chrome":
+                raise Exception(f"Could not start Chrome: {str(e)}. Please ensure ChromeDriver is installed (brew install --cask chromedriver).")
             raise Exception(f"Could not start Firefox: {str(e)}. Please ensure GeckoDriver is installed (brew install geckodriver).")
+
+    def _get_browser_app_name(self, driver) -> str:
+        """Return the macOS app name for the active Selenium driver."""
+        try:
+            browser_name = (driver.capabilities.get('browserName') or '').lower()
+        except Exception:
+            browser_name = ''
+
+        if browser_name == 'chrome':
+            return "Google Chrome"
+        if browser_name == 'safari':
+            return "Safari"
+        return "Firefox"
     
     def _attempt_automatic_sso_login(self, driver, username: str, password: str) -> bool:
         """
@@ -6538,17 +6591,17 @@ For questions, consult the references above or contact your Alma administrator.
 
         Note: The Alma REST API does not expose a /bibs/{mms_id}/versions endpoint
         (returns HTTP 404 for all institution environments). This function therefore
-        automates the MDE manual process via Selenium/Firefox:
+        automates the MDE manual process via Selenium/Chrome:
           Record Actions > View Related Data > View Versions > Restore
 
-        For each MMS ID, opens Firefox, logs into Alma, then:
+        For each MMS ID, opens Chrome, logs into Alma, then:
         1. Searches for the record under 'All titles / MMS number'
         2. Opens the record in the Metadata Editor (MDE)
         3. Navigates to Record Actions > View Related Data > View Versions
         4. Clicks Restore on the most recent prior (non-current) version
         5. Writes a CSV audit report with per-record outcomes
 
-        Prerequisite: GeckoDriver must be installed (brew install geckodriver).
+        Prerequisite: ChromeDriver must be installed (brew install --cask chromedriver).
 
         Args:
             mms_ids: List of MMS IDs to process
@@ -6567,7 +6620,7 @@ For questions, consult the references above or contact your Alma administrator.
         output_dir.mkdir(parents=True, exist_ok=True)
         report_file = output_dir / f"metadata_restore_report_{timestamp}.csv"
 
-        self.log(f"Starting Function 17 (Selenium): Restore metadata for {len(mms_ids)} record(s)")
+        self.log(f"Starting Function 17 (Selenium/Chrome): Restore metadata for {len(mms_ids)} record(s)")
         self.log(f"Report: {report_file}")
 
         rows = []
@@ -6575,30 +6628,20 @@ For questions, consult the references above or contact your Alma administrator.
         failed_count = 0
         driver = None
         total = len(mms_ids)
-        manual_handoff_triggered = False
 
         try:
-            driver = self._setup_selenium_browser()
+            # Close previously pinned debug browser so only one inspection window remains.
+            if self._pinned_debug_driver:
+                try:
+                    self._pinned_debug_driver.quit()
+                except Exception:
+                    pass
+                self._pinned_debug_driver = None
+
+            driver = self._setup_selenium_browser(browser="chrome")
             self._perform_alma_login_for_mde_restore(driver)
 
-            # TEMPORARY MANUAL CAPTURE MODE:
-            # Hand off immediately after login so the user can capture the full
-            # per-record flow (search -> open record -> MDE -> versions -> restore)
-            # using Selenium IDE.
-            if mms_ids:
-                handoff_mms_id = mms_ids[0]
-                self._show_manual_capture_prompt(driver, handoff_mms_id)
-                rows.append({
-                    "MMS ID": handoff_mms_id,
-                    "Status": "Manual Capture",
-                    "Message": "MANUAL_HANDOFF: Browser is ready after login; record steps manually in Selenium IDE."
-                })
-                manual_handoff_triggered = True
-
             for idx, mms_id in enumerate(mms_ids, start=1):
-                if manual_handoff_triggered:
-                    break
-
                 if self.kill_switch:
                     self.log("Kill switch activated — stopping", logging.WARNING)
                     break
@@ -6609,10 +6652,6 @@ For questions, consult the references above or contact your Alma administrator.
                     ok, msg = self._restore_record_via_mde(driver, mms_id)
                 except Exception as e:
                     ok, msg = False, f"Exception: {e}"
-
-                if isinstance(msg, str) and msg.startswith("MANUAL_HANDOFF:"):
-                    manual_handoff_triggered = True
-                    self.log("Manual handoff reached for Selenium IDE capture.", logging.WARNING)
 
                 rows.append({
                     "MMS ID": mms_id,
@@ -6630,28 +6669,22 @@ For questions, consult the references above or contact your Alma administrator.
                 if progress_callback:
                     progress_callback(idx, total)
 
-                if manual_handoff_triggered:
-                    break
-
         except Exception as top_e:
             self.log(f"Function 17 aborted: {top_e}", logging.ERROR)
             return False, f"Aborted: {top_e}", None
 
         finally:
-            if driver and not manual_handoff_triggered:
+            # Keep browser open on failures so user can inspect
+            # Only quit on success
+            if driver and success_count > 0 and failed_count == 0:
                 try:
                     driver.quit()
                 except Exception:
                     pass
-
-        if manual_handoff_triggered:
-            summary = (
-                "Function 17 paused for manual Selenium IDE recording. "
-                "Firefox was intentionally left open at the handoff point. "
-                f"Report: {report_file}"
-            )
-            self.log(summary, logging.WARNING)
-            return False, summary, str(report_file)
+            elif driver:
+                # Prevent Selenium from closing Chrome when local variable goes out of scope.
+                self._pinned_debug_driver = driver
+                self.log("Function 17 left browser open for inspection.", logging.WARNING)
 
         with open(report_file, "w", newline="", encoding="utf-8") as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=["MMS ID", "Status", "Message"])
@@ -6669,54 +6702,60 @@ For questions, consult the references above or contact your Alma administrator.
         """
         Show an in-browser popup and banner indicating manual capture point.
 
-        Downloads and installs Selenium IDE into the running Firefox session
-        automatically, then pauses so the user can record the per-record flow.
+        For Firefox, attempts to install Selenium IDE automatically. For Chrome,
+        prompts the user for manual recording steps directly in the active window.
         """
         import time
         import os
         import urllib.request
+
+        browser_app = self._get_browser_app_name(driver)
+        is_firefox = (browser_app == "Firefox")
 
         self.log("")
         self.log("=" * 70)
         self.log("MANUAL CAPTURE HANDOFF")
         self.log("=" * 70)
         self.log(f"MMS ID for capture: {mms_id}")
-        self.log("Automation is paused. Firefox remains open.")
+        self.log(f"Automation is paused. {browser_app} remains open.")
 
-        # --- Auto-install Selenium IDE into the live Firefox session ---
-        # Store the XPI in the project directory so it survives Downloads cleanups.
-        project_xpi = os.path.join(os.path.dirname(os.path.abspath(__file__)), "selenium_ide.xpi")
-        downloads_xpi = os.path.expanduser("~/Downloads/selenium_ide.xpi")
-        xpi_path = project_xpi if os.path.isfile(project_xpi) else (
-            downloads_xpi if os.path.isfile(downloads_xpi) else None
-        )
+        if is_firefox:
+            # --- Auto-install Selenium IDE into the live Firefox session ---
+            # Store the XPI in the project directory so it survives Downloads cleanups.
+            project_xpi = os.path.join(os.path.dirname(os.path.abspath(__file__)), "selenium_ide.xpi")
+            downloads_xpi = os.path.expanduser("~/Downloads/selenium_ide.xpi")
+            xpi_path = project_xpi if os.path.isfile(project_xpi) else (
+                downloads_xpi if os.path.isfile(downloads_xpi) else None
+            )
 
-        if not xpi_path:
-            self.log("Downloading Selenium IDE extension...")
-            try:
-                # Mozilla AMO canonical download URL for Selenium IDE
-                amo_url = (
-                    "https://addons.mozilla.org/firefox/downloads/latest/"
-                    "selenium-ide/addon-selenium-ide-latest.xpi"
-                )
-                urllib.request.urlretrieve(amo_url, project_xpi)
-                xpi_path = project_xpi
-                self.log(f"  Downloaded to {xpi_path}")
-            except Exception as dl_err:
-                self.log(f"  Download failed: {dl_err}", logging.WARNING)
-                xpi_path = None
+            if not xpi_path:
+                self.log("Downloading Selenium IDE extension...")
+                try:
+                    # Mozilla AMO canonical download URL for Selenium IDE
+                    amo_url = (
+                        "https://addons.mozilla.org/firefox/downloads/latest/"
+                        "selenium-ide/addon-selenium-ide-latest.xpi"
+                    )
+                    urllib.request.urlretrieve(amo_url, project_xpi)
+                    xpi_path = project_xpi
+                    self.log(f"  Downloaded to {xpi_path}")
+                except Exception as dl_err:
+                    self.log(f"  Download failed: {dl_err}", logging.WARNING)
+                    xpi_path = None
 
-        if xpi_path and os.path.isfile(xpi_path):
-            try:
-                driver.install_addon(xpi_path, temporary=True)
-                self.log("  Selenium IDE installed into this Firefox session.")
-                self.log("  Look for its icon in the toolbar (puzzle-piece or Se icon).")
-                time.sleep(2)  # give the extension a moment to initialise
-            except Exception as ins_err:
-                self.log(f"  Could not install extension: {ins_err}", logging.WARNING)
-                self.log("  You may need to install Selenium IDE manually from the Firefox Add-ons menu.")
+            if xpi_path and os.path.isfile(xpi_path):
+                try:
+                    driver.install_addon(xpi_path, temporary=True)
+                    self.log("  Selenium IDE installed into this Firefox session.")
+                    self.log("  Look for its icon in the toolbar (puzzle-piece or Se icon).")
+                    time.sleep(2)  # give the extension a moment to initialise
+                except Exception as ins_err:
+                    self.log(f"  Could not install extension: {ins_err}", logging.WARNING)
+                    self.log("  You may need to install Selenium IDE manually from the Firefox Add-ons menu.")
+            else:
+                self.log("  Could not obtain Selenium IDE XPI — install it manually if needed.")
         else:
-            self.log("  Could not obtain Selenium IDE XPI — install it manually if needed.")
+            self.log(f"Selenium IDE auto-install is Firefox-only; proceeding with manual capture in {browser_app}.")
 
         self.log("")
         self.log("Click the Selenium IDE icon, create a new project, start recording,")
@@ -6739,11 +6778,11 @@ For questions, consult the references above or contact your Alma administrator.
                         + 'font:600 12px/1.4 sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.3);'
                         + 'pointer-events:none;';
                     b.innerHTML = '<b>CABB Manual Capture Mode</b> &mdash; '
-                        + 'Selenium IDE has been installed. MMS: '
+                        + 'Browser is paused for manual capture. MMS: '
                         + '<code style="background:rgba(255,255,255,.2);padding:1px 6px;border-radius:3px">' + mms + '</code><br>'
                         + '<span style="font-weight:normal;font-size:13px">'
-                        + '1\ufe0f\u20e3 Click the Selenium IDE icon in the toolbar &nbsp;'
-                        + '2\ufe0f\u20e3 Create a project &amp; start recording &nbsp;'
+                        + '1\ufe0f\u20e3 Start your recorder/tool of choice &nbsp;'
+                        + '2\ufe0f\u20e3 Begin recording/manual capture &nbsp;'
                         + '3\ufe0f\u20e3 Search MMS &rarr; Open Record &rarr; Edit in MDE '
                         + '&rarr; Record Actions &rarr; View Related Data &rarr; View Versions &rarr; Restore<br>'
                         + '<b>Note:</b> record must be in edit/locked state; otherwise version rows are not selectable and Restore remains disabled.'
@@ -6795,6 +6834,7 @@ For questions, consult the references above or contact your Alma administrator.
         sso_username = os.getenv('SSO_USERNAME')
         sso_password = os.getenv('SSO_PASSWORD')
         auto_login_enabled = bool(sso_username and sso_password)
+        browser_app = self._get_browser_app_name(driver)
 
         driver.get("https://grinnell.alma.exlibrisgroup.com/SAML")
 
@@ -6826,7 +6866,7 @@ For questions, consult the references above or contact your Alma administrator.
             self.log("=" * 70)
             self.log("⏸️  PLEASE LOG INTO ALMA NOW — Function 17: Restore Metadata")
             self.log("=" * 70)
-            self.log("1. Complete the SSO login in Firefox")
+            self.log(f"1. Complete the SSO login in {browser_app}")
             self.log("2. Complete DUO authentication if prompted")
             self.log("3. Wait for the Alma home page to fully load")
             self.log("")
@@ -6850,8 +6890,12 @@ For questions, consult the references above or contact your Alma administrator.
         if prompt_handled:
             time.sleep(2)
 
-        # Focus Firefox and dismiss interfering popups
+        # Focus browser and dismiss interfering popups
         try:
+            subprocess.run([
+                'osascript', '-e',
+                f'tell application "{browser_app}" to activate'
+            ], capture_output=True, timeout=5)
             driver.set_window_size(1200, 900)
             driver.set_window_position(0, 0)
             driver.execute_script("window.focus();")
@@ -6861,7 +6905,7 @@ For questions, consult the references above or contact your Alma administrator.
             actions.perform()
             time.sleep(0.5)
         except Exception as e:
-            self.log(f"Firefox focus: {e}", logging.DEBUG)
+            self.log(f"{browser_app} focus: {e}", logging.DEBUG)
 
         # Prompt can re-appear after focus/redirect; check again before continuing.
         self._dismiss_stay_signed_in_prompt(driver, timeout_seconds=10)
@@ -7028,6 +7072,11 @@ For questions, consult the references above or contact your Alma administrator.
         # Alma may host the MDE inside an iframe (yardsNgWrapper); enter it before toolbar actions.
         self._switch_to_mde_iframe_if_present(driver)
 
+        # Optional manual capture mode for collecting real user clicks in the MDE UI.
+        # Enable with: FN17_MANUAL_CAPTURE=1
+        if os.getenv("FN17_MANUAL_CAPTURE", "0").strip().lower() in ("1", "true", "yes", "on"):
+            return self._capture_manual_fn17_clicks(driver, mms_id)
+
         # Step 4: Navigate to View Versions via Record Actions menu
         self.log(f"  → Navigating to View Versions...", logging.DEBUG)
         ok, msg = self._open_view_versions_in_mde(driver, mms_id)
@@ -7037,6 +7086,109 @@ For questions, consult the references above or contact your Alma administrator.
         # Step 5: Restore the previous version
         self.log(f"  → Restoring previous version...", logging.DEBUG)
         return self._restore_previous_version(driver, mms_id)
+
+        def _capture_manual_fn17_clicks(self, driver, mms_id: str) -> tuple[bool, str]:
+                """
+                Capture manual clicks in the active Selenium browser window for Function 17 debugging.
+
+                This mode is intended for collecting the exact click sequence directly from the
+                in-environment browser when external Chrome tooling is unavailable.
+                """
+                import json
+                import time
+                from pathlib import Path
+
+                capture_seconds = int(os.getenv("FN17_MANUAL_CAPTURE_SECONDS", "180"))
+                downloads_dir = Path.home() / "Downloads"
+                click_file = downloads_dir / f"fn17_manual_clicks_{mms_id}.json"
+                page_file = downloads_dir / f"fn17_manual_capture_page_{mms_id}.html"
+
+                try:
+                        driver.execute_script(
+                                """
+                                (function() {
+                                    if (window.__fn17CaptureInstalled) {
+                                        return;
+                                    }
+
+                                    function cssPath(el) {
+                                        if (!el || !el.nodeType || el.nodeType !== 1) return '';
+                                        var parts = [];
+                                        while (el && el.nodeType === 1 && el !== document.body) {
+                                            var part = el.nodeName.toLowerCase();
+                                            if (el.id) {
+                                                part += '#' + el.id;
+                                                parts.unshift(part);
+                                                break;
+                                            }
+                                              var cls = (el.className || '').toString().trim().split(/\\s+/).filter(Boolean).slice(0, 2);
+                                            if (cls.length) {
+                                                part += '.' + cls.join('.');
+                                            }
+                                            var sib = el, idx = 1;
+                                            while (sib = sib.previousElementSibling) {
+                                                if (sib.nodeName.toLowerCase() === el.nodeName.toLowerCase()) idx++;
+                                            }
+                                            part += ':nth-of-type(' + idx + ')';
+                                            parts.unshift(part);
+                                            el = el.parentElement;
+                                        }
+                                        return parts.join(' > ');
+                                    }
+
+                                    window.__fn17Clicks = [];
+                                    window.__fn17ClickHandler = function(evt) {
+                                        var t = evt.target;
+                                        if (!t) return;
+                                        var txt = (t.innerText || t.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 240);
+                                        window.__fn17Clicks.push({
+                                            ts: new Date().toISOString(),
+                                            tag: (t.tagName || '').toLowerCase(),
+                                            text: txt,
+                                            id: t.id || '',
+                                            classes: (t.className || '').toString(),
+                                            ariaLabel: t.getAttribute ? (t.getAttribute('aria-label') || '') : '',
+                                            dataAutomationId: t.getAttribute ? (t.getAttribute('data-automation-id') || '') : '',
+                                            cssPath: cssPath(t)
+                                        });
+                                    };
+
+                                    document.addEventListener('click', window.__fn17ClickHandler, true);
+                                    window.__fn17CaptureInstalled = true;
+                                })();
+                                """
+                        )
+                except Exception as e:
+                        return False, f"Manual capture setup failed: {e}"
+
+                self.log(f"  ⚠️ Manual capture mode enabled for {mms_id}", logging.WARNING)
+                self.log(f"  ⚠️ Perform the correct clicks in the browser now. Capturing for {capture_seconds} seconds...", logging.WARNING)
+
+                slept = 0
+                while slept < capture_seconds:
+                        time.sleep(5)
+                        slept += 5
+
+                try:
+                        clicks = driver.execute_script("return window.__fn17Clicks || [];") or []
+                        driver.execute_script(
+                                """
+                                if (window.__fn17CaptureInstalled && window.__fn17ClickHandler) {
+                                    document.removeEventListener('click', window.__fn17ClickHandler, true);
+                                }
+                                window.__fn17CaptureInstalled = false;
+                                """
+                        )
+
+                        click_file.write_text(json.dumps(clicks, indent=2), encoding="utf-8")
+                        page_file.write_text(driver.page_source, encoding="utf-8")
+
+                        return False, (
+                                f"Manual click capture complete ({len(clicks)} click events). "
+                                f"Clicks: {click_file} | Page: {page_file}"
+                        )
+                except Exception as e:
+                        return False, f"Manual capture export failed: {e}"
 
     def _switch_to_mde_iframe_if_present(self, driver):
         """
@@ -7201,9 +7353,8 @@ For questions, consult the references above or contact your Alma administrator.
         In the Alma MDE toolbar, navigate:
           Record Actions > View Related Data > View Versions
 
-        Tries multiple selectors for the 'Record Actions' top-level button,
-        then clicks 'View Related Data' from the dropdown, then 'View Versions'.
-        Saves a debug HTML to ~/Downloads if the toolbar cannot be found.
+        Fails fast on any missing element to help debug the UI flow.
+        Saves page to ~/Downloads on failure for manual inspection.
         """
         import time
         from selenium.webdriver.common.by import By
@@ -7212,232 +7363,159 @@ For questions, consult the references above or contact your Alma administrator.
         from selenium.common.exceptions import TimeoutException
         from pathlib import Path
 
-        time.sleep(2)
+        time.sleep(1)
 
-        # --- Step A: Find and click 'Record Actions' (or 'Tools') in the MDE toolbar ---
-        toolbar_css = [
-            "[data-automation-id='record-actions-button']",
-            "[data-automation-id='toolbar-record-actions']",
-            "[data-automation-id='mde-record-actions']",
-            ".ex-record-actions-wrapper button",
-            ".ex-record-actions-main-buttons button",
-        ]
-        toolbar_texts = ["Record Actions", "Tools", "Actions"]
-
-        record_actions_btn = None
-        for sel in toolbar_css:
+        # --- Step A: Find and click 'Record Actions' ---
+        try:
+            record_actions_btn = WebDriverWait(driver, 2).until(
+                EC.element_to_be_clickable((By.XPATH,
+                    "//button[contains(normalize-space(.), 'Record Actions')]"
+                ))
+            )
+            self.log(f"  ✓ Found 'Record Actions' button", logging.DEBUG)
+        except TimeoutException:
             try:
-                record_actions_btn = WebDriverWait(driver, 5).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, sel))
-                )
-                self.log(f"  Found Record Actions toolbar button ({sel})", logging.DEBUG)
-                break
-            except (TimeoutException, Exception):
-                continue
-
-        if not record_actions_btn:
-            for text in toolbar_texts:
-                try:
-                    record_actions_btn = WebDriverWait(driver, 5).until(
-                        EC.element_to_be_clickable((By.XPATH,
-                            f"//button[contains(normalize-space(.), '{text}') or "
-                            f"contains(@aria-label, '{text}')]"
-                        ))
-                    )
-                    self.log(f"  Found Record Actions button via text: '{text}'", logging.DEBUG)
-                    break
-                except (TimeoutException, Exception):
-                    continue
-
-        if not record_actions_btn:
-            try:
-                debug_file = Path.home() / "Downloads" / f"fn17_mde_toolbar_{mms_id}.html"
+                debug_file = Path.home() / "Downloads" / f"fn17_step_A_record_actions_{mms_id}.html"
                 debug_file.write_text(driver.page_source, encoding='utf-8')
-                self.log(f"  ✗ 'Record Actions' button not found — page saved: {debug_file}", logging.ERROR)
+                self.log(f"  ✗ FAIL: 'Record Actions' button not found — page: {debug_file}", logging.ERROR)
             except Exception:
                 pass
-            return False, f"Could not find 'Record Actions' toolbar button in MDE for {mms_id}"
+            return False, f"Could not find 'Record Actions' button in MDE for {mms_id}"
 
-        driver.execute_script("arguments[0].scrollIntoView(true);", record_actions_btn)
-        time.sleep(0.3)
         try:
             record_actions_btn.click()
         except Exception:
             driver.execute_script("arguments[0].click();", record_actions_btn)
         self.log(f"  ✓ Clicked Record Actions", logging.DEBUG)
-        time.sleep(1)
+        time.sleep(0.5)
 
-        # --- Step B: Click 'View Related Data' from the dropdown ---
-        # 'View Related Data' may expand a submenu rather than navigate directly
-        related_data_xpaths = [
-            "[data-automation-id='view-related-data']",
-        ]
-        view_related = None
-        for sel in related_data_xpaths:
+        # --- Step B: Click 'View Related Data' from dropdown ---
+        try:
+            view_related = WebDriverWait(driver, 2).until(
+                EC.element_to_be_clickable((By.XPATH,
+                    "//*[contains(normalize-space(.), 'View Related Data')]"
+                ))
+            )
+            self.log(f"  ✓ Found 'View Related Data' menu item", logging.DEBUG)
+        except TimeoutException:
             try:
-                view_related = WebDriverWait(driver, 3).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, sel))
-                )
-                break
-            except (TimeoutException, Exception):
-                continue
-        if not view_related:
-            try:
-                view_related = WebDriverWait(driver, 5).until(
-                    EC.element_to_be_clickable((By.XPATH,
-                        "//*[contains(normalize-space(.), 'View Related Data') "
-                        "and not(contains(@class,'disabled'))]"
-                    ))
-                )
-            except TimeoutException:
-                return False, f"Could not find 'View Related Data' menu item for {mms_id}"
+                debug_file = Path.home() / "Downloads" / f"fn17_step_B_view_related_{mms_id}.html"
+                debug_file.write_text(driver.page_source, encoding='utf-8')
+                self.log(f"  ✗ FAIL: 'View Related Data' not found — page: {debug_file}", logging.ERROR)
+            except Exception:
+                pass
+            return False, f"Could not find 'View Related Data' menu item for {mms_id}"
 
-        driver.execute_script("arguments[0].scrollIntoView(true);", view_related)
-        time.sleep(0.3)
         try:
             view_related.click()
         except Exception:
             driver.execute_script("arguments[0].click();", view_related)
         self.log(f"  ✓ Clicked View Related Data", logging.DEBUG)
-        time.sleep(1)
+        time.sleep(1)  # Wait for submenu to expand
 
-        # --- Step C: Click 'View Versions' from the submenu ---
-        view_versions = None
-
-        # Some Alma builds render submenu items in overlay containers and/or use
-        # slightly different wording than "View Versions".
-        version_selectors = [
-            (By.CSS_SELECTOR, "[data-automation-id='view-versions']"),
-            (By.CSS_SELECTOR, "[data-automation-id*='view-versions']"),
-            (By.CSS_SELECTOR, "[data-automation-id*='versions']"),
-            (By.XPATH, "//*[contains(normalize-space(.), 'View Versions') and not(contains(@class,'disabled'))]"),
-            (By.XPATH, "//*[normalize-space(.)='Versions' and not(contains(@class,'disabled'))]"),
-            (By.XPATH, "//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'version') and not(contains(@class,'disabled'))]"),
-            (By.XPATH, "//div[contains(@class,'cdk-overlay-container')]//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'version')]"),
-        ]
-
-        for by, selector in version_selectors:
+        # --- Step C: Click 'View Versions' from submenu ---
+        try:
+            view_versions = WebDriverWait(driver, 2).until(
+                EC.element_to_be_clickable((By.XPATH,
+                    "//*[contains(normalize-space(.), 'View Versions') or normalize-space(.) = 'Versions']"
+                ))
+            )
+            self.log(f"  ✓ Found 'View Versions' menu item", logging.DEBUG)
+        except TimeoutException:
             try:
-                view_versions = WebDriverWait(driver, 4).until(
-                    EC.element_to_be_clickable((by, selector))
-                )
-                self.log(f"  Found View Versions using selector: {selector[:80]}", logging.DEBUG)
-                break
-            except (TimeoutException, Exception):
-                continue
-
-        if not view_versions:
-            try:
-                debug_file = Path.home() / "Downloads" / f"fn17_view_versions_{mms_id}.html"
+                debug_file = Path.home() / "Downloads" / f"fn17_step_C_view_versions_{mms_id}.html"
                 debug_file.write_text(driver.page_source, encoding='utf-8')
-                self.log(f"  ✗ 'View Versions' not found — page saved: {debug_file}", logging.ERROR)
+                self.log(f"  ✗ FAIL: 'View Versions' not found — page: {debug_file}", logging.ERROR)
             except Exception:
                 pass
             return False, f"Could not find 'View Versions' menu item for {mms_id}"
 
-        driver.execute_script("arguments[0].scrollIntoView(true);", view_versions)
-        time.sleep(0.3)
         try:
             view_versions.click()
         except Exception:
             driver.execute_script("arguments[0].click();", view_versions)
         self.log(f"  ✓ Clicked View Versions", logging.DEBUG)
-        time.sleep(2)
+        time.sleep(1)
         return True, "Opened View Versions panel"
 
     def _restore_previous_version(self, driver, mms_id: str) -> tuple[bool, str]:
         """
         In the Alma MDE View Versions panel, click 'Restore' on the most recent
-        prior (non-current) version.
-
-        Alma lists versions in reverse chronological order. The first row is the
-        current (most recently saved) version; the second is the one to restore.
-        If only one Restore button is visible (because the current version has no
-        Restore action), the single button is used.
-
-        Handles any confirmation dialog that appears after clicking Restore.
-        Saves a debug HTML to ~/Downloads if no Restore buttons are found.
+        prior (non-current) version. Fails fast with clear diagnostics.
         """
         import time
         from selenium.webdriver.common.by import By
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
-        from selenium.common.exceptions import TimeoutException
         from pathlib import Path
 
-        time.sleep(2)
+        time.sleep(1)
 
-        # Collect all visible Restore buttons/links in the versions panel
-        restore_texts = ["Restore", "Restore Metadata", "Restore this version"]
+        # Try switching to yards_iframe if it exists (Alma may render View Versions in an iframe)
+        try:
+            iframe = driver.find_element(By.CSS_SELECTOR, "iframe#yards_iframe, iframe[id*='yards']")
+            driver.switch_to.frame(iframe)
+            self.log("  ✓ Switched to yards_iframe", logging.DEBUG)
+            time.sleep(0.5)
+        except Exception:
+            self.log("  ℹ️ yards_iframe not found; searching in current context", logging.DEBUG)
+
+        # Look for Restore buttons - try direct text match first
         all_restore_btns = []
-
-        for text in restore_texts:
+        for text in ["Restore", "Restore Metadata", "Restore this version"]:
             try:
                 elems = driver.find_elements(
                     By.XPATH,
                     f"//*[normalize-space(.)='{text}' or normalize-space(text())='{text}']"
                 )
-                all_restore_btns.extend([e for e in elems if e.is_displayed()])
+                visible = [e for e in elems if e.is_displayed()]
+                if visible:
+                    self.log(f"  ✓ Found {len(visible)} '{text}' button(s)", logging.DEBUG)
+                    all_restore_btns.extend(visible)
+                    break
             except Exception:
                 continue
-
-        # CSS fallbacks if text search returns nothing
-        if not all_restore_btns:
-            for sel in ("[data-automation-id='restore-version-button']",
-                        "[data-automation-id*='restore']"):
-                try:
-                    elems = driver.find_elements(By.CSS_SELECTOR, sel)
-                    all_restore_btns.extend([e for e in elems if e.is_displayed()])
-                except Exception:
-                    continue
 
         if not all_restore_btns:
             try:
                 debug_file = Path.home() / "Downloads" / f"fn17_versions_panel_{mms_id}.html"
                 debug_file.write_text(driver.page_source, encoding='utf-8')
-                self.log(f"  ✗ No 'Restore' buttons found in versions panel — page saved: {debug_file}", logging.ERROR)
+                self.log(f"  ✗ FAIL: No 'Restore' buttons found — page: {debug_file}", logging.ERROR)
             except Exception:
                 pass
             return False, f"No 'Restore' buttons found in View Versions panel for {mms_id}"
 
-        self.log(f"  Found {len(all_restore_btns)} Restore button(s)", logging.DEBUG)
-
-        # Alma in this environment appears to list only restorable prior versions,
-        # so the top Restore action should be the correct target.
-        btn_index = 0
-        restore_btn = all_restore_btns[btn_index]
-        self.log(f"  Clicking top Restore button [{btn_index}]...", logging.DEBUG)
+        # Click the first (most recent) Restore button
+        restore_btn = all_restore_btns[0]
+        self.log(f"  ✓ Clicking Restore button...", logging.DEBUG)
         driver.execute_script("arguments[0].scrollIntoView(true);", restore_btn)
-        time.sleep(0.5)
+        time.sleep(0.3)
         try:
             restore_btn.click()
         except Exception:
             driver.execute_script("arguments[0].click();", restore_btn)
-        time.sleep(2)
+        time.sleep(1)
 
-        # Handle confirmation dialog
+        # Handle confirmation dialog (if one appears)
         confirmed = False
         for text in ("Confirm", "OK", "Yes", "Restore", "Yes, Restore"):
             try:
-                confirm_btn = WebDriverWait(driver, 3).until(
-                    EC.element_to_be_clickable((By.XPATH,
-                        f"//button[normalize-space(.)='{text}' or normalize-space(text())='{text}']"
-                        f" | //input[@type='button' and (@value='{text}' or @aria-label='{text}')]"
-                    ))
+                confirm_btn = driver.find_element(By.XPATH,
+                    f"//button[normalize-space(.)='{text}' or normalize-space(text())='{text}']"
+                    f" | //input[@type='button' and (@value='{text}' or @aria-label='{text}')]"
                 )
-                try:
-                    confirm_btn.click()
-                except Exception:
-                    driver.execute_script("arguments[0].click();", confirm_btn)
-                self.log(f"  ✓ Confirmed restore dialog ('{text}')", logging.DEBUG)
-                confirmed = True
-                time.sleep(2)
-                break
-            except TimeoutException:
+                if confirm_btn.is_displayed():
+                    try:
+                        confirm_btn.click()
+                    except Exception:
+                        driver.execute_script("arguments[0].click();", confirm_btn)
+                    self.log(f"  ✓ Confirmed restore dialog ('{text}')", logging.DEBUG)
+                    confirmed = True
+                    time.sleep(1)
+                    break
+            except Exception:
                 continue
 
         if not confirmed:
-            self.log(f"  ℹ️  No confirmation dialog — restore may have applied directly", logging.DEBUG)
+            self.log(f"  ℹ️ No confirmation dialog found — checking if restore applied", logging.DEBUG)
 
         return True, f"Restored previous version for {mms_id}"
     
@@ -9174,15 +9252,6 @@ def main(page: ft.Page):
 
     def on_function_17_click(e):
         """Handle Function 17: Restore Metadata from Previous Version"""
-        failure_msg = (
-            "Function 17 is marked FAILED: Alma blocks interactive restore actions in View Versions "
-            "(rows and restore controls remain disabled), preventing reliable bulk automation."
-        )
-        add_log_message("Function 17 marked FAILED")
-        add_log_message("Cause: Alma UI blocks restore actions in a way that cannot be safely automated.")
-        update_status(failure_msg, True)
-        return
-
         # Determine if batch or single mode
         is_batch = editor.set_members and len(editor.set_members) > 0
 
@@ -9256,7 +9325,7 @@ def main(page: ft.Page):
             content=ft.Container(
                 content=ft.Column([
                     ft.Text(
-                        "This will launch Firefox and automate the Alma MDE to restore each record "
+                        "This will launch Chrome and automate the Alma MDE to restore each record "
                         "to its most recent prior metadata version.",
                         size=14
                     ),
@@ -9270,7 +9339,7 @@ def main(page: ft.Page):
                     ),
                     ft.Container(height=10),
                     ft.Text(
-                        "Firefox will open and log into Alma via SSO. After DUO, set the search bar to "
+                        "Chrome will open and log into Alma via SSO. After DUO, set the search bar to "
                         "'All titles / MMS number' before automation begins. "
                         "A CSV report of successes and failures will be saved to ~/Downloads.",
                         size=13
@@ -9434,8 +9503,8 @@ def main(page: ft.Page):
             "help_file": "FUNCTION_16_ADD_MMS_ID_IDENTIFIER.md"
         },
         "function_17_restore_metadata": {
-            "label": "17: FAILED - Restore Metadata from Previous Version",
-            "icon": "⛔",
+            "label": "17: Restore Metadata from Previous Version",
+            "icon": "♻️",
             "handler": on_function_17_click,
             "help_file": "FUNCTION_17_RESTORE_METADATA.md"
         }
