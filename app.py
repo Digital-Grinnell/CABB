@@ -343,10 +343,11 @@ class AlmaBibEditor:
                     mms_id_column = reader.fieldnames[0]
                     self.log(f"No 'mms_id' column found, using first column: {mms_id_column}", logging.WARNING)
                 
-                # Read MMS IDs
+                # Read MMS IDs, skipping comment lines (starting with #)
                 for row in reader:
                     mms_id = row.get(mms_id_column, '').strip()
-                    if mms_id:
+                    # Skip empty lines and comment lines (starting with #)
+                    if mms_id and not mms_id.startswith('#'):
                         mms_ids.append(mms_id)
             
             self.set_members = mms_ids
@@ -6589,17 +6590,23 @@ For questions, consult the references above or contact your Alma administrator.
         """
         Function 17: Restore bibliographic metadata from previous versions via Selenium.
 
+        Status: Successfully navigating to View Versions panel (milestone: 2026-03-17)
+
         Note: The Alma REST API does not expose a /bibs/{mms_id}/versions endpoint
         (returns HTTP 404 for all institution environments). This function therefore
         automates the MDE manual process via Selenium/Chrome:
-          Record Actions > View Related Data > View Versions > Restore
+          View Related Data > View Versions > Restore
 
         For each MMS ID, opens Chrome, logs into Alma, then:
-        1. Searches for the record under 'All titles / MMS number'
-        2. Opens the record in the Metadata Editor (MDE)
-        3. Navigates to Record Actions > View Related Data > View Versions
-        4. Clicks Restore on the most recent prior (non-current) version
-        5. Writes a CSV audit report with per-record outcomes
+        1. Searches for the record under 'All titles / MMS ID'
+        2. Clicks into the bib record from search results
+        3. Opens the record in the Metadata Editor (MDE)
+        4. Navigates to: View Related Data > View Versions (Angular Material menu)
+        5. Clicks Restore on the most recent prior (non-current) version
+        6. Writes a CSV audit report with per-record outcomes
+
+        Technical: Menu dropdown renders in parent frame; only switch to yards_iframe
+        for interacting with the versions panel content itself.
 
         Prerequisite: ChromeDriver must be installed (brew install --cask chromedriver).
 
@@ -6665,6 +6672,8 @@ For questions, consult the references above or contact your Alma administrator.
                 else:
                     failed_count += 1
                     self.log(f"  ✗ {msg}", logging.ERROR)
+                    self.log("Stopping batch processing due to failure", logging.ERROR)
+                    break
 
                 if progress_callback:
                     progress_callback(idx, total)
@@ -6822,7 +6831,7 @@ For questions, consult the references above or contact your Alma administrator.
 
         After login the user must configure the Alma search bar:
           Search type  (left dropdown):   All titles
-          Search field (middle dropdown): MMS number
+          Search field (middle dropdown): MMS ID
         This is validated before returning.
         """
         from selenium.webdriver.common.action_chains import ActionChains
@@ -6852,7 +6861,7 @@ For questions, consult the references above or contact your Alma administrator.
                 self.log("")
                 self.log("After DUO approval, configure the Alma search bar:")
                 self.log("   • Search type  (left dropdown):   All titles")
-                self.log("   • Search field (middle dropdown): MMS number")
+                self.log("   • Search field (middle dropdown): MMS ID")
                 self.log("   • Leave the search box EMPTY")
                 self.log("")
                 self.log("Automation begins in 45 seconds...")
@@ -6872,7 +6881,7 @@ For questions, consult the references above or contact your Alma administrator.
             self.log("")
             self.log("4. ⚙️  CONFIGURE THE SEARCH BAR (at top of page):")
             self.log("   • Search type  (left dropdown):   All titles")
-            self.log("   • Search field (middle dropdown): MMS number")
+            self.log("   • Search field (middle dropdown): MMS ID")
             self.log("   • Leave the search box EMPTY")
             self.log("")
             self.log("5. Automation begins in 60 seconds...")
@@ -6915,7 +6924,7 @@ For questions, consult the references above or contact your Alma administrator.
             self.log("Recovered from Microsoft auth state error. Waiting 30 seconds...", logging.WARNING)
             time.sleep(30)
 
-        # Validate search config: All titles / MMS number
+        # Validate search config: All titles / MMS ID
         self.log("Validating search configuration...", logging.DEBUG)
         try:
             config = driver.execute_script("""
@@ -6929,15 +6938,15 @@ For questions, consult the references above or contact your Alma administrator.
                 return { hasAllTitles: hasAllTitles, hasMmsNumber: hasMmsNumber };
             """)
             if config.get('hasAllTitles') and config.get('hasMmsNumber'):
-                self.log("  ✓ Search: All titles / MMS number", logging.DEBUG)
+                self.log("  ✓ Search: All titles / MMS ID", logging.DEBUG)
             else:
                 missing = []
                 if not config.get('hasAllTitles'):
                     missing.append("Search type: 'All titles'")
                 if not config.get('hasMmsNumber'):
-                    missing.append("Search field: 'MMS number'")
+                    missing.append("Search field: 'MMS ID'")
                 self.log(f"  ⚠️ Search config may not be set: {', '.join(missing)}", logging.WARNING)
-                self.log("  Proceeding — ensure search is set to: All titles / MMS number", logging.WARNING)
+                self.log("  Proceeding — ensure search is set to: All titles / MMS ID", logging.WARNING)
         except Exception as e:
             self.log(f"  Could not validate search config: {e}", logging.DEBUG)
 
@@ -7039,7 +7048,7 @@ For questions, consult the references above or contact your Alma administrator.
         Navigate to an Alma bib record in the MDE and restore its previous version.
 
         Steps:
-        1. Search for MMS ID under 'All titles / MMS number'
+        1. Search for MMS ID under 'All titles / MMS ID'
         2. Click on the bib record from search results
         3. Click 'Edit in MD Editor' to open the MDE
         4. In MDE: Record Actions > View Related Data > View Versions
@@ -7048,16 +7057,20 @@ For questions, consult the references above or contact your Alma administrator.
         import time
 
         # Step 1: Search for this MMS ID using the existing helper
+        print(f"\n=== Processing MMS ID: {mms_id} ===")
+        print(f"Step 1: Searching for record...")
         self.log(f"  → Searching for {mms_id}...", logging.DEBUG)
         self._search_for_representation(driver, mms_id)
 
         # Step 2: Click into the bib record result
+        print(f"Step 2: Opening bib record...")
         self.log(f"  → Opening bib record...", logging.DEBUG)
         ok, msg = self._click_bib_record_from_search(driver, mms_id)
         if not ok:
             return False, msg
 
         # Step 3: Click 'Edit in MD Editor'
+        print(f"Step 3: Opening in Metadata Editor...")
         self.log(f"  → Opening in MDE...", logging.DEBUG)
         ok, msg = self._click_edit_in_metadata_editor(driver, mms_id)
         if not ok:
@@ -7066,26 +7079,75 @@ For questions, consult the references above or contact your Alma administrator.
         # MDE may open in a new tab — switch to it if so
         if len(driver.window_handles) > 1:
             driver.switch_to.window(driver.window_handles[-1])
+            print(f"Switched to MDE tab")
             self.log(f"  → Switched to MDE tab", logging.DEBUG)
             time.sleep(2)
 
         # Alma may host the MDE inside an iframe (yardsNgWrapper); enter it before toolbar actions.
         self._switch_to_mde_iframe_if_present(driver)
 
+        # Wait for MDE Angular app to finish loading (loading spinner should disappear)
+        print(f"  Waiting for MDE to finish loading...")
+        self.log(f"  → Waiting for MDE to finish loading...", logging.DEBUG)
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.common.by import By
+        
+        try:
+            # Wait for loading spinner to disappear (up to 30 seconds)
+            WebDriverWait(driver, 30).until(
+                EC.invisibility_of_element_located((By.ID, "__loading__"))
+            )
+            print(f"  ✓ MDE finished loading")
+            self.log(f"  ✓ MDE finished loading", logging.DEBUG)
+        except Exception as e:
+            # If we can't find the loading spinner, log but continue (may already be loaded)
+            self.log(f"  ⚠️ Could not detect loading completion: {e}", logging.WARNING)
+            time.sleep(3)  # Fallback wait
+        
         # Optional manual capture mode for collecting real user clicks in the MDE UI.
         # Enable with: FN17_MANUAL_CAPTURE=1
         if os.getenv("FN17_MANUAL_CAPTURE", "0").strip().lower() in ("1", "true", "yes", "on"):
             return self._capture_manual_fn17_clicks(driver, mms_id)
 
         # Step 4: Navigate to View Versions via Record Actions menu
+        print(f"Step 4: Navigating to View Versions...")
         self.log(f"  → Navigating to View Versions...", logging.DEBUG)
         ok, msg = self._open_view_versions_in_mde(driver, mms_id)
         if not ok:
             return False, msg
 
         # Step 5: Restore the previous version
+        print(f"Step 5: Restoring previous version...")
         self.log(f"  → Restoring previous version...", logging.DEBUG)
-        return self._restore_previous_version(driver, mms_id)
+        ok, msg = self._restore_previous_version(driver, mms_id)
+        
+        if not ok:
+            return False, msg
+        
+        # Step 6: Navigate back to Alma search page for next record
+        print(f"Step 6: Returning to search page for next record...")
+        self.log(f"  → Navigating back to search page...", logging.DEBUG)
+        try:
+            # After restore, Alma may close the MDE tab/window
+            # Check if we have multiple windows and close the MDE if it's still open
+            if len(driver.window_handles) > 1:
+                driver.close()  # Close current tab (MDE)
+                driver.switch_to.window(driver.window_handles[0])  # Switch back to main window
+                print(f"  Closed MDE tab, switched to main window")
+            
+            # Navigate to Alma home page (ready for next search)
+            driver.get("https://grinnell.alma.exlibrisgroup.com/mng/action/home.do")
+            time.sleep(2)
+            print(f"  ✓ Ready for next record")
+            self.log(f"  ✓ Returned to search page", logging.DEBUG)
+            
+        except Exception as e:
+            self.log(f"  ⚠️ Error navigating back: {e}", logging.WARNING)
+            # Even if navigation fails, the restore was successful
+            pass
+        
+        return ok, msg
 
         def _capture_manual_fn17_clicks(self, driver, mms_id: str) -> tuple[bool, str]:
                 """
@@ -7350,8 +7412,13 @@ For questions, consult the references above or contact your Alma administrator.
 
     def _open_view_versions_in_mde(self, driver, mms_id: str) -> tuple[bool, str]:
         """
-        In the Alma MDE toolbar, navigate:
-          Record Actions > View Related Data > View Versions
+        In the Alma MDE, navigate to View Versions panel:
+          View Related Data > View Versions
+
+        Key technical detail: The Angular Material dropdown menu renders in the 
+        PARENT frame context (not inside yards_iframe). Must stay in parent context
+        when clicking menu items. Only switch to yards_iframe later for interacting
+        with the versions panel content.
 
         Fails fast on any missing element to help debug the UI flow.
         Saves page to ~/Downloads on failure for manual inspection.
@@ -7365,114 +7432,245 @@ For questions, consult the references above or contact your Alma administrator.
 
         time.sleep(1)
 
-        # --- Step A: Find and click 'Record Actions' ---
+        # --- Step A: Click 'View Related Data' button to open dropdown ---
+        print(f"Looking for 'View Related Data' button...")
+        self.log(f"  → Finding 'View Related Data' button", logging.DEBUG)
+        
+        view_related_button = None
         try:
-            record_actions_btn = WebDriverWait(driver, 2).until(
-                EC.element_to_be_clickable((By.XPATH,
-                    "//button[contains(normalize-space(.), 'Record Actions')]"
-                ))
-            )
-            self.log(f"  ✓ Found 'Record Actions' button", logging.DEBUG)
-        except TimeoutException:
+            # First, find the span containing "View Related Data"
+            spans = driver.find_elements(By.XPATH, "//span[contains(@class, 'menu-label') and contains(., 'View Related Data')]")
+            if spans:
+                span = spans[0]
+                print(f"  Found span.menu-label with 'View Related Data'")
+                # Now get the parent button
+                try:
+                    view_related_button = span.find_element(By.XPATH, "./ancestor::button")
+                    print(f"  Found parent button")
+                except Exception as e:
+                    print(f"  Could not find parent button: {e}")
+                    # Try clicking the span itself as fallback
+                    view_related_button = span
+        except Exception as e:
+            print(f"  Could not find 'View Related Data': {e}")
+        
+        if not view_related_button:
             try:
-                debug_file = Path.home() / "Downloads" / f"fn17_step_A_record_actions_{mms_id}.html"
+                debug_file = Path.home() / "Downloads" / f"fn17_step_A_view_related_{mms_id}.html"
                 debug_file.write_text(driver.page_source, encoding='utf-8')
-                self.log(f"  ✗ FAIL: 'Record Actions' button not found — page: {debug_file}", logging.ERROR)
+                self.log(f"  ✗ FAIL: 'View Related Data' button not found — page: {debug_file}", logging.ERROR)
             except Exception:
                 pass
-            return False, f"Could not find 'Record Actions' button in MDE for {mms_id}"
-
+            return False, f"Could not find 'View Related Data' button for {mms_id}"
+        
+        # Now click the button using multiple strategies
+        print(f"Clicking 'View Related Data' button...")
+        clicked = False
+        
+        # Strategy 1: JavaScript click
         try:
-            record_actions_btn.click()
-        except Exception:
-            driver.execute_script("arguments[0].click();", record_actions_btn)
-        self.log(f"  ✓ Clicked Record Actions", logging.DEBUG)
-        time.sleep(0.5)
-
-        # --- Step B: Click 'View Related Data' from dropdown ---
-        try:
-            view_related = WebDriverWait(driver, 2).until(
-                EC.element_to_be_clickable((By.XPATH,
-                    "//*[contains(normalize-space(.), 'View Related Data')]"
-                ))
-            )
-            self.log(f"  ✓ Found 'View Related Data' menu item", logging.DEBUG)
-        except TimeoutException:
+            driver.execute_script("arguments[0].scrollIntoView(true);", view_related_button)
+            time.sleep(0.5)
+            driver.execute_script("arguments[0].click();", view_related_button)
+            print(f"  ✓ Clicked with JavaScript")
+            clicked = True
+        except Exception as e:
+            print(f"  JavaScript click failed: {e}")
+        
+        # Strategy 2: Regular Selenium click (if JavaScript failed)
+        if not clicked:
             try:
-                debug_file = Path.home() / "Downloads" / f"fn17_step_B_view_related_{mms_id}.html"
-                debug_file.write_text(driver.page_source, encoding='utf-8')
-                self.log(f"  ✗ FAIL: 'View Related Data' not found — page: {debug_file}", logging.ERROR)
-            except Exception:
-                pass
-            return False, f"Could not find 'View Related Data' menu item for {mms_id}"
-
-        try:
-            view_related.click()
-        except Exception:
-            driver.execute_script("arguments[0].click();", view_related)
+                view_related_button.click()
+                print(f"  ✓ Clicked with Selenium")
+                clicked = True
+            except Exception as e:
+                print(f"  Selenium click failed: {e}")
+        
+        if not clicked:
+            return False, f"Could not click 'View Related Data' button for {mms_id}"
+        
+        print(f"Waiting for dropdown to expand...")
+        time.sleep(3)  # Wait for dropdown animation
         self.log(f"  ✓ Clicked View Related Data", logging.DEBUG)
-        time.sleep(1)  # Wait for submenu to expand
 
-        # --- Step C: Click 'View Versions' from submenu ---
-        try:
-            view_versions = WebDriverWait(driver, 2).until(
-                EC.element_to_be_clickable((By.XPATH,
-                    "//*[contains(normalize-space(.), 'View Versions') or normalize-space(.) = 'Versions']"
-                ))
-            )
-            self.log(f"  ✓ Found 'View Versions' menu item", logging.DEBUG)
-        except TimeoutException:
+        # --- Step B: Stay in current iframe context to find dropdown items ---
+        # The dropdown menu should now be visible in the current iframe where the MDE is loaded
+        print(f"Looking for dropdown menu in current iframe context")
+        self.log("  ℹ️ Staying in current iframe context for dropdown menu", logging.DEBUG)
+
+        # --- Step C: Click 'View Versions' from dropdown ---
+        print(f"Looking for: View Versions menu item")
+        view_versions = None
+        
+        # Try multiple strategies to find the View Versions menu item
+        # Based on actual HTML: <button id="SubMenuItem_menu_records_viewRelatedData_viewVersions">
+        #   containing <span class="menu-label"> View Versions  </span>
+        
+        strategies = [
+            # Strategy 1: Direct ID lookup
+            ("ID", By.ID, "SubMenuItem_menu_records_viewRelatedData_viewVersions"),
+            # Strategy 2: Button by name attribute
+            ("name attribute", By.CSS_SELECTOR, "button[name='menu.records.viewRelatedData.viewVersions']"),
+            # Strategy 3: mat-menu-item button containing 'View Versions' text
+            ("mat-menu-item", By.XPATH, "//button[@mat-menu-item and contains(., 'View Versions')]"),
+            # Strategy 4: span.menu-label with View Versions (handles whitespace)
+            ("span.menu-label", By.XPATH, "//span[contains(@class, 'menu-label') and contains(., 'View Versions')]"),
+            # Strategy 5: Parent button of the span.menu-label
+            ("parent button", By.XPATH, "//span[contains(@class, 'menu-label') and contains(., 'View Versions')]/ancestor::button"),
+        ]
+        
+        for idx, (desc, by_method, selector) in enumerate(strategies, 1):
+            try:
+                print(f"  Strategy {idx} ({desc})...")
+                view_versions = WebDriverWait(driver, 3).until(
+                    EC.element_to_be_clickable((by_method, selector))
+                )
+                if view_versions:
+                    print(f"Found it ✓ ({desc})")
+                    self.log(f"  ✓ Found 'View Versions' using {desc}", logging.DEBUG)
+                    break
+            except TimeoutException:
+                continue
+        
+        # If we didn't find 'View Versions', debug and fail
+        if not view_versions:
+            print(f"Failed to find 'View Versions' - saving debug info...")
             try:
                 debug_file = Path.home() / "Downloads" / f"fn17_step_C_view_versions_{mms_id}.html"
                 debug_file.write_text(driver.page_source, encoding='utf-8')
                 self.log(f"  ✗ FAIL: 'View Versions' not found — page: {debug_file}", logging.ERROR)
-            except Exception:
-                pass
+                
+                # Try to list relevant Angular Material and menu elements
+                try:
+                    # Look for mat-menu-item buttons
+                    mat_items = driver.find_elements(By.CSS_SELECTOR, "button[mat-menu-item]")
+                    print(f"  Found {len(mat_items)} mat-menu-item buttons")
+                    for elem in mat_items[:10]:
+                        elem_id = elem.get_attribute("id") or "no-id"
+                        text = elem.text.strip()[:60] if elem.text else ""
+                        print(f"    - id={elem_id}: '{text}'")
+                    
+                    # Look for span.menu-label elements
+                    menu_labels = driver.find_elements(By.CSS_SELECTOR, "span.menu-label")
+                    print(f"  Found {len(menu_labels)} span.menu-label elements")
+                    for elem in menu_labels[:10]:
+                        text = elem.text.strip() if elem.text else ""
+                        print(f"    - '{text}'")
+                        
+                except Exception as e:
+                    print(f"  Could not enumerate menu elements: {e}")
+                
+                # Also enumerate frames for debugging
+                self.log(f"  ℹ️ Attempting to capture all frame info...", logging.DEBUG)
+                try:
+                    all_frames = driver.find_elements(By.TAG_NAME, "iframe")
+                    self.log(f"  ℹ️ Found {len(all_frames)} iframe(s) on page", logging.DEBUG)
+                    print(f"  Found {len(all_frames)} iframe(s) on page")
+                    for idx, frame in enumerate(all_frames):
+                        frame_id = frame.get_attribute("id") or f"unnamed_{idx}"
+                        self.log(f"    Frame {idx}: id='{frame_id}'", logging.DEBUG)
+                except Exception as frame_err:
+                    self.log(f"  ⚠️ Frame enumeration failed: {frame_err}", logging.DEBUG)
+            except Exception as debug_err:
+                self.log(f"  ⚠️ Debug capture failed: {debug_err}", logging.DEBUG)
             return False, f"Could not find 'View Versions' menu item for {mms_id}"
 
         try:
             view_versions.click()
         except Exception:
             driver.execute_script("arguments[0].click();", view_versions)
+        print(f"Clicked 'View Versions'")
         self.log(f"  ✓ Clicked View Versions", logging.DEBUG)
+        
         time.sleep(1)
         return True, "Opened View Versions panel"
 
     def _restore_previous_version(self, driver, mms_id: str) -> tuple[bool, str]:
         """
-        In the Alma MDE View Versions panel, click 'Restore' on the most recent
-        prior (non-current) version. Fails fast with clear diagnostics.
+        In the Alma MDE View Versions panel, click 'Restore' on the most recent version
+        that contains valid bibliographic metadata.
+        
+        Version Selection Logic:
+        - Examines versions from newest to oldest
+        - Selects the first version containing "Subjects:" field (plural with colon)
+        - Versions without "Subjects:" are skipped (incomplete bibliographic metadata)
+        
+        Note: The View Versions panel loads dynamically with a progress spinner.
+        Must wait for content to fully load before trying to find Restore buttons.
         """
         import time
         from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.common.exceptions import TimeoutException
         from pathlib import Path
 
-        time.sleep(1)
+        print(f"Waiting for View Versions panel to load...")
+        time.sleep(3)  # Initial wait for panel to start loading
 
         # Try switching to yards_iframe if it exists (Alma may render View Versions in an iframe)
+        print(f"Checking for iframe context...")
         try:
             iframe = driver.find_element(By.CSS_SELECTOR, "iframe#yards_iframe, iframe[id*='yards']")
             driver.switch_to.frame(iframe)
+            print(f"Switched to yards_iframe ✓")
             self.log("  ✓ Switched to yards_iframe", logging.DEBUG)
-            time.sleep(0.5)
+            time.sleep(1)
         except Exception:
+            print(f"No iframe found, searching in current context")
             self.log("  ℹ️ yards_iframe not found; searching in current context", logging.DEBUG)
 
-        # Look for Restore buttons - try direct text match first
+        # Wait for any loading spinners to disappear
+        print(f"Waiting for any loading spinners to finish...")
+        try:
+            # Common spinner patterns in Alma
+            spinner_selectors = [
+                "div.spinner", "div.loading", ".lds-spinner", 
+                "*[class*='spinner']", "*[class*='loading']",
+                "md-progress-circular"
+            ]
+            for selector in spinner_selectors:
+                try:
+                    spinners = driver.find_elements(By.CSS_SELECTOR, selector)
+                    if spinners:
+                        print(f"  Found spinner ({selector}), waiting for it to disappear...")
+                        WebDriverWait(driver, 10).until(
+                            EC.invisibility_of_element_located((By.CSS_SELECTOR, selector))
+                        )
+                        print(f"  Spinner disappeared ✓")
+                        break
+                except Exception:
+                    continue
+        except Exception as e:
+            self.log(f"  ℹ️ No spinner found or already gone: {e}", logging.DEBUG)
+        
+        # Additional wait after spinner disappears for content to render
+        time.sleep(2)
+        
+        # Look for "Restore Metadata" buttons (actual button elements only)
+        print(f"Looking for: 'Restore Metadata' buttons in View Versions panel")
         all_restore_btns = []
-        for text in ["Restore", "Restore Metadata", "Restore this version"]:
-            try:
-                elems = driver.find_elements(
-                    By.XPATH,
-                    f"//*[normalize-space(.)='{text}' or normalize-space(text())='{text}']"
-                )
-                visible = [e for e in elems if e.is_displayed()]
-                if visible:
-                    self.log(f"  ✓ Found {len(visible)} '{text}' button(s)", logging.DEBUG)
-                    all_restore_btns.extend(visible)
-                    break
-            except Exception:
-                continue
+        
+        try:
+            print(f"  Searching for button elements with text 'Restore Metadata'...")
+            # Search specifically for BUTTON elements with "Restore Metadata" text
+            # This prevents finding other elements that might contain "Restore"
+            elements = WebDriverWait(driver, 10).until(
+                EC.presence_of_all_elements_located((By.XPATH,
+                    "//button[contains(normalize-space(.), 'Restore Metadata')]"
+                ))
+            )
+            # Filter for visible and enabled button elements only
+            visible = [e for e in elements if e.is_displayed() and e.is_enabled() and e.tag_name.lower() == 'button']
+            if visible:
+                print(f"Found ✓ ({len(visible)} button(s))")
+                self.log(f"  ✓ Found {len(visible)} 'Restore Metadata' button(s)", logging.DEBUG)
+                all_restore_btns = visible
+        except TimeoutException:
+            print(f"  'Restore Metadata' buttons not found")
+            self.log(f"  ⚠️ 'Restore Metadata' buttons not found", logging.DEBUG)
+        except Exception as e:
+            self.log(f"  ⚠️ Error searching for 'Restore Metadata' buttons: {e}", logging.DEBUG)
 
         if not all_restore_btns:
             try:
@@ -7483,16 +7681,97 @@ For questions, consult the references above or contact your Alma administrator.
                 pass
             return False, f"No 'Restore' buttons found in View Versions panel for {mms_id}"
 
-        # Click the first (most recent) Restore button
-        restore_btn = all_restore_btns[0]
-        self.log(f"  ✓ Clicking Restore button...", logging.DEBUG)
-        driver.execute_script("arguments[0].scrollIntoView(true);", restore_btn)
-        time.sleep(0.3)
-        try:
-            restore_btn.click()
-        except Exception:
-            driver.execute_script("arguments[0].click();", restore_btn)
-        time.sleep(1)
+        # Select the correct Restore button based on version metadata
+        # Rule: Choose the most recent version that contains "Subjects:" field
+        print(f"Examining {len(all_restore_btns)} version(s) to find the correct one to restore...")
+        self.log(f"  ℹ️ Evaluating {len(all_restore_btns)} version(s) for valid metadata...", logging.DEBUG)
+        
+        clicked_restore = False
+        for idx, btn in enumerate(all_restore_btns):
+            try:
+                # Traverse up the DOM to find the version container
+                # Look for the table with class="resultContainerStyle" which wraps each version
+                version_container = btn
+                max_levels = 15  # Safety limit
+                for level in range(max_levels):
+                    version_container = version_container.find_element(By.XPATH, "..")
+                    # Check if we've reached the resultContainerStyle table
+                    try:
+                        if 'resultContainerStyle' in version_container.get_attribute('class'):
+                            break
+                    except:
+                        pass
+                
+                # Get all text content from this version container
+                container_text = version_container.text
+                
+                # Debug: log what we found
+                if container_text:
+                    preview = container_text.replace('\n', ' ')[:150]
+                    print(f"  Version {idx + 1} text preview: {preview}...")
+                    self.log(f"  Version {idx + 1} preview: {preview}...", logging.DEBUG)
+                
+                # Check if this version has "Subjects:" field (the key validation criterion)
+                # Valid bibliographic records have "Subjects:" (plural with colon)
+                has_subjects = "Subjects:" in container_text
+                
+                if has_subjects:
+                    print(f"  Version {idx + 1}: ✓ VALID (has 'Subjects:' field)")
+                    self.log(f"  ✓ Version {idx + 1} is valid: has 'Subjects:' field", logging.DEBUG)
+                    
+                    # Click this button IMMEDIATELY while the element reference is fresh
+                    print(f"Clicking Restore button for version {idx + 1}...")
+                    self.log(f"  ✓ Clicking Restore button for version {idx + 1}...", logging.DEBUG)
+                    
+                    # Scroll to the button
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
+                    time.sleep(0.5)
+                    
+                    # Try multiple click strategies
+                    try:
+                        # Strategy 1: Regular click
+                        btn.click()
+                        print(f"  ✓ Clicked with regular click()")
+                    except Exception as e1:
+                        print(f"  Regular click failed: {e1}")
+                        try:
+                            # Strategy 2: JavaScript click
+                            driver.execute_script("arguments[0].click();", btn)
+                            print(f"  ✓ Clicked with JavaScript click()")
+                        except Exception as e2:
+                            print(f"  JavaScript click failed: {e2}")
+                            # Strategy 3: Move to element and click
+                            from selenium.webdriver.common.action_chains import ActionChains
+                            actions = ActionChains(driver)
+                            actions.move_to_element(btn).click().perform()
+                            print(f"  ✓ Clicked with ActionChains")
+                    
+                    clicked_restore = True
+                    time.sleep(1)
+                    break  # Found and clicked the correct version, stop searching
+                else:
+                    print(f"  Version {idx + 1}: ✗ SKIP (no 'Subjects:' field)")
+                    self.log(f"  ✗ Version {idx + 1} skipped: no 'Subjects:' field", logging.DEBUG)
+                    
+            except Exception as e:
+                self.log(f"  ⚠️ Error examining version {idx + 1}: {e}", logging.DEBUG)
+                continue
+        
+        # Fallback: if no version was clicked, click the first button
+        if not clicked_restore:
+            print(f"  ⚠️ No version has 'Subjects:' field — using first version as fallback")
+            self.log(f"  ⚠️ No version has 'Subjects:' field — clicking first restore button", logging.WARNING)
+            btn = all_restore_btns[0]
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
+            time.sleep(0.5)
+            try:
+                btn.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", btn)
+            time.sleep(1)
+        
+        print(f"Restore button clicked ✓")
+        self.log(f"  ✓ Restore button clicked", logging.DEBUG)
 
         # Handle confirmation dialog (if one appears)
         confirmed = False
@@ -7515,8 +7794,12 @@ For questions, consult the references above or contact your Alma administrator.
                 continue
 
         if not confirmed:
-            self.log(f"  ℹ️ No confirmation dialog found — checking if restore applied", logging.DEBUG)
+            self.log(f"  ℹ️ No confirmation dialog found — restore should apply automatically", logging.DEBUG)
 
+        # Wait for restore to complete (saves automatically in Alma)
+        time.sleep(2)
+        
+        print(f"✓ Metadata restored for {mms_id}")
         return True, f"Restored previous version for {mms_id}"
     
     def _get_alma_domain(self) -> str:
@@ -9340,7 +9623,7 @@ def main(page: ft.Page):
                     ft.Container(height=10),
                     ft.Text(
                         "Chrome will open and log into Alma via SSO. After DUO, set the search bar to "
-                        "'All titles / MMS number' before automation begins. "
+                        "'All titles / MMS ID' before automation begins. "
                         "A CSV report of successes and failures will be saved to ~/Downloads.",
                         size=13
                     ),

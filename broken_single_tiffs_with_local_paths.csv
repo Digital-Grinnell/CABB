@@ -1,15 +1,18 @@
 MMS ID,S3 Path,Local Path
+# Corrected manually during debug operations
 # 991011532687104641,01GCL_INST/storage/alma/06/D5/0B/1F/98/88/25/7C/0B/6D/9A/E1/49/B5/1B/91/grinnell_4938_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_4938_OBJ.tiff
-991011532687204641,01GCL_INST/storage/alma/24/C5/CD/B9/9C/37/9A/09/3F/CB/88/AC/3D/D0/64/CB/grinnell_4937_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_4937_OBJ.tiff
+# 991011532687204641,01GCL_INST/storage/alma/24/C5/CD/B9/9C/37/9A/09/3F/CB/88/AC/3D/D0/64/CB/grinnell_4937_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_4937_OBJ.tiff
 # 991011532687304641,01GCL_INST/storage/alma/C7/5F/4B/93/82/99/CC/0A/FD/45/35/0B/C2/90/C8/DA/grinnell_4936_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_4936_OBJ.tiff
+# Corrected via automation during debug operations!
 # 991011532687404641,01GCL_INST/storage/alma/70/14/A2/1C/A3/98/32/F6/B8/BE/EE/87/3F/7F/CB/8A/grinnell_4935_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_4935_OBJ.tiff
 # 991011532687504641,01GCL_INST/storage/alma/3F/2C/A8/7D/A1/F3/40/90/D4/B5/BD/2D/23/59/C4/72/grinnell_3591_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_3591_OBJ.tiff
 # 991011532691804641,01GCL_INST/storage/alma/4A/5B/AF/94/00/76/5C/94/FA/A7/70/39/47/F9/D0/B9/grinnell_5570_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_5570_OBJ.tiff
 # 991011532691904641,01GCL_INST/storage/alma/C9/E9/C9/01/28/12/38/78/13/A5/5A/5B/9F/25/2D/2A/grinnell_5568_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_5568_OBJ.tiff
 # 991011532692004641,01GCL_INST/storage/alma/BA/25/25/1D/32/C5/AE/64/89/CF/A8/A6/35/1F/52/97/grinnell_5567_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_5567_OBJ.tiff
 # 991011532692104641,01GCL_INST/storage/alma/DB/36/24/FC/4D/F7/35/E5/B7/C3/5D/17/A6/9D/11/3F/grinnell_5566_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_5566_OBJ.tiff
-# 991011532692204641,01GCL_INST/storage/alma/6A/FD/DF/7B/4D/C9/BA/3F/96/DD/AB/AD/B3/FC/60/F0/grinnell_5564_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_5564_OBJ.tiff
+# 91011532692204641,01GCL_INST/storage/alma/6A/FD/DF/7B/4D/C9/BA/3F/96/DD/AB/AD/B3/FC/60/F0/grinnell_5564_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_5564_OBJ.tiff
 # 991011532692304641,01GCL_INST/storage/alma/76/9F/04/2E/75/FC/32/3C/9B/1F/42/B6/FF/14/1E/25/grinnell_5562_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_5562_OBJ.tiff
+# 24 of 95 corrected using Function 17 on March 17
 # 991011532692404641,01GCL_INST/storage/alma/A5/82/70/3F/BF/31/3B/8A/E3/48/23/E3/D8/14/41/59/grinnell_5561_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_5561_OBJ.tiff
 # 991011532692504641,01GCL_INST/storage/alma/40/E7/86/33/03/12/42/A8/B8/6D/6A/88/10/BA/4A/B8/grinnell_5558_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_5558_OBJ.tiff
 # 991011532692604641,01GCL_INST/storage/alma/C6/B3/30/20/EC/ED/AF/37/CA/10/9B/87/B4/64/31/CE/grinnell_5556_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_5556_OBJ.tiff
@@ -34,6 +37,10 @@ MMS ID,S3 Path,Local Path
 # 991011532694504641,01GCL_INST/storage/alma/18/DB/E1/A7/F7/B0/9D/08/04/62/9B/CD/31/FA/CA/A5/grinnell_5262_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_5262_OBJ.tiff
 # 991011532694604641,01GCL_INST/storage/alma/10/DD/28/CA/0F/4B/BB/2D/4D/E4/69/41/27/C4/4E/FF/grinnell_5261_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_5261_OBJ.tiff
 # 991011532694704641,01GCL_INST/storage/alma/08/7E/EA/B3/92/B6/97/2D/75/C9/AC/69/35/4F/24/30/grinnell_5259_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_5259_OBJ.tiff
+# Badly corrupted so Function 17 did not work, but corrected manually on March 18
+# 991011589480304641,01GCL_INST/storage/alma/D8/70/17/64/57/B2/65/A4/3F/AC/A7/1C/13/E3/EF/79/grinnell_12271_OBJ.tiff,/Volumes/Acasis1TB/phpp-dcl/OBJ/grinnell_12271_OBJ.tiff
+# 991011589480504641,01GCL_INST/storage/alma/02/06/53/32/86/C8/B2/70/3A/D6/D3/5E/E5/9D/1E/61/grinnell_12268_OBJ.tiff,/Volumes/Acasis1TB/phpp-dcl/OBJ/grinnell_12268_OBJ.tiff
+# Fixed by CABB 17 on March 18
 # 991011532694804641,01GCL_INST/storage/alma/8B/2B/16/D3/42/8C/4E/60/C5/B2/81/8D/F6/8E/06/39/grinnell_5258_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_5258_OBJ.tiff
 # 991011532694904641,01GCL_INST/storage/alma/01/CC/17/C1/4D/60/B5/5B/E7/0B/A6/94/72/21/8D/45/grinnell_5234_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_5234_OBJ.tiff
 # 991011532695004641,01GCL_INST/storage/alma/AF/C4/4A/62/DA/3C/5E/64/1A/BB/B4/E4/DC/4D/D8/C4/grinnell_5233_OBJ.tiff,/Volumes/exports/college-buildings/OBJ/grinnell_5233_OBJ.tiff
@@ -102,6 +109,4 @@ MMS ID,S3 Path,Local Path
 # 991011546753304641,01GCL_INST/storage/alma/D9/28/5F/CD/E0/1D/28/E0/BA/FE/FD/B1/09/DE/7C/C7/grinnell_18458_OBJ.tiff,/Volumes/exports/postcards/grinnell_18458_OBJ.tiff
 # 991011546753404641,01GCL_INST/storage/alma/A2/E9/2A/65/C2/F1/45/8B/B5/CD/27/60/3B/8E/CF/9D/grinnell_18457_OBJ.tiff,/Volumes/exports/postcards/grinnell_18457_OBJ.tiff
 # 991011546753504641,01GCL_INST/storage/alma/55/36/DC/4C/D6/2E/45/C4/2A/80/E6/45/08/DE/3D/D0/grinnell_18456_OBJ.tiff,/Users/mcfatem/Library/CloudStorage/OneDrive-GrinnellCollege/postcards/postcards/grinnell_18456_OBJ.tiff
-# 991011546753704641,01GCL_INST/storage/alma/17/AE/71/23/A5/1F/C9/42/55/58/EA/0A/14/C0/67/66/grinnell_18454_OBJ.tiff,/Volumes/exports/postcards/grinnell_18454_OBJ.tiff
-# 991011589480304641,01GCL_INST/storage/alma/D8/70/17/64/57/B2/65/A4/3F/AC/A7/1C/13/E3/EF/79/grinnell_12271_OBJ.tiff,/Volumes/Acasis1TB/phpp-dcl/OBJ/grinnell_12271_OBJ.tiff
-# 991011589480504641,01GCL_INST/storage/alma/02/06/53/32/86/C8/B2/70/3A/D6/D3/5E/E5/9D/1E/61/grinnell_12268_OBJ.tiff,/Volumes/Acasis1TB/phpp-dcl/OBJ/grinnell_12268_OBJ.tiff
+#991011546753704641,01GCL_INST/storage/alma/17/AE/71/23/A5/1F/C9/42/55/58/EA/0A/14/C0/67/66/grinnell_18454_OBJ.tiff,/Volumes/exports/postcards/grinnell_18454_OBJ.tiff
