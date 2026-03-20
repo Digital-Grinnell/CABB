@@ -9648,6 +9648,68 @@ def main(page: ft.Page):
 
         page.open(warning_dialog)
     
+    def on_function_18_click(e):
+        """Handle Function 18: Identify Single TIFF Objects"""
+        # Determine if batch or single mode
+        is_batch = editor.set_members and len(editor.set_members) > 0
+        
+        if not is_batch:
+            # Single record mode
+            update_status("This function requires a set (batch mode only)", True)
+            add_log_message("⚠️ Function 18 requires a set to be loaded")
+            return
+        
+        # Batch mode
+        mms_ids_to_process = editor.set_members
+        
+        # Get output filename with timestamp
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f"single_tiff_objects_{timestamp}.csv"
+        
+        add_log_message(f"Starting single TIFF object identification for {len(mms_ids_to_process)} record(s)")
+        add_log_message(f"Output file: {output_file}")
+        update_status(f"Identifying single TIFF objects in {len(mms_ids_to_process)} record(s)...", False)
+        
+        # Show progress bar for batch processing
+        set_progress_bar.visible = True
+        set_progress_bar.value = 0
+        set_progress_text.visible = True
+        set_progress_text.value = f"Processing: 0/{len(mms_ids_to_process)} records"
+        page.update()
+        
+        def progress_update(current, total):
+            progress = current / total
+            set_progress_bar.value = progress
+            set_progress_text.value = f"Processing: {current}/{total} records ({progress*100:.1f}%)"
+            status_text.value = f"Identifying single TIFFs: {current}/{total} records ({progress*100:.1f}%)"
+            page.update()
+        
+        # Identify single TIFF objects
+        storage.record_function_usage("function_18_identify_single_tiff")
+        success, message = editor.identify_single_tiff_objects(
+            mms_ids_to_process,
+            output_file=output_file,
+            progress_callback=progress_update,
+            create_jpg=False  # Just identify, don't create JPGs
+        )
+        
+        # Hide progress bar
+        set_progress_bar.visible = False
+        set_progress_text.visible = False
+        page.update()
+        
+        update_status(message, not success)
+        if success:
+            # Auto-populate Set ID field with output file path
+            set_id_input.value = output_file
+            add_log_message(f"📋 Output file path copied to Set ID field")
+            page.update()
+            
+            add_log_message("Single TIFF object identification complete")
+            add_log_message("💡 Tip: This CSV lists all records with exactly one TIFF representation (no JPG)")
+            add_log_message("💡 Use this to identify records that may need JPG derivatives added")
+    
     # Function definitions with metadata
     # Active functions - frequently used
     active_functions = [
@@ -9663,7 +9725,8 @@ def main(page: ft.Page):
         "function_14b_upload_thumbnails",
         "function_15_analyze_identifier_match",
         "function_16_add_mms_id_identifier",
-        "function_17_restore_metadata"
+        "function_17_restore_metadata",
+        "function_18_identify_single_tiff"
     ]
     
     # Inactive functions - less frequently used
@@ -9741,7 +9804,7 @@ def main(page: ft.Page):
             "label": "11: Prepare TIFF/JPG Representations",
             "icon": "🖼️",
             "handler": on_function_11_click,
-            "help_file": "FUNCTION_11_IDENTIFY_SINGLE_TIFF.md"
+            "help_file": "FUNCTION_11_PREPARE_TIFF_JPG.md"
         },
         "function_11b_upload_jpg": {
             "label": "11b: Upload JPG Files (DISABLED - Selenium abandoned)",
@@ -9790,6 +9853,12 @@ def main(page: ft.Page):
             "icon": "♻️",
             "handler": on_function_17_click,
             "help_file": "FUNCTION_17_RESTORE_METADATA.md"
+        },
+        "function_18_identify_single_tiff": {
+            "label": "18: Identify Single TIFF Objects",
+            "icon": "🔍",
+            "handler": on_function_18_click,
+            "help_file": "FUNCTION_18_IDENTIFY_SINGLE_TIFF.md"
         }
     }
     
