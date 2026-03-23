@@ -1,0 +1,24 @@
+Hi Mark - we recently started using the API for a separate Alma-D workflow and I have attached a copy of the spec. To populate the digital file you have to put the file in s3 first and then reference the file name in the payload of the API call. Details in the spec. (FYI I don't technically script things, but I figure it out with Postman and write up the spec for our developer). 
+
+To use the Digital Uploader, you have to create an Alma Import Profile for type 'Discovery.' If you want the existing Alma bib to remained unchanged, you have to have a merge rule in the Alma Metadata Editor that tells Alma to keep all the local data and not do anything with the incoming bib data. You'd configure the Import Profile 'match' tab to look similar to the screenshot below.  The merge rule for this use case is just: 
+
+rule "For vendor loads where we want to prefer our local record"
+  when
+       merge
+  then
+end
+
+We are using MARC for everything but for the merge rule I would image the DC version looks the same as above. 
+
+I hope this helps. FYI I have a 'fake' record in our Primo VE production to help make sure the Viewers are configured correctly and I can verify how labels/notes display: https://hollis.harvard.edu/permalink/01HVD_INST/1872n68/alma99155256408203941.   We use different viewers for PDFs than for jpgs, for example. They can be tricky to test and I found it easiest to have a dedicated bib for my own live testing since you can't easily copy config from sandbox to prod. The 'Selected Content' in my record is a custom development where I embedded an Alma Viewer, but there is a native feature called 'Quick Access' that allows you to do something similar. (I didn't like it because it doesn't make it very apparent if there are multiple images, but if you have just one the native feature works great.) 
+
+Best,
+Corinna
+
+
+
+Corinna Baksik
+Senior Systems Librarian, Library Technology Services
+Harvard University
+corinna_baksik@harvard.edu
+she/her

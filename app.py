@@ -9005,13 +9005,20 @@ def main(page: ft.Page):
                     page.update()
                 
                 if is_batch:
-                        add_log_message(f"TIFF/JPG API upload complete")
-                        add_log_message("💡 Check the logs for details on uploaded files and any failures")
-                        add_log_message("✅ Files are now attached directly to Alma representations")
-                        add_log_message("🔎 Verify: Resources > Manage Inventory > Manage Digital Files")
-                    else:
-                        add_log_message("TIFF/JPG API upload complete for single record")
-                        add_log_message("✅ File attached directly to Alma representation")
+                    add_log_message(f"TIFF/JPG API upload complete")
+                    add_log_message("💡 Check the logs for details on uploaded files and any failures")
+                    add_log_message("✅ Files are now attached directly to Alma representations")
+                    add_log_message("🔎 Verify: Resources > Manage Inventory > Manage Digital Files")
+                else:
+                    add_log_message("TIFF/JPG API upload complete for single record")
+                    add_log_message("✅ File attached directly to Alma representation")
+        
+        def cancel_prep(e):
+            warning_dialog.open = False
+            page.update()
+        
+        warning_dialog = ft.AlertDialog(
+            modal=True,
             title=ft.Text("⚠️ WARNING: Alma Data Modification", weight=ft.FontWeight.BOLD),
             content=ft.Container(
                 content=ft.Column([
