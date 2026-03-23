@@ -3080,7 +3080,7 @@ class AlmaBibEditor:
             failed_count = 0
             no_path_count = 0
             no_file_count = 0
-            updated_count = 0   # files replaced (had an existing file)
+            skipped_has_file_count = 0   # reps that already have a file — left untouched
             total = len(mms_ids)
 
             with tempfile.TemporaryDirectory(prefix='cabb_fn11_') as tmp_dir:
@@ -3167,10 +3167,31 @@ class AlmaBibEditor:
                             logging.WARNING
                         )
 
-                    # Step 4a: Create representation if none found
+                    # Step 4a: If an existing representation already has a file, skip this bib
+                    if existing_rep_id and not existing_file_pid:
+                        # Inline list didn't include file details — fetch directly to be sure
+                        files_url = f"{api_url}/almaws/v1/bibs/{mms_id}/representations/{existing_rep_id}/files"
+                        files_resp = requests.get(files_url, headers=headers)
+                        if files_resp.status_code == 200:
+                            file_nodes = files_resp.json().get('representation_file', [])
+                            if isinstance(file_nodes, dict):
+                                file_nodes = [file_nodes]
+                            if file_nodes:
+                                existing_file_pid = file_nodes[0].get('pid')
+
+                    if existing_rep_id and existing_file_pid:
+                        self.log(
+                            f"  ⊘ SKIPPED — existing DERIVATIVE_COPY rep ({existing_rep_id}) "
+                            f"already has file (pid: {existing_file_pid}). No changes made.",
+                            logging.WARNING
+                        )
+                        skipped_has_file_count += 1
+                        continue
+
+                    # Step 4b: Create representation if none exists, or reuse the empty one
                     if existing_rep_id:
                         rep_id = existing_rep_id
-                        self.log(f"  Found existing DERIVATIVE_COPY representation: {rep_id}")
+                        self.log(f"  Found existing empty DERIVATIVE_COPY representation: {rep_id}")
                     else:
                         rep_payload = {
                             "label": f"JPG derivative - {jpg_filename}",
@@ -3194,26 +3215,6 @@ class AlmaBibEditor:
                         rep_id = create_resp.json().get('id')
                         self.log(f"  ✓ Created new DERIVATIVE_COPY representation: {rep_id}")
 
-                    # Step 4b: If an old file exists, fetch its PID (if not already known) then delete it
-                    if existing_rep_id and not existing_file_pid:
-                        # Try fetching file list directly for this representation
-                        files_url = f"{api_url}/almaws/v1/bibs/{mms_id}/representations/{rep_id}/files"
-                        files_resp = requests.get(files_url, headers=headers)
-                        if files_resp.status_code == 200:
-                            file_nodes = files_resp.json().get('representation_file', [])
-                            if isinstance(file_nodes, dict):
-                                file_nodes = [file_nodes]
-                            if file_nodes:
-                                existing_file_pid = file_nodes[0].get('pid')
-
-                    if existing_file_pid:
-                        del_ok, del_msg = self._delete_representation_file_api(mms_id, rep_id, existing_file_pid)
-                        if del_ok:
-                            self.log(f"  ✓ Deleted old file (pid: {existing_file_pid})")
-                            updated_count += 1
-                        else:
-                            self.log(f"  ⚠ Could not delete old file pid {existing_file_pid}: {del_msg}", logging.WARNING)
-
                     # Step 5: POST new file referencing the S3 path
                     post_ok, post_result = self._post_file_to_representation_api(
                         mms_id, rep_id, jpg_filename, s3_key
@@ -3227,10 +3228,10 @@ class AlmaBibEditor:
                     success_count += 1
 
             # Final summary
-            new_count = success_count - updated_count
             message = (
                 f"Function 11 (API method) complete: "
-                f"{success_count} succeeded ({new_count} new, {updated_count} updated), "
+                f"{success_count} succeeded, "
+                f"{skipped_has_file_count} skipped (rep already has file), "
                 f"{failed_count} failed, "
                 f"{no_path_count} missing path, {no_file_count} file not found"
             )
