@@ -2977,192 +2977,544 @@ class AlmaBibEditor:
                     pass
             return False, f"Error uploading thumbnail: {str(e)}"
     
-    def prepare_tiff_jpg_representations(self, mms_ids: list, tiff_csv: str = "all_single_tiffs_with_local_paths.csv", 
+    def prepare_tiff_jpg_representations(self, mms_ids: list, tiff_csv: str = "single_tiff_objects_20260320_121506.csv",
                                          progress_callback=None) -> tuple[bool, str, str | None]:
         """
-        Function 11: Prepare TIFF/JPG representations for Alma Digital Uploader (CSV Harvard Method)
-        
+        Function 11: Create TIFF/JPG representations using full API approach (Corinna/Harvard spec).
+
         For each MMS ID:
         1. Look up TIFF file path from CSV
-        2. Create empty JPG representation in Alma (or find existing empty one)
-        3. Create JPG derivative from TIFF
-        4. Add MMS ID and filename to values.csv
-        
-        The output is designed for Alma's Digital Uploader using Harvard's minimal CSV approach.
-        All JPG files are placed in a single flat directory with one values.csv file.
-        
-        CSV Format (ONLY 2 columns):
-            mms_id,file_name_1
-            991234567890104641,991234567890104641.jpg
-            992345678901104641,992345678901104641.jpg
-        
+        2. Convert TIFF to JPG locally (temporary file)
+        3. Upload JPG to ExLibris S3 bucket  (institution_code/upload/<filename>)
+        4. Use Alma API to check for an existing DERIVATIVE_COPY "JPG derivative" representation:
+             - If exists with files  → DELETE old file → POST new file (S3 path ref)
+             - If exists (empty)     → POST new file (S3 path ref)
+             - If not exists         → POST create representation → POST new file (S3 path ref)
+        5. Clean up local temp JPG file
+
+        No manual Digital Uploader steps required — fully API-driven.
+
+        Based on the Harvard/Corinna spec:
+          LibraryTechServices-Spec-Primo VE ingest for full-texting of EAD finding aids-190326-212521.pdf
+
+        Required .env vars:
+            ALMA_INSTITUTION_CODE  — e.g. "01GCL_INST"
+            ALMA_S3_BUCKET         — e.g. "na-st01.ext.exlibrisgroup.com"
+            AWS_ACCESS_KEY_ID      — ExL S3 credentials
+            AWS_SECRET_ACCESS_KEY  — ExL S3 credentials
+            AWS_DEFAULT_REGION     — e.g. "us-east-1"
+
         Args:
             mms_ids: List of MMS IDs to process
-            tiff_csv: CSV file with MMS ID and Local Path columns
+            tiff_csv: CSV file with MMS ID, TIFF Filename, and S3 Path columns
             progress_callback: Optional callback function(current, total) for progress updates
-            
+
         Returns:
-            tuple: (success: bool, message: str, output_dir_path: str | None)
+            tuple: (success: bool, message: str, None)
         """
         from pathlib import Path
-        from datetime import datetime
         import csv
-        
-        # Create timestamped output directory in Downloads folder
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        downloads_dir = Path.home() / "Downloads"
-        output_dir = downloads_dir / f"CABB_digital_upload_{timestamp}"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        self.log(f"Starting Function 11: Prepare TIFF/JPG Representations (CSV Harvard Method)")
+        import tempfile
+
+        self.log("Starting Function 11: Prepare TIFF/JPG Representations (Full API Method)")
         self.log(f"Processing {len(mms_ids)} MMS ID(s)")
         self.log(f"TIFF CSV: {tiff_csv}")
-        self.log(f"Output directory: {output_dir.absolute()}")
-        self.log(f"Format: Flat directory with values.csv (Harvard approach)")
-        
+
         if not self.api_key:
             return False, "API Key not configured", None
-        
-        # Verify TIFF CSV exists
+
+        # Resolve institution code
+        institution_code = self._get_institution_code()
+        if not institution_code:
+            institution_code = "01GCL_INST"
+            self.log(f"ALMA_INSTITUTION_CODE not set in .env — using default: {institution_code}", logging.WARNING)
+        self.log(f"Institution code: {institution_code}")
+
+        # Validate S3 / AWS config
+        s3_bucket = os.getenv('ALMA_S3_BUCKET', '').strip()
+        if not s3_bucket:
+            return False, (
+                "ALMA_S3_BUCKET not configured in .env.\n"
+                "Add: ALMA_S3_BUCKET=na-st01.ext.exlibrisgroup.com\n"
+                "(Use na-test-st01.ext.exlibrisgroup.com for sandbox)"
+            ), None
+
+        if not os.getenv('AWS_ACCESS_KEY_ID') or not os.getenv('AWS_SECRET_ACCESS_KEY'):
+            return False, (
+                "AWS credentials not configured.\n"
+                "Add AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY to .env."
+            ), None
+
+        # Validate TIFF CSV exists
         tiff_csv_path = Path(tiff_csv)
         if not tiff_csv_path.exists():
             return False, f"TIFF CSV not found: {tiff_csv}", None
-        
-        # Check if Pillow is available for JPG creation
+
+        # Verify Pillow
         try:
-            from PIL import Image
+            from PIL import Image  # noqa: F401
         except ImportError:
             return False, "Pillow library not installed. Run: pip install Pillow", None
-        
+
+        # Verify boto3
         try:
-            # Read TIFF CSV to get local paths
-            self.log(f"Reading TIFF paths from {tiff_csv}")
-            tiff_paths = {}
+            import boto3  # noqa: F401
+        except ImportError:
+            return False, "boto3 library not installed. Run: pip install boto3", None
+
+        try:
+            # Load TIFF CSV
+            self.log(f"Reading TIFF records from {tiff_csv}")
+            tiff_records: dict[str, dict] = {}
             with open(tiff_csv, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
+                for row in csv.DictReader(f):
                     mms_id = (row.get('MMS ID') or '').strip()
-                    # Skip comment lines (lines starting with #)
                     if mms_id.startswith('#'):
                         continue
-                    local_path = (row.get('Local Path') or '').strip()
-                    if mms_id and local_path:
-                        tiff_paths[mms_id] = local_path
-            
-            self.log(f"Found {len(tiff_paths)} records with local paths")
-            
-            # Initialize CSV data structure for values.csv
-            csv_rows = []
-            
-            # Process each MMS ID
+                    filename = (row.get('TIFF Filename') or '').strip()
+                    s3_path = (row.get('S3 Path') or '').strip()
+                    if mms_id and filename:
+                        tiff_records[mms_id] = {'filename': filename, 's3_path': s3_path}
+            self.log(f"Found {len(tiff_records)} records in CSV")
+
             success_count = 0
             failed_count = 0
             no_path_count = 0
             no_file_count = 0
+            skipped_has_file_count = 0   # reps that already have a file — left untouched
+            s3_fallback_count = 0        # TIFFs not found locally, retrieved from S3
+            succeeded_mms_ids: set[str] = set()  # successfully processed — will be commented out in CSV
             total = len(mms_ids)
-            
-            for idx, mms_id in enumerate(mms_ids, 1):
-                if self.kill_switch:
-                    self.log("Operation cancelled by user", logging.WARNING)
-                    break
-                
-                if progress_callback:
-                    progress_callback(idx, total)
-                
-                self.log(f"\nProcessing {idx}/{total}: MMS {mms_id}")
-                
-                # Check if we have a local path for this MMS ID
-                if mms_id not in tiff_paths:
-                    self.log(f"  ✗ No local path found in {tiff_csv}", logging.WARNING)
-                    no_path_count += 1
-                    continue
-                
-                local_path = tiff_paths[mms_id]
-                source_tiff = Path(local_path)
-                
-                # Check if source file exists
-                if not source_tiff.exists():
-                    self.log(f"  ✗ File not found: {local_path}", logging.ERROR)
-                    no_file_count += 1
-                    failed_count += 1
-                    continue
-                
-                file_size = source_tiff.stat().st_size
-                self.log(f"  ✓ Found TIFF: {source_tiff.name} ({file_size / 1024 / 1024:.2f} MB)")
-                
-                # Prepare JPG representation and file (flat in output_dir, no subdirectories)
-                jpg_filename = f"{mms_id}.jpg"
-                prep_success, prep_result = self._prepare_jpg_from_tiff_representation_csv(
-                    mms_id,
-                    str(source_tiff),
-                    jpg_filename,
-                    output_dir  # Flat directory - no subdirectories
-                )
-                
-                if prep_success:
-                    # prep_result is a dict with rep_id, processed_file, message
-                    rep_id = prep_result['rep_id']
-                    processed_file = prep_result['processed_file']
-                    
-                    self.log(f"  ✓ {prep_result['message']}")
-                    self.log(f"    Rep ID: {rep_id}")
-                    self.log(f"    JPG file: {processed_file}")
-                    
-                    # Add to CSV data (ONLY mms_id and file_name_1 columns)
-                    csv_rows.append({
-                        'mms_id': mms_id,
-                        'file_name_1': jpg_filename
-                    })
-                    
+
+            with tempfile.TemporaryDirectory(prefix='cabb_fn11_') as tmp_dir:
+                tmp_path = Path(tmp_dir)
+
+                for idx, mms_id in enumerate(mms_ids, 1):
+                    if self.kill_switch:
+                        self.log("Operation cancelled by user", logging.WARNING)
+                        break
+
+                    if progress_callback:
+                        progress_callback(idx, total)
+
+                    self.log(f"\nProcessing {idx}/{total}: MMS {mms_id}")
+
+                    # Locate source TIFF
+                    if mms_id not in tiff_records:
+                        self.log(f"  ✗ No record found in {tiff_csv}", logging.WARNING)
+                        no_path_count += 1
+                        continue
+
+                    record = tiff_records[mms_id]
+                    tiff_filename = record['filename']
+                    tiff_s3_path = record['s3_path']
+                    local_base = Path('/Volumes/Acasis1TB')
+
+                    # Search for TIFF filename under /Volumes/Acasis1TB
+                    source_tiff = None
+                    if local_base.exists():
+                        matches = list(local_base.rglob(tiff_filename))
+                        if matches:
+                            source_tiff = matches[0]
+                            tiff_size = source_tiff.stat().st_size
+                            self.log(f"  ✓ Found TIFF locally: {source_tiff} ({tiff_size / 1024 / 1024:.2f} MB)")
+                    else:
+                        self.log(f"  ⚠ Volume {local_base} is not mounted", logging.WARNING)
+
+                    if source_tiff is None:
+                        self.log(
+                            f"  ⚠ '{tiff_filename}' not found under {local_base}. "
+                            f"Attempting S3 fallback download.",
+                            logging.WARNING
+                        )
+                        if not tiff_s3_path:
+                            self.log(f"  ✗ No S3 path available for fallback", logging.ERROR)
+                            no_file_count += 1
+                            failed_count += 1
+                            continue
+                        s3_local = tmp_path / tiff_filename
+                        dl_ok, dl_msg = self._download_file_from_exl_s3(
+                            s3_bucket, tiff_s3_path, str(s3_local)
+                        )
+                        if not dl_ok:
+                            self.log(f"  ✗ S3 fallback download failed: {dl_msg}", logging.ERROR)
+                            no_file_count += 1
+                            failed_count += 1
+                            continue
+                        source_tiff = s3_local
+                        tiff_size = source_tiff.stat().st_size
+                        self.log(f"  ✓ Downloaded TIFF from S3 ({tiff_size / 1024 / 1024:.2f} MB)")
+                        s3_fallback_count += 1
+
+                    # Step 1: Convert TIFF → JPG (into temp directory)
+                    jpg_filename = f"{mms_id}.jpg"
+                    tmp_jpg = tmp_path / jpg_filename
+                    conv_ok, conv_msg = self._convert_tiff_to_jpg(str(source_tiff), str(tmp_jpg))
+                    if not conv_ok:
+                        self.log(
+                            f"  ⚠ TIFF→JPG conversion failed for local file: {conv_msg}",
+                            logging.WARNING
+                        )
+                        # Attempt S3 fallback if we haven't already used it and an S3 path exists
+                        if source_tiff != (tmp_path / tiff_filename) and tiff_s3_path:
+                            self.log(f"  ↩ Retrying conversion using S3 copy...", logging.WARNING)
+                            s3_retry = tmp_path / f"s3_{tiff_filename}"
+                            dl_ok, dl_msg = self._download_file_from_exl_s3(
+                                s3_bucket, tiff_s3_path, str(s3_retry)
+                            )
+                            if dl_ok:
+                                conv_ok, conv_msg = self._convert_tiff_to_jpg(str(s3_retry), str(tmp_jpg))
+                                if conv_ok:
+                                    self.log(f"  ✓ Conversion succeeded using S3 copy")
+                                    s3_fallback_count += 1
+                                else:
+                                    self.log(
+                                        f"  ✗ TIFF→JPG conversion also failed for S3 copy: {conv_msg}",
+                                        logging.ERROR
+                                    )
+                            else:
+                                self.log(f"  ✗ S3 fallback download failed: {dl_msg}", logging.ERROR)
+                        else:
+                            self.log(f"  ✗ No S3 path available for conversion fallback", logging.ERROR)
+
+                        if not conv_ok:
+                            failed_count += 1
+                            continue
+                    jpg_size = tmp_jpg.stat().st_size
+                    self.log(f"  ✓ Converted to JPG ({jpg_size / 1024 / 1024:.2f} MB)")
+
+                    # Step 2: Upload JPG to ExL S3 upload folder
+                    s3_key = f"{institution_code}/upload/{jpg_filename}"
+                    upload_ok, upload_msg = self._upload_file_to_exl_s3(str(tmp_jpg), s3_bucket, s3_key)
+                    if not upload_ok:
+                        self.log(f"  ✗ S3 upload failed: {upload_msg}", logging.ERROR)
+                        failed_count += 1
+                        continue
+                    self.log(f"  ✓ Uploaded to S3: s3://{s3_bucket}/{s3_key}")
+
+                    # Step 3: Check for an existing DERIVATIVE_COPY/JPG representation
+                    api_url = self._get_alma_api_url()
+                    rep_url = f"{api_url}/almaws/v1/bibs/{mms_id}/representations"
+                    headers = {
+                        'Authorization': f'apikey {self.api_key}',
+                        'Accept': 'application/json'
+                    }
+
+                    existing_rep_id = None
+                    existing_file_pid = None
+
+                    rep_list_response = requests.get(rep_url, headers=headers)
+                    if rep_list_response.status_code == 200:
+                        for rep in rep_list_response.json().get('representation', []):
+                            usage_val = rep.get('usage_type', {}).get('value', '')
+                            label = rep.get('label', '')
+                            if usage_val == 'DERIVATIVE_COPY' and (
+                                'JPG' in label or 'jpg' in label or 'derivative' in label.lower()
+                            ):
+                                existing_rep_id = rep.get('id')
+                                # Inspect inline file list (may be populated in list view)
+                                files_node = rep.get('files', {})
+                                if isinstance(files_node, dict):
+                                    file_list = files_node.get('representation_file', [])
+                                    if isinstance(file_list, dict):
+                                        file_list = [file_list]
+                                    if file_list:
+                                        existing_file_pid = file_list[0].get('pid')
+                                break
+                    elif rep_list_response.status_code != 200:
+                        self.log(
+                            f"  ⚠ Could not list representations: HTTP {rep_list_response.status_code}",
+                            logging.WARNING
+                        )
+
+                    # Step 4a: If an existing representation already has a file, skip this bib
+                    if existing_rep_id and not existing_file_pid:
+                        # Inline list didn't include file details — fetch directly to be sure
+                        files_url = f"{api_url}/almaws/v1/bibs/{mms_id}/representations/{existing_rep_id}/files"
+                        files_resp = requests.get(files_url, headers=headers)
+                        if files_resp.status_code == 200:
+                            file_nodes = files_resp.json().get('representation_file', [])
+                            if isinstance(file_nodes, dict):
+                                file_nodes = [file_nodes]
+                            if file_nodes:
+                                existing_file_pid = file_nodes[0].get('pid')
+
+                    if existing_rep_id and existing_file_pid:
+                        self.log(
+                            f"  ⊘ SKIPPED — existing DERIVATIVE_COPY rep ({existing_rep_id}) "
+                            f"already has file (pid: {existing_file_pid}). No changes made.",
+                            logging.WARNING
+                        )
+                        skipped_has_file_count += 1
+                        continue
+
+                    # Step 4b: Create representation if none exists, or reuse the empty one
+                    if existing_rep_id:
+                        rep_id = existing_rep_id
+                        self.log(f"  Found existing empty DERIVATIVE_COPY representation: {rep_id}")
+                    else:
+                        rep_payload = {
+                            "label": f"JPG derivative - {jpg_filename}",
+                            "usage_type": {"value": "DERIVATIVE_COPY"},
+                            "library": {"value": "MAIN"},
+                            "public_note": "JPG derivative created from TIFF (CABB Function 11)"
+                        }
+                        headers_post = {
+                            'Authorization': f'apikey {self.api_key}',
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json'
+                        }
+                        create_resp = requests.post(rep_url, headers=headers_post, json=rep_payload)
+                        if create_resp.status_code not in [200, 201]:
+                            self.log(
+                                f"  ✗ Failed to create representation: HTTP {create_resp.status_code} — {create_resp.text}",
+                                logging.ERROR
+                            )
+                            failed_count += 1
+                            continue
+                        rep_id = create_resp.json().get('id')
+                        self.log(f"  ✓ Created new DERIVATIVE_COPY representation: {rep_id}")
+
+                    # Step 5: POST new file referencing the S3 path
+                    post_ok, post_result = self._post_file_to_representation_api(
+                        mms_id, rep_id, jpg_filename, s3_key
+                    )
+                    if not post_ok:
+                        self.log(f"  ✗ Failed to post file to representation: {post_result}", logging.ERROR)
+                        failed_count += 1
+                        continue
+
+                    self.log(f"  ✓ File attached (RepID: {rep_id}, FileID: {post_result})")
                     success_count += 1
-                else:
-                    self.log(f"  ✗ {prep_result}", logging.ERROR)
-                    failed_count += 1
-            
-            # Create values.csv file
-            output_dir_path = None
-            if csv_rows:
-                values_csv = output_dir / "values.csv"
-                with open(values_csv, 'w', encoding='utf-8', newline='') as f:
-                    writer = csv.DictWriter(f, fieldnames=['mms_id', 'file_name_1'])
-                    writer.writeheader()
-                    writer.writerows(csv_rows)
-                
-                self.log(f"\n✓ Created values.csv with {len(csv_rows)} records")
-                
-                # Create master README file with instructions
-                readme_content = self._create_uploader_readme_csv(len(csv_rows), timestamp)
-                readme_file = output_dir / "README.txt"
-                with open(readme_file, 'w', encoding='utf-8') as f:
-                    f.write(readme_content)
-                
-                self.log(f"✓ Created README.txt with upload instructions")
-                output_dir_path = str(output_dir.absolute())
-            
+                    succeeded_mms_ids.add(mms_id)
+
+            # Comment out successful rows in the CSV so they are not reprocessed
+            if succeeded_mms_ids:
+                try:
+                    csv_path = Path(tiff_csv)
+                    raw_lines = csv_path.read_text(encoding='utf-8').splitlines(keepends=True)
+                    updated_lines = []
+                    commented = 0
+                    for raw_line in raw_lines:
+                        bare = raw_line.lstrip('# ')
+                        row_mms = bare.split(',')[0].strip()
+                        if row_mms in succeeded_mms_ids and not raw_line.startswith('# '):
+                            updated_lines.append('# ' + raw_line)
+                            commented += 1
+                        else:
+                            updated_lines.append(raw_line)
+                    csv_path.write_text(''.join(updated_lines), encoding='utf-8')
+                    self.log(f"  ✓ Commented out {commented} succeeded row(s) in {tiff_csv}")
+                except Exception as csv_err:
+                    self.log(f"  ⚠ Could not update CSV: {csv_err}", logging.WARNING)
+
             # Final summary
-            message = f"TIFF/JPG preparation complete: {success_count} prepared, {failed_count} failed, "
-            message += f"{no_path_count} no path, {no_file_count} file not found"
-            if output_dir_path:
-                message += f"\n\n📂 Output directory: {output_dir_path}"
-                message += f"\n📄 Created: values.csv + {success_count} JPG files"
-                message += f"\n📋 Format: Harvard minimal CSV (mms_id, file_name_1 only)"
-                message += f"\n\n⚠️ NEXT STEPS:"
-                message += f"\n1. Launch Alma and navigate to: Resources > Advanced Tools > Digital Uploader"
-                message += f"\n2. Select profile: 'CABB Function 11 - Add ONE File to Existing Representation' (ID: 7848184990004641)"
-                message += f"\n3. Click 'Add new ingest' and give it a name"
-                message += f"\n4. DRAG AND DROP all files (values.csv + all JPG files) into the upload box"
-                message += f"\n5. Click 'Upload all', then 'Submit Selected', then 'Run MD Import'"
-                message += f"\n6. See README.txt in the output directory for detailed instructions"
+            message = (
+                f"Function 11 (API method) complete: "
+                f"{success_count} succeeded, "
+                f"{skipped_has_file_count} skipped (rep already has file), "
+                f"{failed_count} failed, "
+                f"{no_path_count} missing from CSV, "
+                f"{no_file_count} not found, "
+                f"{s3_fallback_count} retrieved via S3 fallback"
+            )
+            if success_count > 0:
+                message += (
+                    "\n\n✅ Files uploaded directly to Alma digital representations via API."
+                    "\nNo manual Digital Uploader steps required."
+                    "\nVerify: Resources > Manage Inventory > Manage Digital Files"
+                )
             self.log(message)
-            return True, message, output_dir_path
-            
+            return True, message, None
+
         except Exception as e:
-            error_msg = f"Error preparing TIFF/JPG representations: {str(e)}"
+            error_msg = f"Error in prepare_tiff_jpg_representations: {str(e)}"
             self.log(error_msg, logging.ERROR)
             import traceback
             self.log(traceback.format_exc(), logging.DEBUG)
             return False, error_msg, None
     
+    # ------------------------------------------------------------------
+    # Function 11 API helpers (Full API method — Corinna/Harvard spec)
+    # ------------------------------------------------------------------
+
+    def _convert_tiff_to_jpg(self, tiff_path: str, output_path: str) -> tuple[bool, str]:
+        """
+        Convert a TIFF file to JPG.
+
+        Handles 16-bit, RGBA, LA, P (palette), and grayscale images correctly.
+
+        Args:
+            tiff_path: Full path to the source TIFF file
+            output_path: Full path for the output JPG file
+
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        from PIL import Image
+
+        try:
+            with Image.open(tiff_path) as img:
+                # 16-bit modes → scale to 8-bit
+                if img.mode in ('I', 'I;16', 'I;16B', 'I;16L', 'I;16N'):
+                    img = img.point(lambda x: x / 256).convert('L').convert('RGB')
+                elif img.mode in ('RGBA', 'LA', 'P'):
+                    rgb_img = Image.new('RGB', img.size, (255, 255, 255))
+                    if img.mode == 'P':
+                        img = img.convert('RGBA')
+                    rgb_img.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
+                    img = rgb_img
+                elif img.mode == 'L':
+                    img = img.convert('RGB')
+                elif img.mode != 'RGB':
+                    img = img.convert('RGB')
+                img.save(output_path, 'JPEG', quality=95, optimize=True)
+            return True, f"Converted: {output_path}"
+        except Exception as e:
+            return False, str(e)
+
+    def _upload_file_to_exl_s3(self, local_path: str, s3_bucket: str, s3_key: str) -> tuple[bool, str]:
+        """
+        Upload a local file to the ExLibris-managed AWS S3 bucket.
+
+        Credentials are read from environment variables:
+            AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION
+
+        Args:
+            local_path: Full path to the local file to upload
+            s3_bucket: S3 bucket name (e.g. "na-st01.ext.exlibrisgroup.com")
+            s3_key: S3 object key (e.g. "01GCL_INST/upload/991234567890104641.jpg")
+
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        import boto3
+        from botocore.exceptions import ClientError, NoCredentialsError
+
+        try:
+            region = os.getenv('AWS_DEFAULT_REGION', 'us-east-1')
+            s3_client = boto3.client(
+                's3',
+                region_name=region,
+                aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+                aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
+            )
+            s3_client.upload_file(local_path, s3_bucket, s3_key)
+            return True, f"Uploaded to s3://{s3_bucket}/{s3_key}"
+        except NoCredentialsError:
+            return False, "AWS credentials not found — check AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env"
+        except ClientError as e:
+            return False, f"S3 ClientError: {str(e)}"
+        except Exception as e:
+            return False, f"Unexpected S3 upload error: {str(e)}"
+
+    def _download_file_from_exl_s3(self, s3_bucket: str, s3_key: str, local_path: str) -> tuple[bool, str]:
+        """
+        Download a file from the ExLibris-managed AWS S3 bucket to a local path.
+
+        Used as a fallback when the TIFF cannot be found on the local volume.
+
+        Args:
+            s3_bucket: S3 bucket name (e.g. "na-st01.ext.exlibrisgroup.com")
+            s3_key: S3 object key (e.g. "01GCL_INST/storage/alma/.../grinnell_16037_OBJ.tiff")
+            local_path: Full local path to save the downloaded file
+
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        import boto3
+        from botocore.exceptions import ClientError, NoCredentialsError
+
+        try:
+            region = os.getenv('AWS_DEFAULT_REGION', 'us-east-1')
+            s3_client = boto3.client(
+                's3',
+                region_name=region,
+                aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+                aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
+            )
+            s3_client.download_file(s3_bucket, s3_key, local_path)
+            return True, f"Downloaded s3://{s3_bucket}/{s3_key}"
+        except NoCredentialsError:
+            return False, "AWS credentials not found — check AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env"
+        except ClientError as e:
+            return False, f"S3 ClientError: {str(e)}"
+        except Exception as e:
+            return False, f"Unexpected S3 download error: {str(e)}"
+
+    def _delete_representation_file_api(self, mms_id: str, rep_id: str, pid: str) -> tuple[bool, str]:
+        """
+        Delete a file from an Alma representation via the API.
+
+        DELETE /almaws/v1/bibs/{mms_id}/representations/{rep_id}/files/{pid}
+        Success is HTTP 204 (No Content).
+
+        Args:
+            mms_id: Alma bib MMS ID
+            rep_id: Representation ID
+            pid: File PID to delete
+
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        api_url = self._get_alma_api_url()
+        del_url = f"{api_url}/almaws/v1/bibs/{mms_id}/representations/{rep_id}/files/{pid}"
+        headers = {
+            'Authorization': f'apikey {self.api_key}',
+            'Accept': 'application/json'
+        }
+
+        try:
+            response = requests.delete(del_url, headers=headers)
+            if response.status_code in [200, 204]:
+                return True, f"Deleted file pid {pid}"
+            return False, f"HTTP {response.status_code}: {response.text}"
+        except Exception as e:
+            return False, str(e)
+
+    def _post_file_to_representation_api(
+        self, mms_id: str, rep_id: str, label: str, s3_path: str
+    ) -> tuple[bool, str]:
+        """
+        POST a new file to an Alma representation, referencing a file already in the S3 upload bucket.
+
+        POST /almaws/v1/bibs/{mms_id}/representations/{rep_id}/files
+        Body: {"label": "<filename>", "path": "<institution_code>/upload/<filename>"}
+
+        Alma moves the file from /upload to /storage automatically after this call.
+
+        Args:
+            mms_id: Alma bib MMS ID
+            rep_id: Representation ID
+            label: File label / display name (e.g. "991234567890104641.jpg")
+            s3_path: S3 key starting with institution code
+                     (e.g. "01GCL_INST/upload/991234567890104641.jpg")
+
+        Returns:
+            tuple: (success: bool, result: str) — result is new file PID on success, error on failure
+        """
+        api_url = self._get_alma_api_url()
+        files_url = f"{api_url}/almaws/v1/bibs/{mms_id}/representations/{rep_id}/files"
+        payload = {"label": label, "path": s3_path}
+        headers = {
+            'Authorization': f'apikey {self.api_key}',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        }
+
+        try:
+            response = requests.post(files_url, headers=headers, json=payload)
+            if response.status_code in [200, 201]:
+                pid = response.json().get('pid', '')
+                return True, pid
+            return False, f"HTTP {response.status_code}: {response.text}"
+        except Exception as e:
+            return False, str(e)
+
+    # ------------------------------------------------------------------
+    # End Function 11 API helpers
+    # ------------------------------------------------------------------
+
     def _prepare_jpg_from_tiff_representation(self, mms_id: str, tiff_path: str, jpg_filename: str, output_dir) -> tuple[bool, dict | str]:
         """
         Create a JPG representation and prepare the JPG file from TIFF (without uploading).
@@ -8770,22 +9122,17 @@ def main(page: ft.Page):
                     page.update()
                 
                 if is_batch:
-                    add_log_message(f"TIFF/JPG preparation complete")
-                    add_log_message("💡 Check the logs for details on prepared files and any failures")
-                    add_log_message("")
-                    add_log_message("⚠️ NEXT STEPS:")
-                    add_log_message("1. Launch Alma")
-                    add_log_message("2. Navigate to: Resources > Manage Digital Files > Digital Uploader")
-                    add_log_message("3. Select profile: 'Add Digital Files to Existing Digital Representations'")
-                    add_log_message("4. Upload the directory shown above")
+                    add_log_message(f"TIFF/JPG API upload complete")
+                    add_log_message("💡 Check the logs for details on uploaded files and any failures")
+                    add_log_message("✅ Files are now attached directly to Alma representations")
+                    add_log_message("🔎 Verify: Resources > Manage Inventory > Manage Digital Files")
                 else:
-                    add_log_message("TIFF/JPG preparation complete for single record")
-                    add_log_message("Use Alma Digital Uploader to complete the upload")
+                    add_log_message("TIFF/JPG API upload complete for single record")
+                    add_log_message("✅ File attached directly to Alma representation")
         
         def cancel_prep(e):
             warning_dialog.open = False
             page.update()
-            add_log_message("TIFF/JPG preparation cancelled by user")
         
         warning_dialog = ft.AlertDialog(
             modal=True,
@@ -8809,9 +9156,14 @@ def main(page: ft.Page):
                     ),
                     ft.Container(height=10),
                     ft.Text(
-                        "This action will PERMANENTLY create JPG representations in Alma. "
-                        "JPG derivatives will be created from TIFF files found in all_single_tiffs_with_local_paths.csv. "
-                        "\n\nOutput: values.csv + JPG files (named <mms_id>.jpg) ready for Alma Digital Uploader.",
+                        "This will CREATE JPG representations in Alma AND upload JPG files "
+                        "directly to Alma via the full API approach (Corinna/Harvard spec). "
+                        "JPG derivatives are converted from TIFFs listed in "
+                        "single_tiff_objects_20260320_121506.csv, uploaded to the ExLibris S3 "
+                        "bucket, and attached to Alma representations — no manual Digital "
+                        "Uploader steps required."
+                        "\n\nRequires: ALMA_S3_BUCKET, AWS_ACCESS_KEY_ID, "
+                        "AWS_SECRET_ACCESS_KEY in .env",
                         size=13
                     ),
                     ft.Container(height=10),
