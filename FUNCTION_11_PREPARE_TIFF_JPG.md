@@ -1,6 +1,6 @@
 # Function 11: TIFF/JPG Representations — Full API Method
 
-**Last Updated:** March 23, 2026  
+**Last Updated:** March 25, 2026  
 **Branch:** `Function-11-API`  
 **Function Status:** Active — Full API approach (no Digital Uploader required)  
 **Based on:** Harvard/Corinna LibraryTechServices spec + Alma Representations REST API  
@@ -16,9 +16,10 @@
 
 For each MMS ID in the loaded set:
 
-1. Look up the local TIFF file path from `all_single_tiffs_with_local_paths.csv`
-2. Convert the TIFF to a JPG (in a temporary directory, auto-cleaned)
-3. Upload the JPG to the ExLibris-managed AWS S3 bucket under `{institution_code}/upload/`
+1. Look up the TIFF filename from the CSV file specified in `TIFF_CSV_FILE` environment variable
+2. Search for the TIFF file recursively under `LOCAL_TIFF_PATH` (or download from S3 if not found locally)
+3. Convert the TIFF to a JPG (in a temporary directory, auto-cleaned)
+4. Upload the JPG to the ExLibris-managed AWS S3 bucket under `{institution_code}/upload/`
 4. Check the Alma bib record for an existing DERIVATIVE_COPY / JPG representation:
    - **Rep has a file already** → **SKIP** the record. Log the state, make no changes.
    - **Rep exists but is empty** → POST the new JPG file into it
@@ -43,6 +44,10 @@ ALMA_S3_BUCKET=na-st01.ext.exlibrisgroup.com        # Production
 AWS_ACCESS_KEY_ID=your_exl_s3_access_key
 AWS_SECRET_ACCESS_KEY=your_exl_s3_secret_key
 AWS_DEFAULT_REGION=us-east-1
+
+TIFF_CSV_FILE=single_tiff_objects_20260320_121506.csv
+
+LOCAL_TIFF_PATH=/Volumes/Acasis1TB
 ```
 
 > **Getting S3 credentials:** The ExLibris S3 credentials are separate from any personal AWS credentials. Request them from your Alma/ExLibris administrator. They are scoped to the institution's upload bucket only.
@@ -58,22 +63,30 @@ Both are verified at runtime; the function will stop immediately with a clear er
 
 ### Required CSV file
 
-**`all_single_tiffs_with_local_paths.csv`** — must exist in the CABB workspace root.
+The CSV file specified in `TIFF_CSV_FILE` environment variable must exist in the CABB workspace root.
 
-| Column | Description |
-|--------|-------------|
-| `MMS ID` | Alma bibliographic record ID |
-| `Local Path` | Absolute path to the TIFF file on disk |
+| Column | Description | Required |
+|--------|-------------|----------|
+| `MMS ID` | Alma bibliographic record ID | Yes |
+| `TIFF Filename` | Filename only (e.g., `photo_001.tif`) | Yes |
+| `S3 Path` | Full S3 bucket key path for fallback download | Optional |
 
 ```csv
-MMS ID,Local Path
-991234567890104641,/Volumes/DGIngest/Photos/photo_001.tif
-991234567890204641,/Volumes/DGIngest/Photos/photo_002.tiff
+MMS ID,TIFF Filename,S3 Path
+991234567890104641,photo_001.tif,01GCL_INST/sync/collection1/photo_001.tif
+991234567890204641,photo_002.tiff,01GCL_INST/sync/collection2/photo_002.tiff
 ```
 
+**How file location works:**
+- The function searches for `TIFF Filename` recursively under the path specified in `LOCAL_TIFF_PATH` environment variable
+- If found locally, it uses the local file
+- If NOT found locally AND `S3 Path` is provided, it downloads from the ExLibris S3 bucket as a fallback
+- If neither local file nor S3 path is available, the record fails
+
+**Notes:**
 - Lines starting with `#` are treated as comments and skipped
 - Both `.tif` and `.tiff` extensions are supported
-- Network volume paths are fine (volumes must be mounted before running)
+- `S3 Path` format: `{institution_code}/sync/{collection}/{filename}` or similar bucket structure
 
 ---
 
@@ -85,7 +98,10 @@ MMS ID,Local Path
 MMS ID received
   |
   |-- Not in TIFF CSV                   --> record as "no_path" (no_path_count++)
-  |-- TIFF file not found on disk       --> record as "no_file" (no_file_count++)
+  |-- TIFF file not found locally       --> Try S3 fallback download
+  |     |                                      |
+  |     |-- S3 path missing/download fails --> record as "no_file" (no_file_count++)
+  |     |-- S3 download succeeds           --> Continue
   |
   |-- Convert TIFF --> JPG              <-- fails? --> FAIL (failed_count++)
   |-- Upload JPG to ExL S3              <-- fails? --> FAIL
@@ -123,8 +139,8 @@ Ensure all required variables are set. The function stops immediately with a cle
 ### Step 2: Verify prerequisites
 
 ```bash
-# Check CSV exists
-ls -lh all_single_tiffs_with_local_paths.csv
+# Check CSV exists (use filename from your TIFF_CSV_FILE env variable)
+ls -lh single_tiff_objects_20260320_121506.csv
 
 # Check libraries
 source .venv/bin/activate
@@ -157,7 +173,8 @@ Function 11 (API method) complete:
   N skipped (rep already has file),
   N failed,
   N missing path,
-  N file not found
+  N file not found,
+  N retrieved from S3 fallback
 ```
 
 If `success_count > 0`, the files are already live in Alma — **no further upload steps needed**.
@@ -234,13 +251,16 @@ Temporary JPG files are named `{mms_id}.jpg` during processing and deleted autom
 | Message in log | Cause | Fix |
 |---|---|---|
 | `API Key not configured` | `ALMA_API_KEY` missing from `.env` | Add it |
+| `TIFF_CSV_FILE not configured` | Neither `tiff_csv` parameter nor `TIFF_CSV_FILE` env variable is set | Add `TIFF_CSV_FILE` to `.env` |
+| `LOCAL_TIFF_PATH not configured` | Missing `.env` var | Add `LOCAL_TIFF_PATH=/Volumes/...` to `.env` |
 | `ALMA_S3_BUCKET not configured` | Missing `.env` var | Add `ALMA_S3_BUCKET=...` |
 | `AWS credentials not configured` | Missing `AWS_ACCESS_KEY_ID` or `AWS_SECRET_ACCESS_KEY` | Add both to `.env` |
-| `TIFF CSV not found` | `all_single_tiffs_with_local_paths.csv` absent | Generate via Function 18 |
+| `TIFF CSV not found` | CSV file specified in `TIFF_CSV_FILE` not found | Check `TIFF_CSV_FILE` in `.env` |
 | `Pillow library not installed` | Missing dependency | `pip install Pillow` |
 | `boto3 library not installed` | Missing dependency | `pip install boto3` |
-| `No local path found for ...` | MMS ID not in TIFF CSV | Add row to CSV |
-| `File not found: ...` | TIFF path in CSV doesn't exist on disk | Mount volume / fix path |
+| `No record found in {csv}` | MMS ID not in TIFF CSV | Add row to CSV |
+| `not found under {LOCAL_TIFF_PATH}` | TIFF filename not found locally | Mount volume or ensure S3 Path is correct |
+| `No S3 path available for fallback` | TIFF not found locally and no S3 Path in CSV | Add S3 Path column or fix local path |
 | `TIFF/JPG conversion failed` | Corrupt or unreadable TIFF | Verify TIFF integrity |
 | `S3 upload failed: ...` | Wrong AWS credentials / bucket unreachable | Check `.env` AWS vars |
 | `Failed to create representation: HTTP 4xx` | API auth failure or bad MMS ID | Check API key and MMS ID |
@@ -266,8 +286,11 @@ No. That profile was for the previous CSV/Digital-Uploader approach. It is not u
 **Q: What if I need to change the JPG quality?**  
 Edit `_convert_tiff_to_jpg()` in `app.py` and change `quality=95`. Valid JPEG quality range is 1-95.
 
-**Q: What if my TIFFs are spread across multiple directories?**  
-That is fine. Each row in `all_single_tiffs_with_local_paths.csv` is an independent absolute path.
+**Q: What if my TIFFs are spread across multiple directories under LOCAL_TIFF_PATH?**  
+That is fine. The function searches recursively for the filename. If `LOCAL_TIFF_PATH` is `/Volumes/Acasis1TB`, it will find `photo.tif` whether it's at `/Volumes/Acasis1TB/collection1/photo.tif` or `/Volumes/Acasis1TB/deep/nested/folder/photo.tif`.
+
+**Q: What is the S3 Path used for?**  
+The S3 Path is a fallback mechanism. If the TIFF filename isn't found under `LOCAL_TIFF_PATH` (e.g., volume not mounted, file moved), the function will attempt to download the TIFF from your institution's ExLibris S3 bucket using the S3 Path. This ensures processing can continue even if local files are temporarily unavailable.
 
 **Q: Will this touch bibliographic metadata?**  
 No. Function 11 only reads, creates, and attaches files to digital representations. Bibliographic metadata is never modified.
@@ -288,5 +311,5 @@ The orphaned file in `/upload` will be cleaned up by ExLibris automatically. The
 
 ## Related Functions
 
-- **Function 18** — Identify single-TIFF records (generates `all_single_tiffs_with_local_paths.csv`)
+- **Function 18** — Identify single-TIFF records (generates TIFF CSV file)
 - **Function 14a** — Prepare Thumbnails (similar API-driven workflow, uses `AUXILIARY` usage type)

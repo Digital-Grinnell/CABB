@@ -2977,7 +2977,7 @@ class AlmaBibEditor:
                     pass
             return False, f"Error uploading thumbnail: {str(e)}"
     
-    def prepare_tiff_jpg_representations(self, mms_ids: list, tiff_csv: str = "single_tiff_objects_20260320_121506.csv",
+    def prepare_tiff_jpg_representations(self, mms_ids: list, tiff_csv: str = None,
                                          progress_callback=None) -> tuple[bool, str, Optional[str]]:
         """
         Function 11: Create TIFF/JPG representations using full API approach (Corinna/Harvard spec).
@@ -2987,7 +2987,7 @@ class AlmaBibEditor:
         2. Convert TIFF to JPG locally (temporary file)
         3. Upload JPG to ExLibris S3 bucket  (institution_code/upload/<filename>)
         4. Use Alma API to check for an existing DERIVATIVE_COPY "JPG derivative" representation:
-             - If exists with files  → DELETE old file → POST new file (S3 path ref)
+             - If exists with files  → SKIP record (no changes made)
              - If exists (empty)     → POST new file (S3 path ref)
              - If not exists         → POST create representation → POST new file (S3 path ref)
         5. Clean up local temp JPG file
@@ -3003,10 +3003,14 @@ class AlmaBibEditor:
             AWS_ACCESS_KEY_ID      — ExL S3 credentials
             AWS_SECRET_ACCESS_KEY  — ExL S3 credentials
             AWS_DEFAULT_REGION     — e.g. "us-east-1"
+            TIFF_CSV_FILE          — e.g. "single_tiff_objects_20260320_121506.csv" (if tiff_csv param not provided)
 
         Args:
             mms_ids: List of MMS IDs to process
-            tiff_csv: CSV file with MMS ID, TIFF Filename, and S3 Path columns
+            tiff_csv: Optional CSV file with 'MMS ID', 'TIFF Filename', and 'S3 Path' columns. 
+                     If None, reads from TIFF_CSV_FILE environment variable.
+                     The function searches for TIFF Filename under LOCAL_TIFF_PATH recursively.
+                     S3 Path is used as fallback if file not found locally.
             progress_callback: Optional callback function(current, total) for progress updates
 
         Returns:
@@ -3016,12 +3020,29 @@ class AlmaBibEditor:
         import csv
         import tempfile
 
+        # Get TIFF CSV from parameter or environment variable
+        if tiff_csv is None:
+            tiff_csv = os.getenv('TIFF_CSV_FILE', '').strip()
+            if not tiff_csv:
+                return False, (
+                    "TIFF_CSV_FILE not configured.\n"
+                    "Either pass tiff_csv parameter or set TIFF_CSV_FILE in .env"
+                ), None
+
         self.log("Starting Function 11: Prepare TIFF/JPG Representations (Full API Method)")
         self.log(f"Processing {len(mms_ids)} MMS ID(s)")
         self.log(f"TIFF CSV: {tiff_csv}")
 
         if not self.api_key:
             return False, "API Key not configured", None
+
+        # Resolve local TIFF search path
+        local_tiff_path = os.getenv('LOCAL_TIFF_PATH', '').strip()
+        if not local_tiff_path:
+            return False, (
+                "LOCAL_TIFF_PATH not configured in .env.\n"
+                "Add: LOCAL_TIFF_PATH=/Volumes/Acasis1TB (or your local TIFF storage path)"
+            ), None
 
         # Resolve institution code
         institution_code = self._get_institution_code()
@@ -3108,9 +3129,9 @@ class AlmaBibEditor:
                     record = tiff_records[mms_id]
                     tiff_filename = record['filename']
                     tiff_s3_path = record['s3_path']
-                    local_base = Path('/Volumes/Acasis1TB')
+                    local_base = Path(local_tiff_path)
 
-                    # Search for TIFF filename under /Volumes/Acasis1TB
+                    # Search for TIFF filename under local search path
                     source_tiff = None
                     if local_base.exists():
                         matches = list(local_base.rglob(tiff_filename))
