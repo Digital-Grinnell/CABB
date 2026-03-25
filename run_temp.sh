@@ -1,18 +1,24 @@
 #!/bin/bash
 
-# Crunch Alma Bibs in Bulk (CABB) - Quick Launch Script
-# This script sets up the virtual environment and launches the Flet app
+# Temporary workaround for SSL issues
+# This script uses pip without SSL verification
 
-set -e  # Exit on error
+set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "=== Crunch Alma Bibs in Bulk (CABB) ==="
+echo "=== Crunch Alma Bibs in Bulk (CABB) - Temporary SSL Workaround ==="
 echo
 
-# Use system Python 3.9.6 which works reliably
-PYTHON_CMD="/usr/bin/python3"
+# Try to use system Python 3.9 which should have SSL
+if [ -f "/usr/bin/python3" ]; then
+    PYTHON_CMD="/usr/bin/python3"
+    echo "Using system Python: $PYTHON_CMD"
+else
+    echo "Error: System Python not found"
+    exit 1
+fi
 
 # Check if .venv exists, create if not
 if [ ! -d ".venv" ]; then
@@ -28,10 +34,10 @@ source .venv/bin/activate
 echo "✓ Virtual environment activated"
 echo
 
-# Install/upgrade dependencies
-echo "Installing dependencies..."
-.venv/bin/python -m pip install --upgrade pip --trusted-host pypi.org --trusted-host pypi.python.org --trusted-host files.pythonhosted.org --quiet
-.venv/bin/python -m pip install -r requirements.txt --trusted-host pypi.org --trusted-host pypi.python.org --trusted-host files.pythonhosted.org --quiet
+# Install/upgrade dependencies with SSL workaround
+echo "Installing dependencies (bypassing SSL - TEMPORARY FIX)..."
+python -m pip install --upgrade pip --trusted-host pypi.org --trusted-host pypi.python.org --trusted-host files.pythonhosted.org
+python -m pip install -r requirements.txt --trusted-host pypi.org --trusted-host pypi.python.org --trusted-host files.pythonhosted.org
 echo "✓ Dependencies installed"
 echo
 
@@ -51,5 +57,4 @@ fi
 
 # Launch the app
 echo "Launching CABB..."
-echo
-.venv/bin/python app.py
+python app.py

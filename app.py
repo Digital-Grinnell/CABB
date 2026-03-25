@@ -10,7 +10,7 @@ import json
 import subprocess
 from datetime import datetime
 from dotenv import load_dotenv
-from typing import Optional
+from typing import Optional, Union
 import xml.etree.ElementTree as ET
 import xml.dom.minidom as minidom
 import requests
@@ -2978,7 +2978,7 @@ class AlmaBibEditor:
             return False, f"Error uploading thumbnail: {str(e)}"
     
     def prepare_tiff_jpg_representations(self, mms_ids: list, tiff_csv: str = "single_tiff_objects_20260320_121506.csv",
-                                         progress_callback=None) -> tuple[bool, str, str | None]:
+                                         progress_callback=None) -> tuple[bool, str, Optional[str]]:
         """
         Function 11: Create TIFF/JPG representations using full API approach (Corinna/Harvard spec).
 
@@ -3515,7 +3515,7 @@ class AlmaBibEditor:
     # End Function 11 API helpers
     # ------------------------------------------------------------------
 
-    def _prepare_jpg_from_tiff_representation(self, mms_id: str, tiff_path: str, jpg_filename: str, output_dir) -> tuple[bool, dict | str]:
+    def _prepare_jpg_from_tiff_representation(self, mms_id: str, tiff_path: str, jpg_filename: str, output_dir) -> tuple[bool, Union[dict, str]]:
         """
         Create a JPG representation and prepare the JPG file from TIFF (without uploading).
         
@@ -3681,7 +3681,7 @@ class AlmaBibEditor:
             self.log(traceback.format_exc(), logging.ERROR)
             return False, f"Error preparing JPG from TIFF: {str(e)}"
     
-    def _prepare_jpg_from_tiff_representation_xml(self, mms_id: str, tiff_path: str, jpg_filename: str, output_dir) -> tuple[bool, dict | str]:
+    def _prepare_jpg_from_tiff_representation_xml(self, mms_id: str, tiff_path: str, jpg_filename: str, output_dir) -> tuple[bool, Union[dict, str]]:
         """
         Create a JPG representation and prepare the JPG file from TIFF for XML-based upload.
         
@@ -4089,7 +4089,7 @@ For questions, consult the references above or contact your Alma administrator.
 """
         return readme
     
-    def _prepare_jpg_from_tiff_representation_csv(self, mms_id: str, tiff_path: str, jpg_filename: str, output_dir) -> tuple[bool, dict | str]:
+    def _prepare_jpg_from_tiff_representation_csv(self, mms_id: str, tiff_path: str, jpg_filename: str, output_dir) -> tuple[bool, Union[dict, str]]:
         """
         Create a JPG representation and prepare the JPG file from TIFF for CSV-based upload (Harvard method).
         
@@ -5876,7 +5876,7 @@ For questions, consult the references above or contact your Alma administrator.
             
             raise
     
-    def upload_thumbnails_selenium(self, csv_file_path: str, progress_callback=None, log_level: str = "INFO") -> tuple[bool, str, int, int, str | None]:
+    def upload_thumbnails_selenium(self, csv_file_path: str, progress_callback=None, log_level: str = "INFO") -> tuple[bool, str, int, int, Optional[str]]:
         """
         Function 14b: Upload thumbnail files to Alma representations using Selenium
         
@@ -5894,7 +5894,7 @@ For questions, consult the references above or contact your Alma administrator.
             log_level: Minimum log level to display (ERROR, WARNING, INFO, DEBUG)
             
         Returns:
-            tuple: (success: bool, message: str, success_count: int, failed_count: int, failed_csv_path: str | None)
+            tuple: (success: bool, message: str, success_count: int, failed_count: int, failed_csv_path: Optional[str])
         """
         # Convert log level string to logging constant
         min_log_level = getattr(logging, log_level, logging.INFO)
@@ -6179,7 +6179,7 @@ For questions, consult the references above or contact your Alma administrator.
             # Restore original min log level
             self.min_log_level = original_min_level
     
-    def upload_jpg_selenium(self, csv_file_path: str, progress_callback=None, log_level: str = "INFO") -> tuple[bool, str, int, int, str | None]:
+    def upload_jpg_selenium(self, csv_file_path: str, progress_callback=None, log_level: str = "INFO") -> tuple[bool, str, int, int, Optional[str]]:
         """
         Function 11b: DISABLED - Upload JPG files to Alma representations using Selenium
         
@@ -6404,7 +6404,7 @@ For questions, consult the references above or contact your Alma administrator.
             self.log(traceback.format_exc(), logging.ERROR)
             return False, error_msg
     
-    def analyze_identifier_match(self, mms_ids: list, progress_callback=None) -> tuple[bool, str, str | None]:
+    def analyze_identifier_match(self, mms_ids: list, progress_callback=None) -> tuple[bool, str, Optional[str]]:
         """
         Function 15: Analyze dc:identifier fields for MMS ID matching
         
@@ -6419,7 +6419,7 @@ For questions, consult the references above or contact your Alma administrator.
             progress_callback: Optional callback function(current, total) for progress updates
             
         Returns:
-            tuple: (success: bool, message: str, output_dir_path: str | None)
+            tuple: (success: bool, message: str, output_dir_path: Optional[str])
         """
         import csv
         from datetime import datetime
@@ -6574,7 +6574,7 @@ For questions, consult the references above or contact your Alma administrator.
             self.log(error_msg, logging.ERROR)
             return False, error_msg, None
     
-    def add_mms_id_identifier(self, mms_ids: list, progress_callback=None) -> tuple[bool, str, str | None]:
+    def add_mms_id_identifier(self, mms_ids: list, progress_callback=None) -> tuple[bool, str, Optional[str]]:
         """
         Function 16: Add MMS ID as dc:identifier
         
@@ -6593,7 +6593,7 @@ For questions, consult the references above or contact your Alma administrator.
             progress_callback: Optional callback function(current, total) for progress updates
             
         Returns:
-            tuple: (success: bool, message: str, output_dir_path: str | None)
+            tuple: (success: bool, message: str, output_dir_path: Optional[str])
         """
         import csv
         from datetime import datetime
@@ -6938,7 +6938,7 @@ For questions, consult the references above or contact your Alma administrator.
         except Exception as e:
             return False, f"Exception during identifier addition: {str(e)}"
 
-    def restore_metadata_from_previous_version(self, mms_ids: list, progress_callback=None) -> tuple[bool, str, str | None]:
+    def restore_metadata_from_previous_version(self, mms_ids: list, progress_callback=None) -> tuple[bool, str, Optional[str]]:
         """
         Function 17: Restore bibliographic metadata from previous versions via Selenium.
 
@@ -6967,7 +6967,7 @@ For questions, consult the references above or contact your Alma administrator.
             progress_callback: Optional callback function(current, total) for progress updates
 
         Returns:
-            tuple: (success: bool, message: str, report_csv_path: str | None)
+            tuple: (success: bool, message: str, report_csv_path: Optional[str])
         """
         import csv
         from datetime import datetime
