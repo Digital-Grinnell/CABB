@@ -19,29 +19,29 @@ Functions are split into **Active** (shown first in the dropdown) and **Inactive
 
 #### Active Functions
 
-1. **Fetch and Display Single XML** - Preview the full XML structure of a bibliographic record
-3. **Export Set to DCAP01 CSV** - Export Dublin Core metadata from a set to CSV format
-5. **Get IIIF Manifest and Canvas** - Retrieve IIIF manifest and canvas information for digital objects
-8. **Export dc:identifier CSV** - Export all identifier fields to CSV for analysis
-9. **Validate Handle URLs and Export Results** - Test Handle URLs and report HTTP status codes
-10. **Export for Review with Clickable Handles** - Generate review spreadsheet with clickable Handle links and empty assessment columns
-11. **Prepare TIFF/JPG Representations** - Create TIFF and JPG representations using the full Alma API approach (Corinna/Harvard spec)
-12. **Analyze Sound Records by Decade** - Examine records where `dc:type` is "sound", extract year from `dc:date`/`dcterms:created`, and export a CSV grouped by decade
-14a. **Prepare Thumbnails (Part 1 of 2)** - Create `.clientThumb` representations and prepare thumbnail image files for Alma upload
-14b. **Upload Thumbnails (Part 2 of 2)** - Upload prepared thumbnail files to Alma representations via Selenium browser automation
-15. **Analyze dc:identifier Match with MMS ID** - Categorize records based on whether they already have a `dc:identifier` that exactly matches the MMS ID; exports up to three CSVs (matching / non-matching / failed)
-16. **Add MMS ID as dc:identifier** - Add the bare MMS ID as a `dc:identifier` field if not already present; handles duplicate identifier cleanup
-17. **Restore Metadata from Previous Version** - Automate the Alma MDE "View Versions → Restore" workflow via Selenium/Chrome to restore bibliographic metadata from a prior version
-18. **Identify Single TIFF Objects** - Scan a set and report digital objects that have only one TIFF representation (likely candidates for JPG derivative creation)
+- **1: Fetch and Display Single XML** - Preview the full XML structure of a bibliographic record
+- **3: Export Set to DCAP01 CSV** - Export Dublin Core metadata from a set to CSV format
+- **5: Get IIIF Manifest and Canvas** - Retrieve IIIF manifest and canvas information for digital objects
+- **8: Export dc:identifier CSV** - Export all identifier fields to CSV for analysis
+- **9: Validate Handle URLs and Export Results** - Test Handle URLs and report HTTP status codes
+- **10: Export for Review with Clickable Handles** - Generate review spreadsheet with clickable Handle links and empty assessment columns
+- **11: Prepare TIFF/JPG Representations** - Create TIFF and JPG representations using the full Alma API approach (Corinna/Harvard spec)
+- **12: Analyze Sound Records by Decade** - Examine records where `dc:type` is "sound", extract year from `dc:date`/`dcterms:created`, and export a CSV grouped by decade
+- **14a: Prepare Thumbnails (Part 1 of 2)** - Create `.clientThumb` representations and prepare thumbnail image files for Alma upload
+- **14b: Upload Thumbnails (Part 2 of 2)** - Upload prepared thumbnail files to Alma representations via Selenium browser automation
+- **15: Analyze dc:identifier Match with MMS ID** - Categorize records based on whether they already have a `dc:identifier` that exactly matches the MMS ID; exports up to three CSVs (matching / non-matching / failed)
+- **16: Add MMS ID as dc:identifier** - Add the bare MMS ID as a `dc:identifier` field if not already present; handles duplicate identifier cleanup
+- **17: Restore Metadata from Previous Version** - Automate the Alma MDE "View Versions → Restore" workflow via Selenium/Chrome to restore bibliographic metadata from a prior version
+- **18: Identify Single TIFF Objects** - Scan a set and report digital objects that have only one TIFF representation (likely candidates for JPG derivative creation)
 
 #### Inactive Functions
 
-2. **Clear dc:relation Collections Fields** - Removes all `dc:relation` fields whose value begins with `alma:01GCL_INST/bibs/collections/`
-4. **Filter CSV for Records 95+ Years Old** - Filter an exported CSV to retain only records with a publication date before 1930
-6. **Replace old dc:rights with Public Domain link** - Update legacy copyright statements to a standardized Public Domain URI
-7. **Add Grinnell: dc:identifier Field As Needed** - Add an institution-specific identifier derived from existing `dg_*` identifier values
-11b. **Upload JPG Files** *(DISABLED — Selenium approach abandoned)* - Former Selenium-based JPG upload workflow; replaced by the API-based Function 11
-13. **(Intentionally Left Blank)** - Reserved for triskaidekaphobia compliance
+- **2: Clear dc:relation Collections Fields** - Removes all `dc:relation` fields whose value begins with `alma:01GCL_INST/bibs/collections/`
+- **4: Filter CSV for Records 95+ Years Old** - Filter an exported CSV to retain only records with a publication date before 1930
+- **6: Replace old dc:rights with Public Domain link** - Update legacy copyright statements to a standardized Public Domain URI
+- **7: Add Grinnell: dc:identifier Field As Needed** - Add an institution-specific identifier derived from existing `dg_*` identifier values
+- **11b: Upload JPG Files** *(DISABLED — Selenium approach abandoned)* - Former Selenium-based JPG upload workflow; replaced by the API-based Function 11
+- **13: (Intentionally Left Blank)** - Reserved for triskaidekaphobia compliance
 
 ### Set Processing
 
