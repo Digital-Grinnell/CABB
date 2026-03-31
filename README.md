@@ -1,5 +1,7 @@
 # 🚕 CABB - Crunch Alma Bibs in Bulk
 
+Single TIFF analysis complete: Found 7 objects with single TIFF files. (0 no reps, 4414 multi-file, 7685 other formats, 0 failed). File: single_tiff_objects_20260330_115557.csv
+
 A Flet-based single-page UI application designed to perform various Alma-Digital bibliographic record editing functions using _mostly_ the Alma API.
 
 **🚕 CABB** (Crunch Alma Bibs in Bulk) provides a user-friendly interface for cleaning and maintaining Alma bibliographic records, supporting both single-record operations and batch processing via Alma Sets or CSV MMS ID lists.
