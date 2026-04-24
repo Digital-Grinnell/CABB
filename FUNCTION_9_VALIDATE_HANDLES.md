@@ -839,12 +839,28 @@ Create validation baseline:
 4. Compare CSV files
 5. Identify any new issues caused by change
 
+### With Function 20 (Prepare Handles for Assignment)
+
+Function 20 uses Function 9 as the validation step in the Alma Handle workflow:
+1. Run **Function 20** to prepare records and generate workflow instructions
+2. Follow the generated workflow (Create Set → Run Jobs → Run Integration Profile)
+3. Wait 10-15 minutes for Handle server propagation
+4. Run **Function 9** to validate that Handles resolve correctly
+5. Check CSV for any 404, 500, or timeout errors
+6. Verify "Returned Correct MMS ID" column shows TRUE for all records
+
+**Why this matters:**
+- Function 20 validates records are ready **before** Handle assignment
+- Function 9 validates Handles work correctly **after** assignment
+- Together they provide end-to-end quality assurance for the Handle workflow
+
 ## Related Documentation
 
+- **Function 20**: Prepare Handles for Assignment (pre-validation)
+- **Function 8**: Export Identifier CSV (companion function)
 - **Handle System**: https://www.handle.net/
 - **HTTP Status Codes**: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status
 - **Dublin Core dc:identifier**: https://www.dublincore.org/specifications/dublin-core/dcmi-terms/#identifier
-- **Function 8**: Export Identifier CSV (companion function)
 
 ## Version History
 

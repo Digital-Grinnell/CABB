@@ -1,0 +1,164 @@
+ALMA HANDLE ASSIGNMENT WORKFLOW - Function 20
+Generated: 2026-04-24 11:29:07
+Records analyzed: 1
+Ready for assignment: 1
+Need fixes: 0
+Failed validation: 0
+
+═══════════════════════════════════════════════════════════════════════
+PROPER HANDLE WORKFLOW (from Ex Libris Support - Feb 2, 2026)
+═══════════════════════════════════════════════════════════════════════
+
+For already existing Handles that should be redirected to Primo:
+
+Step 1: Create a Set
+   • In Alma, go to Admin > Manage Sets
+   • Create an ITEMIZED SET with your MMS IDs
+   • Name it descriptively (e.g., "Handle Assignment YYYY-MM-DD")
+   • Add your MMS IDs to the set
+   • IMPORTANT: Keep sets under 100 records to avoid processing issues
+
+Step 2: Run the "Handle Migration" Job
+   • Go to Admin > Run a Job > Handle Migration
+   • Select your set from Step 1
+   • Use the control number sequence with the prefix used in your existing Handles
+   • EVEN IF records already have Handles, this job is REQUIRED
+   • This job copies existing Handles from metadata to the handle identifier
+     in Alma's background system
+   • Click "Submit"
+   • Wait for job to complete (check Monitor Jobs)
+   • NOTE: You may see "already has a handle identifier" messages — this is
+     EXPECTED and can be ignored per Ex Libris support
+
+Step 3: Run the Handle Integration Profile
+   • Go to Admin > Resources > General > External Systems
+   • Find "Persistent Handle Identifiers for Digital Resource"
+   • Click "Actions" tab
+   • Enter your set name from Step 1
+   • Select Action: "Create and Update"
+   • Scroll to "DC METADATA Upon Create"
+   • Select: "Do not add metadata"
+   • Leave "DC Identifier Prefix Field" blank/empty
+   • Click "Run" (NOT "Save"!)
+   • Wait for profile to complete
+
+Step 4: Validate Results
+   • Wait 10-15 minutes for Handle server updates to propagate
+   • Use CABB Function 9 (Validate Handle URLs) to test your Handles
+   • Check that Handles resolve correctly to Primo records
+
+═══════════════════════════════════════════════════════════════════════
+CRITICAL REQUIREMENTS
+═══════════════════════════════════════════════════════════════════════
+
+⚠️ ORDER MATTERS!
+   Step 2 (Handle Migration job) MUST run BEFORE Step 3 (Integration Profile).
+   If you run them out of order, Handles will not resolve correctly.
+
+⚠️ DC METADATA SETTING!
+   When running the integration profile, you MUST select:
+   "Do not add metadata"
+   
+   If you select "Add new Handles to metadata", this can cause issues
+   with existing Handle assignments.
+
+⚠️ SET SIZE LIMIT!
+   Do not process more than 100 records at once.
+   Large batches can cause the workflow to fail or behave unpredictably.
+
+⚠️ COLLECTIONS NOT SUPPORTED!
+   Handles can only be assigned to BIBLIOGRAPHIC RECORDS.
+   Collection records cannot receive Handles via this workflow.
+
+═══════════════════════════════════════════════════════════════════════
+KNOWN ISSUES AND TROUBLESHOOTING
+═══════════════════════════════════════════════════════════════════════
+
+Issue: Alma assigns sequential numeric Handles instead of meaningful ones
+   Example: 11084/1742400039 instead of 11084/99
+   
+   Cause: The record may already have a Handle assigned by Alma's automatic
+          numbering system
+   
+   Solution: Contact Ex Libris support to investigate why the system is
+             not respecting existing Handle identifiers in metadata
+
+Issue: Handles don't resolve after workflow completes
+   
+   Possible causes:
+   • Steps run out of order (Migration job must run first)
+   • Wrong DC METADATA setting used (should be "Do not add metadata")
+   • dc:identifier field has dcterms:URI attribute (remove this attribute)
+   • Handle server needs more time to update (wait 30 minutes and retry)
+   
+   Solution: Re-run the workflow in the correct order with correct settings
+
+Issue: Some Handles resolve, others don't (20-30% failure rate)
+   
+   This was a known issue in 2025-2026. Possible causes:
+   • Mixed migration batches (some records processed differently)
+   • Timing issues during initial Handle server setup
+   • Metadata differences that affect Handle assignment logic
+   
+   Solution: For persistent non-resolving Handles, open a case with
+             Ex Libris support and reference Case 07949018
+
+═══════════════════════════════════════════════════════════════════════
+VALIDATION STATUS CODES
+═══════════════════════════════════════════════════════════════════════
+
+READY
+   • Record has a properly formatted Handle dc:identifier
+   • No known issues detected
+   • Safe to include in Handle assignment workflow
+
+NO_HANDLE
+   • Record does not have a Handle dc:identifier
+   • Add Handle identifier before running workflow
+   • Format: http://hdl.handle.net/11084/YOUR_ID
+
+NEEDS_FIX
+   • Record has a Handle but there are formatting issues
+   • Fix issues before running workflow
+   • See "issue" column in CSV for specific problems
+
+ERROR / FAILED
+   • Could not validate record (API error, XML parsing error, etc.)
+   • Investigate the specific error message
+   • Verify MMS ID is correct
+
+═══════════════════════════════════════════════════════════════════════
+NEXT STEPS
+═══════════════════════════════════════════════════════════════════════
+
+✅ You have 1 record(s) ready for Handle assignment!
+
+1. Review the CSV file to see which records are ready (status = READY)
+2. Create a set in Alma with the READY MMS IDs
+3. Follow the workflow steps above
+4. After completion, use CABB Function 9 to validate Handles
+
+
+═══════════════════════════════════════════════════════════════════════
+REFERENCES
+═══════════════════════════════════════════════════════════════════════
+
+Documentation:
+  • FUNCTION_20_ASSIGN_HANDLES.md - Full Function 20 documentation
+  • FUNCTION_9_VALIDATE_HANDLES.md - Handle validation tool
+  • Alma Knowledge Center: Persistent Identifiers
+  • Ex Libris Case 07949018 - Handle workflow guidance
+
+Related CABB Functions:
+  • Function 9: Validate Handle URLs - Test Handle resolution
+  • Function 8: Export dc:identifier CSV - Review identifier fields
+  • Function 16: Add MMS ID as dc:identifier - Add identifier fields
+
+For additional support:
+  • Check ../all-things-alma/PROPER_HANDLE_WORKFLOW.md
+  • Consult Alma documentation on Persistent Identifiers
+  • Open Ex Libris support case if issues persist
+
+═══════════════════════════════════════════════════════════════════════
+End of Instructions
+═══════════════════════════════════════════════════════════════════════

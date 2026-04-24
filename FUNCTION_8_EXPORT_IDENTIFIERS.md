@@ -761,8 +761,25 @@ Success metric:    Grinnell:* count = dg_* count
 - Cross-reference MMS IDs between exports
 - Use Function 8 for regular monitoring, Function 3 for comprehensive backup
 
+### Before Function 20 (Handle Assignment Preparation)
+
+**Workflow:**
+1. Run **Function 8** to export all identifiers
+2. Review Handle coverage in CSV (dc:identifier column)
+3. Identify records with existing Handle identifiers
+4. Run **Function 20** on those records to validate readiness
+5. Function 20 checks Handle format and generates assignment workflow
+
+**Why this matters:**
+- Function 8 provides quick overview of Handle coverage across a set
+- Function 20 performs detailed validation of Handle readiness
+- Together they help plan Handle assignment batches
+- Function 8 CSV can be filtered to find records needing Handle preparation
+
 ## Related Documentation
 
+- **Function 20**: Prepare Handles for Assignment (Handle workflow preparation)
+- **Function 9**: Validate Handle URLs (Handle validation)
 - **Function 7**: Add Grinnell: dc:identifier Field As Needed
 - **Function 3**: Export Set to DCAP01 CSV
 - **Function 1**: Fetch and Display Single XML

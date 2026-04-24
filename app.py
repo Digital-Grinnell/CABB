@@ -8742,6 +8742,430 @@ End of README
         institution_code = os.getenv('ALMA_INSTITUTION_CODE', '')
         return institution_code
 
+    def prepare_handles_for_assignment(self, mms_ids: list, working_dir: str = None, 
+                                       progress_callback=None) -> tuple[bool, str, Optional[str]]:
+        """
+        Function 20: Prepare and validate records for Handle assignment.
+        
+        This function validates that bibliographic records are properly formatted
+        for Handle assignment and generates a report with instructions for running
+        the Alma Handle workflow.
+        
+        Validation checks:
+        1. Record has at least one dc:identifier field with a Handle URL
+        2. Handle URL format is correct (http://hdl.handle.net/11084/...)
+        3. No dcterms:URI attribute on dc:identifier fields (known issue)
+        4. Record is not a collection (Handles only work on bib records)
+        
+        Args:
+            mms_ids: List of MMS IDs to process
+            working_dir: Directory for output files (default: current directory)
+            progress_callback: Optional callback for progress updates
+            
+        Returns:
+            tuple: (success: bool, message: str, output_file: Optional[str])
+        """
+        from datetime import datetime
+        from xml.etree import ElementTree as ET
+        
+        # Use working directory or current directory
+        if working_dir:
+            output_dir = Path(working_dir)
+        else:
+            output_dir = Path.cwd()
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_file = output_dir / f"handle_preparation_{timestamp}.csv"
+        
+        self.log("🔗 Starting Handle preparation and validation")
+        self.log(f"   Processing {len(mms_ids)} record(s)")
+        
+        # Tracking
+        records_ready = []
+        records_need_fixes = []
+        records_failed = []
+        
+        for idx, mms_id in enumerate(mms_ids, 1):
+            if progress_callback:
+                progress = idx / len(mms_ids)
+                progress_callback(progress, f"Validating {mms_id}...")
+            
+            self.log(f"\n📄 [{idx}/{len(mms_ids)}] Validating {mms_id}")
+            
+            try:
+                # Fetch the record as JSON to access DC metadata in anies field
+                api_url = self._get_alma_api_url()
+                headers = {'Accept': 'application/json'}
+                response = requests.get(
+                    f"{api_url}/almaws/v1/bibs/{mms_id}?view=full&expand=None&apikey={self.api_key}",
+                    headers=headers
+                )
+                
+                if response.status_code != 200:
+                    self.log(f"   ❌ Failed to fetch record: {response.status_code}", logging.WARNING)
+                    records_failed.append({
+                        'mms_id': mms_id,
+                        'status': 'FAILED',
+                        'issue': f'API error: {response.status_code}',
+                        'handle_url': '',
+                        'fix_needed': 'Check MMS ID validity and API access'
+                    })
+                    continue
+                
+                # Parse JSON response
+                record_data = response.json()
+                
+                # Extract Dublin Core XML from anies field
+                anies = record_data.get("anies", [])
+                if not anies:
+                    self.log(f"   ⚠️ No DC metadata (anies field) found", logging.WARNING)
+                    records_failed.append({
+                        'mms_id': mms_id,
+                        'status': 'FAILED',
+                        'issue': 'No Dublin Core metadata in record',
+                        'handle_url': '',
+                        'fix_needed': 'Verify record has DC metadata'
+                    })
+                    continue
+                
+                dc_xml = anies[0] if isinstance(anies, list) else anies
+                dc_root = ET.fromstring(dc_xml)
+                
+                # Define DC namespace
+                dc_ns = {'dc': 'http://purl.org/dc/elements/1.1/'}
+                
+                # Extract all dc:identifier values
+                identifiers = []
+                for elem in dc_root.findall(".//dc:identifier", dc_ns):
+                    if elem.text and elem.text.strip():
+                        identifiers.append(elem.text.strip())
+                
+                self.log(f"   Found {len(identifiers)} dc:identifier field(s)")
+                
+                # Look for Handle URL in identifiers
+                handle_found = False
+                handle_url = None
+                issues = []
+                
+                for identifier in identifiers:
+                    # Check if this is a Handle URL
+                    if 'hdl.handle.net' in identifier or identifier.startswith('http://hdl.handle.net/'):
+                        handle_url = identifier
+                        handle_found = True
+                        
+                        # Validate Handle format
+                        if identifier.startswith('http://hdl.handle.net/11084/'):
+                            self.log(f"   ✅ Found valid Handle: {handle_url}")
+                        elif identifier.startswith('http://hdl.handle.net/'):
+                            self.log(f"   ⚠️ Found Handle with different prefix: {handle_url}")
+                            issues.append(f"Handle uses non-standard prefix: {handle_url}")
+                        elif identifier.startswith('11084/'):
+                            self.log(f"   ⚠️ Found partial Handle (missing http://): {identifier}")
+                            handle_url = f"http://hdl.handle.net/{identifier}"
+                            issues.append(f"Handle missing http:// prefix - should be: {handle_url}")
+                        else:
+                            self.log(f"   ⚠️ Found malformed Handle: {identifier}")
+                            issues.append(f"Handle format incorrect: {identifier}")
+                        
+                        break  # Use first Handle found
+                
+                # Check for dcterms:URI attribute (known issue from documentation)
+                # This attribute causes Handle assignment to fail
+                for elem in dc_root.findall(".//dc:identifier", dc_ns):
+                    if elem.get('{http://purl.org/dc/terms/}URI'):
+                        issues.append("dc:identifier has dcterms:URI attribute (must be removed)")
+                        self.log(f"   ⚠️ Found dcterms:URI attribute on dc:identifier", logging.WARNING)
+                
+                # Determine status
+                if not handle_found:
+                    self.log(f"   ❌ No Handle identifier found", logging.WARNING)
+                    records_need_fixes.append({
+                        'mms_id': mms_id,
+                        'status': 'NO_HANDLE',
+                        'issue': 'No Handle dc:identifier found in record',
+                        'handle_url': '',
+                        'fix_needed': 'Add Handle identifier to dc:identifier field'
+                    })
+                elif issues:
+                    self.log(f"   ⚠️ Handle found but needs fixes", logging.WARNING)
+                    records_need_fixes.append({
+                        'mms_id': mms_id,
+                        'status': 'NEEDS_FIX',
+                        'issue': '; '.join(issues),
+                        'handle_url': handle_url or '',
+                        'fix_needed': 'Fix identified issues before running Handle workflow'
+                    })
+                else:
+                    self.log(f"   ✅ Record ready for Handle assignment")
+                    records_ready.append({
+                        'mms_id': mms_id,
+                        'status': 'READY',
+                        'issue': '',
+                        'handle_url': handle_url or '',
+                        'fix_needed': ''
+                    })
+                    
+            except Exception as e:
+                self.log(f"   ❌ Error validating record: {e}", logging.ERROR)
+                records_failed.append({
+                    'mms_id': mms_id,
+                    'status': 'ERROR',
+                    'issue': str(e),
+                    'handle_url': '',
+                    'fix_needed': 'Investigate error'
+                })
+        
+        # Write results to CSV
+        import csv
+        
+        with open(output_file, 'w', newline='', encoding='utf-8') as f:
+            fieldnames = ['mms_id', 'status', 'handle_url', 'issue', 'fix_needed']
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            
+            for record in records_ready:
+                writer.writerow(record)
+            for record in records_need_fixes:
+                writer.writerow(record)
+            for record in records_failed:
+                writer.writerow(record)
+        
+        # Summary
+        total = len(mms_ids)
+        ready_count = len(records_ready)
+        needs_fix_count = len(records_need_fixes)
+        failed_count = len(records_failed)
+        
+        self.log(f"\n📊 Handle Preparation Summary:")
+        self.log(f"   Total records: {total}")
+        self.log(f"   ✅ Ready for Handle assignment: {ready_count}")
+        self.log(f"   ⚠️ Need fixes: {needs_fix_count}")
+        self.log(f"   ❌ Failed validation: {failed_count}")
+        
+        # Generate instructions file
+        instructions_file = output_dir / f"handle_workflow_instructions_{timestamp}.md"
+        with open(instructions_file, 'w', encoding='utf-8') as f:
+            f.write(self._generate_handle_workflow_instructions(
+                ready_count, needs_fix_count, failed_count, mms_ids
+            ))
+        
+        self.log(f"\n📄 Results written to: {output_file}")
+        self.log(f"📄 Workflow instructions: {instructions_file}")
+        
+        if ready_count > 0:
+            self.log(f"\n✅ {ready_count} record(s) ready for Handle assignment!")
+            self.log(f"   Follow instructions in {instructions_file}")
+            message = f"Handle preparation complete: {ready_count} ready, {needs_fix_count} need fixes, {failed_count} failed. Files: {output_file}, {instructions_file}"
+            return True, message, str(output_file)
+        elif needs_fix_count > 0:
+            self.log(f"\n⚠️ All records need fixes before Handle assignment", logging.WARNING)
+            message = f"Handle preparation complete: {needs_fix_count} records need fixes. File: {output_file}"
+            return True, message, str(output_file)
+        else:
+            self.log(f"\n❌ No records ready for Handle assignment", logging.ERROR)
+            message = f"Handle preparation failed: {failed_count} errors. File: {output_file}"
+            return False, message, str(output_file)
+    
+    def _generate_handle_workflow_instructions(self, ready_count: int, needs_fix_count: int, 
+                                               failed_count: int, mms_ids: list) -> str:
+        """
+        Generate detailed instructions for running the Alma Handle workflow.
+        
+        Args:
+            ready_count: Number of records ready for Handle assignment
+            needs_fix_count: Number of records needing fixes
+            failed_count: Number of failed validations
+            mms_ids: List of all MMS IDs processed
+            
+        Returns:
+            str: Instruction markdown content
+        """
+        from datetime import datetime
+        
+        instructions = f"""# Alma Handle Assignment Workflow - Function 20
+
+**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  
+**Records analyzed:** {len(mms_ids)}  
+**Ready for assignment:** {ready_count}  
+**Need fixes:** {needs_fix_count}  
+**Failed validation:** {failed_count}
+
+---
+
+## Proper Handle Workflow
+*(from Ex Libris Support - Feb 2, 2026)*
+
+For already existing Handles that should be redirected to Primo:
+
+### Step 1: Create a Set
+
+- In Alma, go to **Admin → Manage Sets**
+- Create an **ITEMIZED SET** with your MMS IDs
+- Name it descriptively (e.g., "Handle Assignment 2026-04-24")
+- Add your MMS IDs to the set
+- **IMPORTANT:** Keep sets under 100 records to avoid processing issues
+
+### Step 2: Run the "Handle Migration" Job
+
+- Go to **Admin → Run a Job → Handle Migration**
+- Select your set from Step 1
+- Use the control number sequence with the prefix used in your existing Handles
+- **EVEN IF records already have Handles, this job is REQUIRED**
+- This job copies existing Handles from metadata to the handle identifier in Alma's background system
+- Click **"Submit"**
+- Wait for job to complete (check Monitor Jobs)
+- **NOTE:** You may see "already has a handle identifier" messages — this is **EXPECTED** and can be ignored per Ex Libris support
+
+### Step 3: Run the Handle Integration Profile
+
+- Go to **Configuration → General → External Systems / Integration Profiles**
+- Find **"Persistent Handle Identifiers for Digital Resource"**
+- Click on the profile name (not the ...)
+- Click **"Actions"** tab
+- Enter your set name from Step 1
+- Select Action: **"Create and Update"**
+- Scroll **DOWN** to **"DC METADATA Upon Create"**
+- Select: **"Do not add metadata"**
+- Leave **"DC Identifier Prefix Field"** blank/empty
+- Scroll back **UP** and click **"Run"** (NOT "Save"!)
+- Wait for profile to complete
+
+### Step 4: Validate Results
+
+- Wait 10-15 minutes for Handle server updates to propagate
+- Use **CABB Function 9** (Validate Handle URLs) to test your Handles
+- Check that Handles resolve correctly to Primo records
+
+---
+
+## ⚠️ Critical Requirements
+
+### ORDER MATTERS!
+
+Step 2 (Handle Migration job) **MUST** run **BEFORE** Step 3 (Integration Profile).  
+If you run them out of order, Handles will not resolve correctly.
+
+### DC METADATA SETTING!
+
+When running the integration profile, you **MUST** select: **"Do not add metadata"**
+
+If you select "Add new Handles to metadata", this can cause issues with existing Handle assignments.
+
+### SET SIZE LIMIT!
+
+Do not process more than 100 records at once.  
+Large batches can cause the workflow to fail or behave unpredictably.
+
+### COLLECTIONS NOT SUPPORTED!
+
+Handles can only be assigned to **BIBLIOGRAPHIC RECORDS**.  
+Collection records cannot receive Handles via this workflow.
+
+---
+
+## Known Issues and Troubleshooting
+
+### Issue: Alma assigns sequential numeric Handles instead of meaningful ones
+
+**Example:** `11084/1742400039` instead of `11084/99`
+
+**Cause:** The record may already have a Handle assigned by Alma's automatic numbering system
+
+**Solution:** Contact Ex Libris support to investigate why the system is not respecting existing Handle identifiers in metadata
+
+### Issue: Handles don't resolve after workflow completes
+
+**Possible causes:**
+- Steps run out of order (Migration job must run first)
+- Wrong DC METADATA setting used (should be "Do not add metadata")
+- dc:identifier field has dcterms:URI attribute (remove this attribute)
+- Handle server needs more time to update (wait 30 minutes and retry)
+
+**Solution:** Re-run the workflow in the correct order with correct settings
+
+### Issue: Some Handles resolve, others don't (20-30% failure rate)
+
+This was a known issue in 2025-2026. Possible causes:
+- Mixed migration batches (some records processed differently)
+- Timing issues during initial Handle server setup
+- Metadata differences that affect Handle assignment logic
+
+**Solution:** For persistent non-resolving Handles, open a case with Ex Libris support and reference **Case 07949018**
+
+---
+
+## Validation Status Codes
+
+| Status | Description |
+|--------|-------------|
+| **READY** | Record has a properly formatted Handle dc:identifier<br>No known issues detected<br>Safe to include in Handle assignment workflow |
+| **NO_HANDLE** | Record does not have a Handle dc:identifier<br>Add Handle identifier before running workflow<br>Format: `http://hdl.handle.net/11084/YOUR_ID` |
+| **NEEDS_FIX** | Record has a Handle but there are formatting issues<br>Fix issues before running workflow<br>See "issue" column in CSV for specific problems |
+| **ERROR/FAILED** | Could not validate record (API error, XML parsing error, etc.)<br>Investigate the specific error message<br>Verify MMS ID is correct |
+
+---
+
+## Next Steps
+
+"""
+        if ready_count > 0:
+            instructions += f"""### ✅ You have {ready_count} record(s) ready for Handle assignment!
+
+1. Review the CSV file to see which records are ready (status = READY)
+2. Create a set in Alma with the READY MMS IDs
+3. Follow the workflow steps above
+4. After completion, use CABB Function 9 to validate Handles
+
+"""
+        
+        if needs_fix_count > 0:
+            instructions += f"""### ⚠️ You have {needs_fix_count} record(s) that need fixes
+
+1. Review the CSV file to see what needs fixing
+2. Fix the identified issues in Alma metadata
+3. Re-run Function 20 to validate the fixes
+4. Then proceed with Handle assignment workflow
+
+"""
+        
+        if failed_count > 0:
+            instructions += f"""### ❌ {failed_count} record(s) failed validation
+
+1. Check the CSV file for error details
+2. Verify MMS IDs are correct
+3. Investigate any API or XML parsing errors
+
+"""
+        
+        instructions += f"""---
+
+## References
+
+### Documentation
+
+- **FUNCTION_20_ASSIGN_HANDLES.md** - Full Function 20 documentation
+- **FUNCTION_9_VALIDATE_HANDLES.md** - Handle validation tool
+- **Alma Knowledge Center:** Persistent Identifiers
+- **Ex Libris Case 07949018** - Handle workflow guidance
+
+### Related CABB Functions
+
+- **Function 9:** Validate Handle URLs - Test Handle resolution
+- **Function 8:** Export dc:identifier CSV - Review identifier fields
+- **Function 16:** Add MMS ID as dc:identifier - Add identifier fields
+
+### Additional Support
+
+- Check `../all-things-alma/PROPER_HANDLE_WORKFLOW.md`
+- Consult Alma documentation on Persistent Identifiers
+- Open Ex Libris support case if issues persist
+
+---
+
+*Generated by CABB Function 20 - Prepare Handles for Assignment*
+"""
+        return instructions
+
 
 def main(page: ft.Page):
     """Main Flet application"""
@@ -8794,6 +9218,32 @@ def main(page: ft.Page):
     
     add_log_message("Application started")
     add_log_message(f"Log file: {log_filename}")
+    
+    # Working directory for output files
+    working_dir_input = ft.TextField(
+        label="Working Directory",
+        hint_text="Directory for output files",
+        width=500,
+        value=storage.get_ui_state("working_dir", str(Path.cwd())),
+        read_only=True,
+        on_change=lambda e: storage.set_ui_state("working_dir", e.control.value)
+    )
+    
+    def on_directory_picker_result(e: ft.FilePickerResultEvent):
+        """Handle directory picker result"""
+        if e.path:
+            working_dir_input.value = e.path
+            storage.set_ui_state("working_dir", e.path)
+            add_log_message(f"📂 Working directory set to: {e.path}")
+            page.update()
+    
+    # Create directory picker
+    directory_picker = ft.FilePicker(on_result=on_directory_picker_result)
+    page.overlay.append(directory_picker)
+    
+    def pick_working_directory(e):
+        """Open directory picker for working directory"""
+        directory_picker.get_directory_path(dialog_title="Select Working Directory")
     
     # Input fields - restore from persistent storage
     mms_id_input = ft.TextField(
@@ -10695,6 +11145,74 @@ def main(page: ft.Page):
             add_log_message("⚠️ Thumbnail creation failed - check log for details")
             add_log_message("💡 Representation files may not be accessible locally")
     
+    def on_function_20_click(e):
+        """Handle Function 20: Prepare Handles for Assignment"""
+        # Determine if batch or single mode
+        is_batch = editor.set_members and len(editor.set_members) > 0
+        
+        if not is_batch:
+            # Single record mode
+            if not mms_id_input.value:
+                update_status("Please enter an MMS ID or load a set", True)
+                return
+            mms_ids_to_process = [mms_id_input.value]
+        else:
+            # Batch mode
+            mms_ids_to_process = editor.set_members
+        
+        add_log_message(f"🔗 Starting Handle preparation and validation for {len(mms_ids_to_process)} record(s)")
+        update_status(f"Preparing Handles for {len(mms_ids_to_process)} record(s)...", False)
+        
+        if is_batch:
+            # Show progress bar for batch processing
+            set_progress_bar.visible = True
+            set_progress_bar.value = 0
+            set_progress_text.visible = True
+            set_progress_text.value = f"Validating: 0/{len(mms_ids_to_process)} records"
+            page.update()
+            
+            def progress_update(progress, message):
+                set_progress_bar.value = progress
+                current = int(progress * len(mms_ids_to_process))
+                set_progress_text.value = f"Validating: {current}/{len(mms_ids_to_process)} records ({progress*100:.1f}%)"
+                status_text.value = message
+                page.update()
+        else:
+            progress_update = None
+        
+        # Prepare and validate handles
+        storage.record_function_usage("function_20_prepare_handles")
+        success, message, output_file = editor.prepare_handles_for_assignment(
+            mms_ids_to_process,
+            working_dir=working_dir_input.value,
+            progress_callback=progress_update
+        )
+        
+        # Hide progress bar (if it was shown)
+        if is_batch:
+            set_progress_bar.visible = False
+            set_progress_text.visible = False
+            page.update()
+        
+        update_status(message, not success)
+        if success and output_file:
+            # Show where files were saved
+            add_log_message(f"📁 Files saved to: {working_dir_input.value}")
+            add_log_message(f"   • {Path(output_file).name}")
+            add_log_message(f"   • handle_workflow_instructions_*.md")
+            
+            # Auto-populate Set ID field with output file path
+            set_id_input.value = output_file
+            add_log_message(f"📋 Results file path copied to Set ID field")
+            page.update()
+            
+            add_log_message("Handle preparation complete")
+            add_log_message("💡 Tip: Review the CSV to see which records are ready")
+            add_log_message("💡 See the instructions file for the Alma Handle workflow")
+            add_log_message("💡 Use Function 9 to validate Handles after assignment")
+        elif not success:
+            add_log_message("⚠️ Handle preparation failed - check log for details")
+    
     # Function definitions with metadata
     # Active functions - frequently used
     active_functions = [
@@ -10712,7 +11230,8 @@ def main(page: ft.Page):
         "function_16_add_mms_id_identifier",
         "function_17_restore_metadata",
         "function_18_identify_single_tiff",
-        "function_19_create_thumbnails_from_reps"
+        "function_19_create_thumbnails_from_reps",
+        "function_20_prepare_handles"
     ]
     
     # Inactive functions - less frequently used
@@ -10851,6 +11370,12 @@ def main(page: ft.Page):
             "icon": "🖼️",
             "handler": on_function_19_click,
             "help_file": "FUNCTION_19_CREATE_THUMBNAILS_FROM_REPS.md"
+        },
+        "function_20_prepare_handles": {
+            "label": "20: Prepare Handles for Assignment",
+            "icon": "🔗",
+            "handler": on_function_20_click,
+            "help_file": "FUNCTION_20_ASSIGN_HANDLES.md"
         }
     }
     
@@ -11011,11 +11536,22 @@ def main(page: ft.Page):
             ft.Container(
                 content=ft.Column([
                     ft.Text("Connection", size=18, weight=ft.FontWeight.BOLD),
-                    ft.ElevatedButton(
-                        "Connect to Alma API",
-                        on_click=on_connect_click,
-                        icon=ft.Icons.CONNECT_WITHOUT_CONTACT
-                    ),
+                    ft.Row([
+                        ft.ElevatedButton(
+                            "Connect to Alma API",
+                            on_click=on_connect_click,
+                            icon=ft.Icons.CONNECT_WITHOUT_CONTACT
+                        ),
+                    ], spacing=10),
+                    ft.Divider(height=5),
+                    ft.Row([
+                        working_dir_input,
+                        ft.IconButton(
+                            icon=ft.Icons.FOLDER_OPEN,
+                            tooltip="Select working directory",
+                            on_click=pick_working_directory
+                        ),
+                    ], spacing=5),
                 ], spacing=5),
                 padding=5,
             ),

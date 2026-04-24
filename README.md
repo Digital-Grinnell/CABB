@@ -34,6 +34,7 @@ Functions are split into **Active** (shown first in the dropdown) and **Inactive
 - **17: Restore Metadata from Previous Version** - Automate the Alma MDE "View Versions → Restore" workflow via Selenium/Chrome to restore bibliographic metadata from a prior version
 - **18: Identify Single TIFF Objects** - Scan a set and report digital objects that have only one TIFF representation (likely candidates for JPG derivative creation)
 - **19: Create Thumbnails from Representations** - Generate thumbnail images from existing digital representation files (images or PDFs) in Alma-D; searches for files by name when exact paths don't exist locally
+- **20: Prepare Handles for Assignment** - Validate records are ready for Handle assignment and generate step-by-step instructions for running the Alma Handle workflow
 
 #### Inactive Functions
 
