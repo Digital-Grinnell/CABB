@@ -391,20 +391,19 @@ The thumbnail directory is configured via the `.env` file:
 
 ```dotenv
 # Thumbnail Upload Configuration (Function 14)
-THUMBNAIL_FOLDER_PATH=/Volumes/DGIngest/Migration-to-Alma/exports/alumni-oral-histories/OBJ
+THUMBNAIL_FOLDER_PATH=/path/to/your/thumbnail/files
 ```
 
 **To change the thumbnail directory:**
 1. Edit the `.env` file in the CABB root directory
-2. Update the `THUMBNAIL_FOLDER_PATH` value
+2. Update the `THUMBNAIL_FOLDER_PATH` value to point to your thumbnail files location
 3. Restart the CABB application
 
 ### Default Directory
 
-If `THUMBNAIL_FOLDER_PATH` is not set, the default is:
-```
-/Volumes/DGIngest/Migration-to-Alma/exports/alumni-oral-histories/OBJ
-```
+If `THUMBNAIL_FOLDER_PATH` is not set, the default is the **current working directory** where you run the CABB application.
+
+This allows for flexible thumbnail file locations without requiring a specific volume mount.
 
 ### Programmatic Override
 

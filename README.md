@@ -33,6 +33,7 @@ Functions are split into **Active** (shown first in the dropdown) and **Inactive
 - **16: Add MMS ID as dc:identifier** - Add the bare MMS ID as a `dc:identifier` field if not already present; handles duplicate identifier cleanup
 - **17: Restore Metadata from Previous Version** - Automate the Alma MDE "View Versions → Restore" workflow via Selenium/Chrome to restore bibliographic metadata from a prior version
 - **18: Identify Single TIFF Objects** - Scan a set and report digital objects that have only one TIFF representation (likely candidates for JPG derivative creation)
+- **19: Create Thumbnails from Representations** - Generate thumbnail images from existing digital representation files (images or PDFs) in Alma-D; searches for files by name when exact paths don't exist locally
 
 #### Inactive Functions
 

@@ -11,6 +11,7 @@ import subprocess
 from datetime import datetime
 from dotenv import load_dotenv
 from typing import Optional, Union
+from pathlib import Path
 import xml.etree.ElementTree as ET
 import xml.dom.minidom as minidom
 import requests
@@ -2202,7 +2203,8 @@ class AlmaBibEditor:
         
         Args:
             mms_ids: List of MMS IDs to process
-            thumbnail_folder: Folder containing .clientThumb files (default: from THUMBNAIL_FOLDER_PATH env var)
+            thumbnail_folder: Folder containing .clientThumb files 
+                            (default: from THUMBNAIL_FOLDER_PATH env var, or current working directory)
             progress_callback: Optional callback function(current, total) for progress updates
             
         Returns:
@@ -2214,15 +2216,17 @@ class AlmaBibEditor:
         import csv
         import shutil
         
-        # Get thumbnail folder from environment variable if not provided
-        if thumbnail_folder is None:
-            thumbnail_folder = os.getenv('THUMBNAIL_FOLDER_PATH', '/Volumes/DGIngest/Migration-to-Alma/exports/alumni-oral-histories/OBJ')
-        
         # Create timestamped output directory in Downloads folder (absolute path)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         downloads_dir = Path.home() / "Downloads"
         output_dir = downloads_dir / f"CABB_thumbnail_prep_{timestamp}"
         output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Get thumbnail folder from environment variable or parameter
+        # Default to current working directory if not specified
+        if thumbnail_folder is None:
+            thumbnail_folder = os.getenv('THUMBNAIL_FOLDER_PATH', str(Path.cwd()))
+            self.log(f"No thumbnail_folder specified, searching in current directory: {thumbnail_folder}", logging.INFO)
         
         self.log(f"Starting Function 14a: Prepare .clientThumb Thumbnails")
         self.log(f"Processing {len(mms_ids)} MMS ID(s)")
@@ -8175,6 +8179,551 @@ For questions, consult the references above or contact your Alma administrator.
         print(f"✓ Metadata restored for {mms_id}")
         return True, f"Restored previous version for {mms_id}"
     
+    def create_thumbnails_from_representations(self, mms_ids: list, thumbnail_size: int = 200, 
+                                               search_directory: str = None,
+                                               progress_callback=None) -> tuple[bool, str, Optional[str]]:
+        """
+        Function 19: Create thumbnail images from digital representation files.
+        
+        For each MMS ID:
+        1. Fetch all digital representations from Alma
+        2. Search for representation files locally (by exact path or filename search)
+        3. Create thumbnail images (resized to specified size)
+        4. Save thumbnails to a timestamped output directory
+        5. Generate instructions for attaching selected thumbnails to records
+        
+        Thumbnails are named: {MMS_ID}_rep{REP_NUM}_{USAGE_TYPE}_thumbnail.jpg
+        Example: 991234567890104641_rep1_MASTER_thumbnail.jpg
+        
+        This allows you to:
+        - Review all representation images as thumbnails
+        - Select the best thumbnail for each record
+        - Manually attach chosen thumbnails using Function 14a workflow
+        
+        Args:
+            mms_ids: List of MMS IDs to process
+            thumbnail_size: Maximum width/height in pixels for thumbnails (default: 200)
+            search_directory: Optional directory to search for files by filename when exact path 
+                            doesn't exist (default: uses REP_FILES_SEARCH_PATH env var or current dir)
+            progress_callback: Optional callback function(current, total) for progress updates
+            
+        Returns:
+            tuple: (success: bool, message: str, output_dir: Optional[str])
+        """
+        from pathlib import Path
+        from datetime import datetime
+        import requests
+        
+        # Verify Pillow is available
+        try:
+            from PIL import Image
+        except ImportError:
+            return False, "Pillow library not installed. Run: pip install Pillow", None
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        downloads_dir = Path.home() / "Downloads"
+        output_dir = downloads_dir / f"CABB_rep_thumbnails_{timestamp}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Set up search directory for finding files by filename
+        self.log("="*70)
+        self.log("FUNCTION 19: CREATE THUMBNAILS FROM REPRESENTATIONS - STARTING")
+        self.log("="*70)
+        
+        if search_directory is None:
+            search_directory = os.getenv('REP_FILES_SEARCH_PATH', str(Path.cwd()))
+            env_value = os.getenv('REP_FILES_SEARCH_PATH')
+            self.log(f"🔍 Checking REP_FILES_SEARCH_PATH environment variable...")
+            self.log(f"   Environment value: {env_value if env_value else '(not set)'}")
+            self.log(f"   Will use directory: {search_directory}")
+        else:
+            self.log(f"📁 Using search_directory parameter: {search_directory}")
+        
+        search_path = Path(search_directory) if search_directory else None
+        if search_path and not search_path.exists():
+            self.log(f"⚠️  WARNING: Search directory does not exist!")
+            self.log(f"   Path: {search_directory}")
+            self.log(f"   Will only check exact paths from Alma API")
+            search_path = None
+        elif search_path:
+            self.log(f"✅ Search directory verified and ready for recursive search")
+            self.log(f"   Path: {search_path}")
+        else:
+            self.log(f"⚠️  No search directory configured")
+        
+        self.log(f"")
+        self.log(f"📊 Processing {len(mms_ids)} MMS ID(s)")
+        self.log(f"📐 Thumbnail size: {thumbnail_size}x{thumbnail_size} pixels")
+        self.log(f"📂 Output directory: {output_dir}")
+        self.log("="*70)
+        
+        if not self.api_key:
+            return False, "API Key not configured", None
+        
+        try:
+            # Initialize counters
+            success_count = 0
+            failed_count = 0
+            no_reps_count = 0
+            no_files_count = 0
+            thumbnail_count = 0
+            total = len(mms_ids)
+            
+            # Create a README file with instructions
+            readme_file = output_dir / "README.txt"
+            
+            for idx, mms_id in enumerate(mms_ids, 1):
+                if self.kill_switch:
+                    self.log("Operation cancelled by user", logging.WARNING)
+                    break
+                
+                if progress_callback:
+                    progress_callback(idx, total)
+                
+                self.log("")
+                self.log("="*70)
+                self.log(f"📋 Processing record {idx}/{total}: MMS ID {mms_id}")
+                self.log("="*70)
+                
+                # Step 1: Fetch representations from Alma
+                api_url = self._get_alma_api_url()
+                rep_url = f"{api_url}/almaws/v1/bibs/{mms_id}/representations"
+                headers = {
+                    'Authorization': f'apikey {self.api_key}',
+                    'Accept': 'application/json'
+                }
+                
+                self.log(f"  🌐 Fetching representations from Alma API...")
+                response = requests.get(rep_url, headers=headers)
+                
+                if response.status_code != 200:
+                    self.log(f"  ❌ Failed to fetch representations: HTTP {response.status_code}")
+                    failed_count += 1
+                    continue
+                
+                rep_data = response.json()
+                representations = rep_data.get('representation', [])
+                
+                if not representations:
+                    self.log(f"  ⚠️  No representations found for this record")
+                    no_reps_count += 1
+                    continue
+                
+                self.log(f"  ✅ Found {len(representations)} representation(s)")
+                
+                # Step 2: Process each representation
+                record_thumbnail_count = 0
+                for rep_num, rep in enumerate(representations, 1):
+                    rep_id = rep.get('id', '')
+                    usage_type = rep.get('usage_type', {}).get('value', 'UNKNOWN')
+                    label = rep.get('label', '')
+                    
+                    self.log(f"  📑 Representation {rep_num}/{len(representations)}: {label} (Type: {usage_type})")
+                    
+                    # Get files in this representation
+                    files_data = rep.get('files', {})
+                    if not isinstance(files_data, dict):
+                        self.log(f"     ⚠️  No files data found in representation")
+                        continue
+                    
+                    # Get files link and fetch file list
+                    files_link = files_data.get('link')
+                    if not files_link:
+                        self.log(f"     ⚠️  No files link found in representation")
+                        continue
+                    
+                    self.log(f"     Fetching file list from Alma...")
+                    files_response = requests.get(files_link, headers=headers)
+                    if files_response.status_code != 200:
+                        self.log(f"     ❌ Failed to fetch files: HTTP {files_response.status_code}")
+                        continue
+                    
+                    files_json = files_response.json()
+                    files = files_json.get('representation_file', [])
+                    if not isinstance(files, list):
+                        files = [files] if files else []
+                    
+                    if not files:
+                        self.log(f"     ⚠️  No files in this representation")
+                        no_files_count += 1
+                        continue
+                    
+                    self.log(f"     Found {len(files)} file(s) in representation")
+                    
+                    # Process the first image or PDF file found
+                    for file_info in files:
+                        file_label = file_info.get('label', '')
+                        file_path = file_info.get('path', '')
+                        mime_type = file_info.get('mime_type', '')
+                        
+                        # Check if it's an image or PDF file
+                        is_image = mime_type.startswith('image/')
+                        is_pdf = mime_type == 'application/pdf' or file_label.lower().endswith('.pdf')
+                        
+                        if not (is_image or is_pdf):
+                            self.log(f"     ⊘ Skipping unsupported file type: {file_label} ({mime_type})")
+                            continue
+                        
+                        file_type_label = "PDF" if is_pdf else "image"
+                        self.log(f"  📄 Processing {file_type_label} file: {file_label}")
+                        
+                        # Try to access the file
+                        # Strategy:
+                        # 1. Check if exact path from Alma exists
+                        # 2. If not, search for file by name in search_directory (recursively)
+                        # 3. If still not found, skip
+                        
+                        thumbnail_created = False
+                        actual_file_path = None
+                        
+                        # Step 1: Check exact path from Alma
+                        if file_path and Path(file_path).exists():
+                            actual_file_path = file_path
+                            self.log(f"     ✅ Found at exact path from Alma")
+                        
+                        # Step 2: Search by filename if exact path didn't work
+                        elif search_path:
+                            # Extract just the filename from the path
+                            filename = Path(file_path).name if file_path else file_label
+                            if not filename:
+                                self.log(f"     ❌ No filename available for search")
+                            else:
+                                self.log(f"     🔍 Exact path not found, searching by filename...")
+                                self.log(f"        Filename to find: '{filename}'")
+                                self.log(f"        Searching in: {search_path}")
+                                self.log(f"        Search type: RECURSIVE (all subdirectories)")
+                                # Search recursively for the file using rglob
+                                matches = list(search_path.rglob(filename))
+                                if matches:
+                                    actual_file_path = str(matches[0])
+                                    self.log(f"     ✅ FOUND by recursive search!")
+                                    self.log(f"        Location: {actual_file_path}")
+                                    if len(matches) > 1:
+                                        self.log(f"        Note: Found {len(matches)} matches, using first one")
+                                else:
+                                    self.log(f"     ❌ NOT FOUND - file does not exist in search directory tree")
+                        else:
+                            # No search path configured
+                            self.log(f"     ❌ Exact path does not exist and no search directory configured")
+                        
+                        # Step 3: Create thumbnail if file was found
+                        if actual_file_path:
+                            try:
+                                thumbnail_created = self._create_thumbnail_from_file(
+                                    actual_file_path, mms_id, rep_num, usage_type, 
+                                    output_dir, thumbnail_size
+                                )
+                                if thumbnail_created:
+                                    record_thumbnail_count += 1
+                                    thumbnail_count += 1
+                            except Exception as e:
+                                self.log(f"     ❌ ERROR creating thumbnail: {e}")
+                        else:
+                            self.log(f"     ⚠️  File not accessible - cannot create thumbnail")
+                            if file_path:
+                                self.log(f"        Alma reported path: {file_path}")
+                            if search_path:
+                                filename_tried = Path(file_path).name if file_path else file_label
+                                self.log(f"        Searched for: '{filename_tried}'")
+                                self.log(f"        Searched in: {search_path} (recursively)")
+                                self.log(f"        Result: File not found anywhere in directory tree")
+                            else:
+                                self.log(f"        💡 Tip: Set REP_FILES_SEARCH_PATH in .env to enable recursive search")
+                        
+                        self.log("")  # Blank line for readability
+                        
+                        # Only process first image file per representation
+                        if thumbnail_created:
+                            break
+                
+                if record_thumbnail_count > 0:
+                    success_count += 1
+                    self.log(f"  ✅ Successfully created {record_thumbnail_count} thumbnail(s) for this record")
+                else:
+                    if representations:
+                        self.log(f"  ⚠️  No accessible image files found in representations")
+                        no_files_count += 1
+            
+            # Generate README with instructions
+            readme_content = self._generate_thumbnail_selection_instructions(
+                success_count, thumbnail_count, output_dir
+            )
+            readme_file.write_text(readme_content, encoding='utf-8')
+            
+            # Final summary
+            self.log("")
+            self.log("="*70)
+            self.log("📊 FUNCTION 19 COMPLETE - SUMMARY")
+            self.log("="*70)
+            message = (
+                f"✅ {success_count} records processed successfully\n"
+                f"🖼️  {thumbnail_count} thumbnails created\n"
+                f"⚠️  {no_reps_count} records had no representations\n"
+                f"⚠️  {no_files_count} representations had no accessible files\n"
+                f"❌ {failed_count} failed\n"
+                f"\n📂 Output directory: {output_dir}\n"
+                f"📄 See README.txt for instructions on selecting and attaching thumbnails"
+            )
+            
+            self.log(message)
+            self.log("="*70)
+            
+            if thumbnail_count == 0:
+                return False, "No thumbnails created - files may not be accessible locally", str(output_dir)
+            
+            return True, message, str(output_dir)
+            
+        except Exception as e:
+            error_msg = f"❌ ERROR in Function 19: {str(e)}"
+            self.log(error_msg)
+            import traceback
+            self.log(traceback.format_exc(), logging.DEBUG)
+            return False, error_msg, None
+    
+    def _create_thumbnail_from_file(self, source_path: str, mms_id: str, rep_num: int, 
+                                    usage_type: str, output_dir: Path, max_size: int) -> bool:
+        """
+        Create a thumbnail from an image or PDF file.
+        For PDFs, extracts the first page as an image.
+        
+        Args:
+            source_path: Path to source image or PDF file
+            mms_id: MMS ID for naming
+            rep_num: Representation number for naming
+            usage_type: Usage type for naming
+            output_dir: Output directory
+            max_size: Maximum width/height in pixels
+            
+        Returns:
+            bool: True if thumbnail created successfully
+        """
+        try:
+            from PIL import Image
+            from pathlib import Path
+            
+            # Generate thumbnail filename
+            # Format: {MMS_ID}_rep{NUM}_{USAGE}_thumbnail.jpg
+            thumbnail_name = f"{mms_id}_rep{rep_num}_{usage_type}_thumbnail.jpg"
+            thumbnail_path = output_dir / thumbnail_name
+            
+            # Check if source is a PDF
+            is_pdf = source_path.lower().endswith('.pdf')
+            
+            if is_pdf:
+                # Handle PDF files - extract first page
+                try:
+                    from pdf2image import convert_from_path
+                    self.log(f"      📑 Converting first page of PDF to image...")
+                    # Convert only the first page with high quality
+                    images = convert_from_path(source_path, first_page=1, last_page=1, dpi=200)
+                    if not images:
+                        self.log(f"      ✗ No pages found in PDF")
+                        return False
+                    img = images[0]
+                except ImportError:
+                    self.log(f"      ✗ pdf2image library not installed. Install with: pip install pdf2image")
+                    self.log(f"      Note: Also requires poppler. On macOS: brew install poppler")
+                    return False
+                except Exception as e:
+                    self.log(f"      ✗ Failed to convert PDF: {e}")
+                    return False
+                
+                # Convert to RGB if necessary
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    background = Image.new('RGB', img.size, (255, 255, 255))
+                    if img.mode == 'P':
+                        img = img.convert('RGBA')
+                    if img.mode in ('RGBA', 'LA'):
+                        background.paste(img, mask=img.split()[-1])
+                        img = background
+                    else:
+                        img = background
+                elif img.mode != 'RGB':
+                    img = img.convert('RGB')
+                
+                # Create thumbnail (maintains aspect ratio)
+                img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                
+                # Save as JPEG
+                img.save(thumbnail_path, 'JPEG', quality=85, optimize=True)
+            else:
+                # Handle regular image files
+                with Image.open(source_path) as img:
+                    # Convert to RGB if necessary
+                    if img.mode in ('RGBA', 'LA', 'P'):
+                        background = Image.new('RGB', img.size, (255, 255, 255))
+                        if img.mode == 'P':
+                            img = img.convert('RGBA')
+                        if img.mode in ('RGBA', 'LA'):
+                            background.paste(img, mask=img.split()[-1])
+                            img = background
+                        else:
+                            img = background
+                    elif img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    
+                    # Create thumbnail (maintains aspect ratio)
+                    img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                    
+                    # Save as JPEG
+                    img.save(thumbnail_path, 'JPEG', quality=85, optimize=True)
+            
+            file_size = thumbnail_path.stat().st_size
+            self.log(f"      ✓ Created thumbnail: {thumbnail_name} ({file_size / 1024:.1f} KB)")
+            return True
+            
+        except Exception as e:
+            self.log(f"      ✗ Failed to create thumbnail: {e}", logging.ERROR)
+            return False
+    
+    def _generate_thumbnail_selection_instructions(self, records_processed: int, 
+                                                   thumbnails_created: int, 
+                                                   output_dir: Path) -> str:
+        """
+        Generate instructions for reviewing and attaching thumbnails.
+        
+        Args:
+            records_processed: Number of records that had thumbnails created
+            thumbnails_created: Total number of thumbnails created
+            output_dir: Output directory path
+            
+        Returns:
+            str: README content
+        """
+        from datetime import datetime
+        
+        readme = f"""REPRESENTATION THUMBNAILS - Function 19
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Records processed: {records_processed}
+Thumbnails created: {thumbnails_created}
+
+═══════════════════════════════════════════════════════════════════════
+
+OVERVIEW
+═══════════════════════════════════════════════════════════════════════
+
+This directory contains thumbnail images created from digital representation
+files in Alma. Each thumbnail shows a preview of a representation file,
+allowing you to visually review and select the best thumbnail for each record.
+
+THUMBNAIL NAMING CONVENTION
+═══════════════════════════════════════════════════════════════════════
+
+Format: {{MMS_ID}}_rep{{NUM}}_{{USAGE_TYPE}}_thumbnail.jpg
+
+Examples:
+  991234567890104641_rep1_MASTER_thumbnail.jpg
+  991234567890104641_rep2_DERIVATIVE_COPY_thumbnail.jpg
+  992345678901104641_rep1_VIEW_thumbnail.jpg
+
+Where:
+  • MMS_ID: The bibliographic record identifier
+  • rep{{NUM}}: Representation number (1, 2, 3, etc.)
+  • USAGE_TYPE: Alma representation usage type (MASTER, DERIVATIVE_COPY, VIEW, etc.)
+
+REVIEWING THUMBNAILS
+═══════════════════════════════════════════════════════════════════════
+
+1. Open this directory in Finder (macOS) or File Explorer (Windows)
+2. Switch to Icon View or Thumbnail View to see image previews
+3. Review thumbnails for each MMS ID
+4. If a record has multiple representations, compare them visually
+5. Decide which thumbnail best represents the record
+
+SELECTING THUMBNAILS FOR UPLOAD
+═══════════════════════════════════════════════════════════════════════
+
+Option 1: Manual Selection (Recommended)
+  1. Create a subfolder called "selected"
+  2. Copy your chosen thumbnails into "selected"
+  3. Rename them to remove the rep number and usage type:
+     From: 991234567890104641_rep2_DERIVATIVE_COPY_thumbnail.jpg
+     To:   991234567890104641_thumbnail.jpg
+  
+  4. Follow the "Attaching Thumbnails" instructions below
+
+Option 2: Keep All Thumbnails
+  If you want to attach all thumbnails (all representations for all records),
+  you can skip selection and proceed directly to attaching them.
+
+ATTACHING THUMBNAILS TO RECORDS
+═══════════════════════════════════════════════════════════════════════
+
+Method: Use Function 14a (Prepare Thumbnails for Upload)
+
+Function 14a will:
+  1. Create thumbnail representations in Alma
+  2. Process and optimize thumbnail files
+  3. Prepare them for upload via Alma's Digital Uploader
+
+Steps:
+  1. Prepare your selected thumbnails in a directory
+  2. Ensure thumbnails are named to match record identifiers:
+     - For grinnell:12205 → file should contain "grinnell_12205"
+     - For dg_12205 → file should contain "dg_12205"
+  
+  3. In CABB, run Function 14a:
+     - Load your MMS IDs
+     - Specify the thumbnail folder (where your selected thumbnails are)
+     - Function 14a will create representations and prepare files
+  
+  4. Follow Function 14a output instructions to upload via Digital Uploader
+
+IMPORTANT NOTES
+═══════════════════════════════════════════════════════════════════════
+
+File Accessibility:
+  • Function 19 can only create thumbnails from files accessible on your
+    local file system or mounted network drives
+  • Files stored only in Alma S3 storage cannot be accessed directly
+    (Alma API does not provide download URLs for representation files)
+  • If no thumbnails were created, representation files may not be locally
+    accessible
+
+Representation Order:
+  • Thumbnails are numbered rep1, rep2, etc. based on their order in Alma
+  • rep1 is typically the first/primary representation
+  • Multiple representations per record are common (TIFF master + JPG derivative)
+
+Thumbnail Quality:
+  • Thumbnails are sized to {output_dir.name.split('_')[-1] if '_' in output_dir.name else '200'}x{output_dir.name.split('_')[-1] if '_' in output_dir.name else '200'} pixels maximum
+  • Aspect ratio is preserved
+  • JPEG quality is 85% (good balance of size and quality)
+
+TROUBLESHOOTING
+═══════════════════════════════════════════════════════════════════════
+
+No thumbnails created:
+  • Representation files are not accessible locally
+  • Files may be in Alma S3 storage only
+  • Check if files exist on mounted network drives
+  • Verify file permissions
+
+Wrong thumbnail selected:
+  • Review all rep{{NUM}} thumbnails for each record
+  • Choose the one that best represents the content
+  • Usually DERIVATIVE_COPY or VIEW representations are best for thumbnails
+
+Can't find matching identifiers:
+  • Check the bibliographic record in Alma for dc:identifier fields
+  • Function 14a looks for grinnell: or dg_ identifiers
+  • Rename thumbnails to match the identifier format
+
+REFERENCES
+═══════════════════════════════════════════════════════════════════════
+
+  • FUNCTION_19_CREATE_THUMBNAILS_FROM_REPS.md - Full documentation
+  • FUNCTION_14a_PREPARE_THUMBNAILS.md - Thumbnail upload process
+  • Alma Knowledge Center: Digital Representations
+
+For questions or issues, consult the CABB documentation in your workspace.
+
+═══════════════════════════════════════════════════════════════════════
+End of README
+═══════════════════════════════════════════════════════════════════════
+"""
+        return readme
+    
     def _get_alma_domain(self) -> str:
         """
         Get the Alma domain for the institution.
@@ -10083,6 +10632,69 @@ def main(page: ft.Page):
             add_log_message("💡 Tip: This CSV lists all records with exactly one TIFF representation (no JPG)")
             add_log_message("💡 Use this to identify records that may need JPG derivatives added")
     
+    def on_function_19_click(e):
+        """Handle Function 19: Create Thumbnails from Representations"""
+        # Determine if batch or single mode
+        is_batch = editor.set_members and len(editor.set_members) > 0
+        
+        if not is_batch:
+            # Single record mode
+            if not mms_id_input.value:
+                update_status("Please enter an MMS ID or load a set", True)
+                return
+            mms_ids_to_process = [mms_id_input.value]
+        else:
+            # Batch mode
+            mms_ids_to_process = editor.set_members
+        
+        add_log_message(f"Starting thumbnail creation from representations for {len(mms_ids_to_process)} record(s)")
+        update_status(f"Creating thumbnails from representations for {len(mms_ids_to_process)} record(s)...", False)
+        
+        if is_batch:
+            # Show progress bar for batch processing
+            set_progress_bar.visible = True
+            set_progress_bar.value = 0
+            set_progress_text.visible = True
+            set_progress_text.value = f"Processing: 0/{len(mms_ids_to_process)} records"
+            page.update()
+            
+            def progress_update(current, total):
+                progress = current / total
+                set_progress_bar.value = progress
+                set_progress_text.value = f"Processing: {current}/{total} records ({progress*100:.1f}%)"
+                status_text.value = f"Creating thumbnails: {current}/{total} records ({progress*100:.1f}%)"
+                page.update()
+        else:
+            progress_update = None
+        
+        # Create thumbnails from representations
+        storage.record_function_usage("function_19_create_thumbnails_from_reps")
+        success, message, output_dir = editor.create_thumbnails_from_representations(
+            mms_ids_to_process,
+            thumbnail_size=200,  # 200x200 pixel thumbnails
+            progress_callback=progress_update
+        )
+        
+        # Hide progress bar (if it was shown)
+        if is_batch:
+            set_progress_bar.visible = False
+            set_progress_text.visible = False
+            page.update()
+        
+        update_status(message, not success)
+        if success and output_dir:
+            # Auto-populate Set ID field with output directory path
+            set_id_input.value = output_dir
+            add_log_message(f"📋 Output directory path copied to Set ID field")
+            page.update()
+            
+            add_log_message("Thumbnail creation complete")
+            add_log_message("💡 Tip: Open the output directory to review thumbnails")
+            add_log_message("💡 See README.txt for instructions on selecting and attaching thumbnails")
+        elif not success:
+            add_log_message("⚠️ Thumbnail creation failed - check log for details")
+            add_log_message("💡 Representation files may not be accessible locally")
+    
     # Function definitions with metadata
     # Active functions - frequently used
     active_functions = [
@@ -10099,7 +10711,8 @@ def main(page: ft.Page):
         "function_15_analyze_identifier_match",
         "function_16_add_mms_id_identifier",
         "function_17_restore_metadata",
-        "function_18_identify_single_tiff"
+        "function_18_identify_single_tiff",
+        "function_19_create_thumbnails_from_reps"
     ]
     
     # Inactive functions - less frequently used
@@ -10232,6 +10845,12 @@ def main(page: ft.Page):
             "icon": "🔍",
             "handler": on_function_18_click,
             "help_file": "FUNCTION_18_IDENTIFY_SINGLE_TIFF.md"
+        },
+        "function_19_create_thumbnails_from_reps": {
+            "label": "19: Create Thumbnails from Representations",
+            "icon": "🖼️",
+            "handler": on_function_19_click,
+            "help_file": "FUNCTION_19_CREATE_THUMBNAILS_FROM_REPS.md"
         }
     }
     
