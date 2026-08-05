@@ -44,6 +44,8 @@ Functions are split into **Active** (shown first in the dropdown) and **Inactive
 - **7: Add Grinnell: dc:identifier Field As Needed** - Add an institution-specific identifier derived from existing `dg_*` identifier values
 - **11b: Upload JPG Files** *(DISABLED — Selenium approach abandoned)* - Former Selenium-based JPG upload workflow; replaced by the API-based Function 11
 - **13: (Intentionally Left Blank)** - Reserved for triskaidekaphobia compliance
+- **21: Remove ns0: Namespaced Fields** ⚠️ **DOES NOT WORK** - Do not use
+- **22: Diagnose Record Accessibility** ⚠️ **DOES NOT WORK** - Do not use
 
 ### Set Processing
 

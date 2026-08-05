@@ -501,6 +501,327 @@ def replace_author_copyright_rights(editor, mms_id: str) -> tuple[bool, str, str
         return False, f"Error: {str(e)}", "error"
 
 
+def remove_ns0_fields(editor, mms_id: str) -> tuple[bool, str, int]:
+    """
+    Function 21: Find and remove all "ns0:" namespaced fields
+    
+    This function corrects records that were corrupted by improper namespace handling,
+    where fields with the "ns0:" prefix were added to the XML. These are typically
+    erroneous fields that should not exist in Alma records.
+    
+    Uses string/regex manipulation instead of XML parsing to avoid making corruption worse.
+    
+    Args:
+        editor: The AlmaBibEditor instance
+        mms_id: The MMS ID of the bibliographic record
+        
+    Returns:
+        tuple: (success: bool, message: str, removed_count: int)
+    """
+    import re
+    
+    editor.log(f"Starting remove_ns0_fields for MMS ID: {mms_id}")
+    if not editor.api_key:
+        editor.log("API Key not configured", logging.ERROR)
+        return False, "API Key not configured", 0
+    
+    try:
+        # Get the Alma API base URL
+        api_url = editor._get_alma_api_url()
+        
+        # Step 1: GET the bib record as XML
+        editor.log(f"Fetching bibliographic record {mms_id} as XML")
+        headers = {'Accept': 'application/xml'}
+        response = requests.get(
+            f"{api_url}/almaws/v1/bibs/{mms_id}?view=full&expand=None&apikey={editor.api_key}",
+            headers=headers
+        )
+        
+        if response.status_code != 200:
+            editor.log(f"Failed to fetch record: {response.status_code}", logging.ERROR)
+            editor.log(f"Response: {response.text}", logging.ERROR)
+            return False, f"Failed to fetch record: {response.status_code}", 0
+        
+        # Step 2: Work with XML as string
+        editor.log("Analyzing XML for ns0: fields")
+        xml_str = response.text
+        
+        # Check if there are any ns0: references
+        if "ns0:" not in xml_str:
+            editor.log("No ns0: namespaced fields found in record")
+            return True, "No ns0: namespaced fields found", 0
+        
+        editor.log("Found ns0: references in XML, removing them...")
+        
+        # Step 3: Find and count ns0: elements using regex
+        # Pattern matches opening and closing tags with ns0: prefix
+        # Example: <ns0:dginfo>...</ns0:dginfo> or <ns0:rights>text</ns0:rights>
+        pattern = r'<ns0:([^>\s]+)[^>]*>.*?</ns0:\1>'
+        
+        # Find all matches to count and log them
+        matches = re.findall(pattern, xml_str, re.DOTALL)
+        removed_count = len(matches)
+        
+        if removed_count == 0:
+            # Try simpler pattern for self-closing tags
+            simple_pattern = r'<ns0:([^/>\s]+)[^>]*/>'
+            simple_matches = re.findall(simple_pattern, xml_str)
+            removed_count = len(simple_matches)
+        
+        # Log what we found
+        for tag_name in set(matches):
+            editor.log(f"Found ns0: field: {tag_name} (will be removed)")
+        
+        # Step 4: Remove all ns0: elements
+        # Remove full elements (opening + content + closing tag)
+        xml_str_clean = re.sub(pattern, '', xml_str, flags=re.DOTALL)
+        
+        # Also remove self-closing ns0: tags
+        xml_str_clean = re.sub(r'<ns0:[^/>\s]+[^>]*/>', '', xml_str_clean)
+        
+        # Remove any remaining ns0: prefixes in opening/closing tags
+        xml_str_clean = re.sub(r'</?ns0:', '<', xml_str_clean)
+        
+        # Clean up any xmlns:ns0 declarations
+        xml_str_clean = re.sub(r'\s+xmlns:ns0="[^"]*"', '', xml_str_clean)
+        
+        # Clean up extra whitespace that might have been left
+        xml_str_clean = re.sub(r'\n\s*\n\s*\n', '\n\n', xml_str_clean)
+        
+        if removed_count == 0:
+            # Couldn't find discrete elements, but ns0: exists
+            # Count all ns0: references that were removed
+            original_count = xml_str.count('ns0:')
+            cleaned_count = xml_str_clean.count('ns0:')
+            removed_count = original_count - cleaned_count
+        
+        if removed_count == 0:
+            editor.log("No ns0: elements could be removed (might be in attributes only)")
+            return True, "No ns0: namespaced fields found to remove", 0
+        
+        editor.log(f"Removed {removed_count} ns0: field(s)")
+        
+        # Log a sample of the cleaned XML
+        editor.log("=" * 60)
+        editor.log("Cleaned XML (first 500 chars):")
+        editor.log(xml_str_clean[:500])
+        editor.log("=" * 60)
+        
+        # Step 5: PUT the cleaned XML back to Alma
+        # Use validate=false to bypass validation of the corrupted-then-cleaned XML
+        editor.log(f"Updating record {mms_id} in Alma (validation disabled due to corruption)")
+        headers = {
+            'Accept': 'application/xml',
+            'Content-Type': 'application/xml; charset=utf-8'
+        }
+        xml_bytes = xml_str_clean.encode('utf-8')
+        
+        response = requests.put(
+            f"{api_url}/almaws/v1/bibs/{mms_id}?validate=false&override_warning=true&override_lock=true&stale_version_check=false&check_match=false&apikey={editor.api_key}",
+            headers=headers,
+            data=xml_bytes
+        )
+        
+        if response.status_code != 200:
+            editor.log(f"Failed to update record: {response.status_code}", logging.ERROR)
+            editor.log(f"Response: {response.text}", logging.ERROR)
+            editor.log("=" * 60)
+            editor.log("Full cleaned XML that was sent:")
+            editor.log(xml_str_clean)
+            editor.log("=" * 60)
+            return False, f"Failed to update record: {response.status_code}", 0
+        
+        editor.log(f"Successfully updated record {mms_id}")
+        message = f"Removed {removed_count} ns0: reference(s) from record {mms_id}"
+        return True, message, removed_count
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        editor.log(f"Error processing record {mms_id}: {str(e)}", logging.ERROR)
+        editor.log(f"Full traceback:\n{error_details}", logging.DEBUG)
+        return False, f"Error: {str(e)}", 0
+
+
+def diagnose_record_accessibility(editor, mms_ids: list, output_file: str = None, progress_callback=None) -> tuple[bool, str]:
+    """
+    Function 22: Diagnose Record Accessibility - Test which records can be fetched via API
+    
+    Attempts to fetch each record and categorizes them as:
+    - Fetchable with ns0: fields (can be fixed by Function 21)
+    - Fetchable without ns0: fields (clean)
+    - Unfetchable (corrupted beyond API repair, needs manual intervention)
+    
+    Exports a CSV with diagnosis results.
+    
+    Args:
+        editor: The AlmaBibEditor instance
+        mms_ids: List of MMS IDs to diagnose
+        output_file: Optional path for output CSV (auto-generated if not provided)
+        progress_callback: Optional callback function(current, total) for progress updates
+        
+    Returns:
+        tuple: (success: bool, message: str)
+    """
+    import csv
+    from datetime import datetime
+    
+    editor.log(f"Starting record accessibility diagnosis for {len(mms_ids)} records")
+    
+    if not editor.api_key:
+        editor.log("API Key not configured", logging.ERROR)
+        return False, "API Key not configured"
+    
+    # Generate output filename if not provided
+    if not output_file:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_file = f"record_diagnosis_{timestamp}.csv"
+    
+    try:
+        api_url = editor._get_alma_api_url()
+        
+        # Prepare results storage
+        fetchable_clean = []
+        fetchable_with_ns0 = []
+        unfetchable = []
+        
+        # Process each record
+        for i, mms_id in enumerate(mms_ids, 1):
+            if progress_callback:
+                progress_callback(i, len(mms_ids))
+            
+            editor.log(f"Diagnosing {mms_id} ({i}/{len(mms_ids)})")
+            
+            # Attempt to fetch the record
+            headers = {'Accept': 'application/xml'}
+            try:
+                response = requests.get(
+                    f"{api_url}/almaws/v1/bibs/{mms_id}?view=full&expand=None&apikey={editor.api_key}",
+                    headers=headers,
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    # Record is fetchable - check for ns0: fields
+                    xml_text = response.text
+                    if "ns0:" in xml_text:
+                        # Count ns0: references
+                        ns0_count = xml_text.count('ns0:')
+                        fetchable_with_ns0.append({
+                            'mms_id': mms_id,
+                            'status': 'Fetchable with ns0: fields',
+                            'ns0_count': ns0_count,
+                            'error_code': '',
+                            'notes': f'Contains {ns0_count} ns0: reference(s) - can be fixed by Function 21'
+                        })
+                        editor.log(f"  ✓ Fetchable with {ns0_count} ns0: reference(s)")
+                    else:
+                        fetchable_clean.append({
+                            'mms_id': mms_id,
+                            'status': 'Fetchable - Clean',
+                            'ns0_count': 0,
+                            'error_code': '',
+                            'notes': 'No ns0: fields found - record is clean'
+                        })
+                        editor.log(f"  ✓ Clean (no ns0: fields)")
+                else:
+                    # Record is unfetchable
+                    error_code = ''
+                    error_msg = ''
+                    
+                    # Try to parse error response
+                    try:
+                        import xml.etree.ElementTree as ET
+                        error_root = ET.fromstring(response.text)
+                        error_elem = error_root.find('.//{http://com/exlibris/urm/general/xmlbeans}errorCode')
+                        msg_elem = error_root.find('.//{http://com/exlibris/urm/general/xmlbeans}errorMessage')
+                        if error_elem is not None:
+                            error_code = error_elem.text
+                        if msg_elem is not None:
+                            error_msg = msg_elem.text
+                    except:
+                        error_msg = response.text[:200]
+                    
+                    unfetchable.append({
+                        'mms_id': mms_id,
+                        'status': 'Unfetchable - Corrupted',
+                        'ns0_count': '?',
+                        'error_code': error_code or response.status_code,
+                        'notes': f'API error {response.status_code}: {error_msg} - Needs manual fix in Alma UI'
+                    })
+                    editor.log(f"  ✗ Unfetchable (HTTP {response.status_code}, error {error_code})", logging.WARNING)
+                    
+            except requests.exceptions.Timeout:
+                unfetchable.append({
+                    'mms_id': mms_id,
+                    'status': 'Timeout',
+                    'ns0_count': '?',
+                    'error_code': 'TIMEOUT',
+                    'notes': 'Request timed out - network issue or record problem'
+                })
+                editor.log(f"  ✗ Timeout", logging.WARNING)
+            except Exception as e:
+                unfetchable.append({
+                    'mms_id': mms_id,
+                    'status': 'Error',
+                    'ns0_count': '?',
+                    'error_code': 'EXCEPTION',
+                    'notes': f'Exception: {str(e)}'
+                })
+                editor.log(f"  ✗ Exception: {str(e)}", logging.ERROR)
+        
+        # Write results to CSV
+        editor.log(f"Writing diagnosis results to {output_file}")
+        
+        with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+            fieldnames = ['mms_id', 'status', 'ns0_count', 'error_code', 'notes']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            
+            # Write all results in order
+            for record in fetchable_clean + fetchable_with_ns0 + unfetchable:
+                writer.writerow(record)
+        
+        # Generate summary
+        total = len(mms_ids)
+        clean_count = len(fetchable_clean)
+        ns0_count = len(fetchable_with_ns0)
+        corrupt_count = len(unfetchable)
+        
+        summary = (
+            f"Diagnosis complete: {total} records analyzed\n"
+            f"  • {clean_count} clean (no issues)\n"
+            f"  • {ns0_count} fetchable with ns0: fields (can be fixed by Function 21)\n"
+            f"  • {corrupt_count} unfetchable/corrupted (need manual intervention)\n"
+            f"Results saved to: {output_file}"
+        )
+        
+        editor.log("=" * 60)
+        editor.log("DIAGNOSIS SUMMARY")
+        editor.log("=" * 60)
+        editor.log(f"Total records: {total}")
+        editor.log(f"Clean: {clean_count}")
+        editor.log(f"Fetchable with ns0: {ns0_count}")
+        editor.log(f"Unfetchable/Corrupted: {corrupt_count}")
+        editor.log(f"Output file: {output_file}")
+        editor.log("=" * 60)
+        
+        if corrupt_count > 0:
+            editor.log("⚠️  UNFETCHABLE RECORDS DETECTED", logging.WARNING)
+            editor.log("These records cannot be fixed via API - manual intervention required:", logging.WARNING)
+            for record in unfetchable:
+                editor.log(f"  • {record['mms_id']}: {record['notes']}", logging.WARNING)
+        
+        return True, summary
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        editor.log(f"Error during diagnosis: {str(e)}", logging.ERROR)
+        editor.log(f"Full traceback:\n{error_details}", logging.DEBUG)
+        return False, f"Error during diagnosis: {str(e)}"
+
+
 def add_grinnell_identifier(editor, mms_id: str) -> tuple[bool, str]:
     """
     Function 7: Add Grinnell: dc:identifier field as needed

@@ -255,9 +255,51 @@ class AlmaBibEditor:
                 )
                 
                 if response.status_code != 200:
-                    self.log(f"Failed to fetch set members: {response.status_code}", logging.ERROR)
-                    self.log(f"Response: {response.text}", logging.ERROR)
-                    return False, f"Failed to fetch set members: {response.status_code}", []
+                    # Handle errors - if we already have some members, return them with a warning
+                    # This handles cases where corrupted records cause the API to fail mid-pagination
+                    if response.status_code == 400:
+                        self.log(f"Got 400 error fetching set members (offset {offset})", logging.WARNING)
+                        self.log(f"Response: {response.text}", logging.WARNING)
+                        
+                        # Try to extract corrupted MMS IDs from error message
+                        import re
+                        import json
+                        corrupted_ids = []
+                        try:
+                            error_data = json.loads(response.text)
+                            if 'errorList' in error_data and 'error' in error_data['errorList']:
+                                for error in error_data['errorList']['error']:
+                                    msg = error.get('errorMessage', '')
+                                    # Extract MMS ID from messages like "Set Member not found: IED 991011546791604641"
+                                    match = re.search(r'\d{18,21}', msg)
+                                    if match:
+                                        corrupted_ids.append(match.group(0))
+                        except:
+                            pass
+                        
+                        if corrupted_ids:
+                            self.log(f"Identified corrupted record(s): {', '.join(corrupted_ids)}", logging.WARNING)
+                        
+                        if all_members:
+                            # We've fetched some members already, return them with a warning
+                            warning_msg = f"⚠️ Fetched {len(all_members)} members, but stopped due to corrupted records (error 400 at offset {offset})"
+                            self.log(warning_msg, logging.WARNING)
+                            self.set_members = all_members
+                            return True, warning_msg, all_members
+                        else:
+                            # First page failed - set contains corrupted records in first page
+                            self.log("First page failed with 400 - set contains corrupted records that prevent API access", logging.ERROR)
+                            msg = "⚠️ Cannot fetch set via API: corrupted records detected.\n"
+                            msg += "💡 WORKAROUND: Export set member list from Alma Analytics or use existing CSV file.\n"
+                            msg += "   Then enter the CSV filename in 'Set ID or CSV Path' field and click 'Load Set Members'."
+                            if corrupted_ids:
+                                msg += f"\n   Known corrupted record(s): {', '.join(corrupted_ids)}"
+                            return False, msg, []
+                    else:
+                        # Other errors - fail immediately
+                        self.log(f"Failed to fetch set members: {response.status_code}", logging.ERROR)
+                        self.log(f"Response: {response.text}", logging.ERROR)
+                        return False, f"Failed to fetch set members: {response.status_code}", []
                 
                 data = response.json()
                 members = data.get('member', [])
@@ -1196,6 +1238,14 @@ class AlmaBibEditor:
     def replace_author_copyright_rights(self, mms_id: str) -> tuple[bool, str, str]:
         """Function 6: Delegate to inactive_functions module"""
         return inactive_functions.replace_author_copyright_rights(self, mms_id)
+    
+    def remove_ns0_fields(self, mms_id: str) -> tuple[bool, str, int]:
+        """Function 21: Delegate to inactive_functions module"""
+        return inactive_functions.remove_ns0_fields(self, mms_id)
+    
+    def diagnose_record_accessibility(self, mms_ids: list, output_file: str = None, progress_callback=None) -> tuple[bool, str]:
+        """Function 22: Delegate to inactive_functions module"""
+        return inactive_functions.diagnose_record_accessibility(self, mms_ids, output_file, progress_callback)
     
     def add_grinnell_identifier(self, mms_id: str) -> tuple[bool, str]:
         """Function 7: Delegate to inactive_functions module"""
@@ -11213,6 +11263,196 @@ def main(page: ft.Page):
         elif not success:
             add_log_message("⚠️ Handle preparation failed - check log for details")
     
+    def on_function_21_click(e):
+        """Handle Function 21: Remove ns0: Namespaced Fields"""
+        logger.info("Function 21 button clicked - Remove ns0: Namespaced Fields")
+        
+        def execute_function_21():
+            """Execute Function 21 after confirmation"""
+            storage.record_function_usage("function_21_remove_ns0")
+            
+            # Check if processing a batch or single record
+            if editor.set_members and len(editor.set_members) > 0:
+                # Batch processing
+                add_log_message(f"Starting batch remove_ns0_fields for {len(editor.set_members)} records")
+                
+                # Get limit
+                try:
+                    limit = int(limit_input.value) if limit_input.value else 0
+                    if limit < 0:
+                        limit = 0
+                except ValueError:
+                    limit = 0
+                
+                # Calculate how many to process
+                member_count = len(editor.set_members)
+                process_count = min(limit, member_count) if limit > 0 else member_count
+                
+                # Show progress bar
+                set_progress_bar.visible = True
+                set_progress_text.visible = True
+                set_progress_bar.value = 0
+                set_progress_text.value = f"Processing 0/{process_count}"
+                page.update()
+                
+                total_count = 0
+                success_count = 0
+                no_fields_count = 0
+                error_count = 0
+                total_fields_removed = 0
+                
+                for i, mms_id in enumerate(editor.set_members[:process_count], 1):
+                    if editor.kill_switch:
+                        add_log_message("Batch processing stopped by user")
+                        break
+                    
+                    total_count += 1
+                    
+                    # Update progress
+                    set_progress_bar.value = i / process_count
+                    set_progress_text.value = f"Processing {i}/{process_count}: {mms_id}"
+                    page.update()
+                    
+                    success, message, removed_count = editor.remove_ns0_fields(mms_id)
+                    if success:
+                        if removed_count > 0:
+                            success_count += 1
+                            total_fields_removed += removed_count
+                            add_log_message(f"✓ {mms_id}: {message}")
+                        else:
+                            no_fields_count += 1
+                            add_log_message(f"⊘ {mms_id}: {message}")
+                    else:
+                        error_count += 1
+                        add_log_message(f"✗ {mms_id}: {message}")
+                
+                # Hide progress bar
+                set_progress_bar.visible = False
+                set_progress_text.visible = False
+                
+                # Build detailed summary
+                summary = f"Batch complete ({total_count} records): {success_count} cleaned (removed {total_fields_removed} total fields), {no_fields_count} no ns0: fields, {error_count} errors"
+                if limit > 0 and limit < member_count:
+                    summary += f" (limited from {member_count} total)"
+                update_status(summary, error_count > 0)
+            else:
+                # Single record processing
+                if not mms_id_input.value:
+                    update_status("Please enter an MMS ID or load a set", True)
+                    return
+                
+                add_log_message(f"Starting remove_ns0_fields for MMS ID: {mms_id_input.value}")
+                success, message, removed_count = editor.remove_ns0_fields(mms_id_input.value)
+                update_status(message, not success)
+        
+        # Show confirmation dialog
+        def confirm_action(e):
+            dialog.open = False
+            page.update()
+            execute_function_21()
+        
+        def cancel_action(e):
+            dialog.open = False
+            page.update()
+            add_log_message("Function 21 cancelled by user")
+        
+        # Determine number of records to process
+        if editor.set_members and len(editor.set_members) > 0:
+            try:
+                limit = int(limit_input.value) if limit_input.value else 0
+                if limit < 0:
+                    limit = 0
+            except ValueError:
+                limit = 0
+            
+            member_count = len(editor.set_members)
+            process_count = min(limit, member_count) if limit > 0 else member_count
+            
+            dialog_content = ft.Text(
+                f"⚠️ This will scan and remove ALL ns0: namespaced fields from {process_count} record(s).\n\n"
+                f"These fields are typically erroneous and should not exist in Alma records.\n\n"
+                f"Fields with the 'ns0:' prefix will be removed entirely from the XML.\n\n"
+                f"Do you want to proceed?",
+                size=14
+            )
+        else:
+            dialog_content = ft.Text(
+                f"⚠️ This will scan and remove ALL ns0: namespaced fields from record {mms_id_input.value}.\n\n"
+                f"These fields are typically erroneous and should not exist in Alma records.\n\n"
+                f"Fields with the 'ns0:' prefix will be removed entirely from the XML.\n\n"
+                f"Do you want to proceed?",
+                size=14
+            )
+        
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Confirm Remove ns0: Fields"),
+            content=dialog_content,
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel_action),
+                ft.TextButton("Proceed", on_click=confirm_action),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        page.overlay.append(dialog)
+        dialog.open = True
+        page.update()
+    
+    def on_function_22_click(e):
+        """Handle Function 22: Diagnose Record Accessibility"""
+        logger.info("Function 22 button clicked - Diagnose Record Accessibility")
+        storage.record_function_usage("function_22_diagnose_accessibility")
+        
+        # This function requires a loaded set
+        if not editor.set_members or len(editor.set_members) == 0:
+            update_status("Please load a set first", True)
+            return
+        
+        # Generate output filename
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_file = f"record_diagnosis_{timestamp}.csv"
+        
+        add_log_message(f"Starting record accessibility diagnosis for {len(editor.set_members)} records")
+        add_log_message("⚠️ This will attempt to fetch each record to check accessibility")
+        
+        # Show progress bar
+        set_progress_bar.visible = True
+        set_progress_text.visible = True
+        set_progress_bar.value = 0
+        set_progress_text.value = f"Diagnosing: 0/{len(editor.set_members)}"
+        page.update()
+        
+        def progress_update(current, total):
+            set_progress_bar.value = current / total
+            set_progress_text.value = f"Diagnosing: {current}/{total} records"
+            page.update()
+        
+        success, message = editor.diagnose_record_accessibility(
+            editor.set_members,
+            output_file,
+            progress_callback=progress_update
+        )
+        
+        # Hide progress bar
+        set_progress_bar.visible = False
+        set_progress_text.visible = False
+        page.update()
+        
+        update_status(message, not success)
+        
+        if success:
+            add_log_message("=" * 50)
+            add_log_message("📊 DIAGNOSIS COMPLETE")
+            add_log_message("=" * 50)
+            add_log_message(f"Results file: {output_file}")
+            add_log_message("")
+            add_log_message("Next Steps:")
+            add_log_message("1. Open the CSV to review results")
+            add_log_message("2. Records marked 'Fetchable with ns0: fields' can be fixed with Function 21")
+            add_log_message("3. Records marked 'Unfetchable' need manual intervention in Alma UI")
+            add_log_message("4. Consider using Function 17 (Restore Metadata) for corrupted records")
+    
     # Function definitions with metadata
     # Active functions - frequently used
     active_functions = [
@@ -11234,14 +11474,16 @@ def main(page: ft.Page):
         "function_20_prepare_handles"
     ]
     
-    # Inactive functions - less frequently used
+    # Inactive functions - less frequently used or non-functional
     inactive_functions = [
         "function_2_clear_dc_relation",
         "function_4_filter_pre1930",
         "function_6_replace_rights",
         "function_7_add_grinnell_id",
         "function_11b_upload_jpg",
-        "function_13_placeholder"
+        "function_13_placeholder",
+        "function_21_remove_ns0",  # ⚠️ DOES NOT WORK - Do not use
+        "function_22_diagnose_accessibility"  # ⚠️ DOES NOT WORK - Do not use
     ]
     
     functions = {
@@ -11376,6 +11618,18 @@ def main(page: ft.Page):
             "icon": "🔗",
             "handler": on_function_20_click,
             "help_file": "FUNCTION_20_ASSIGN_HANDLES.md"
+        },
+        "function_21_remove_ns0": {
+            "label": "21: Remove ns0: Namespaced Fields ⚠️ DOES NOT WORK",
+            "icon": "🧹",
+            "handler": on_function_21_click,
+            "help_file": "FUNCTION_21_REMOVE_NS0_FIELDS.md"
+        },
+        "function_22_diagnose_accessibility": {
+            "label": "22: Diagnose Record Accessibility ⚠️ DOES NOT WORK",
+            "icon": "🩺",
+            "handler": on_function_22_click,
+            "help_file": "FUNCTION_22_DIAGNOSE_ACCESSIBILITY.md"
         }
     }
     
